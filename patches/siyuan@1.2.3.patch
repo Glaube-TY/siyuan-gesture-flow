@@ -1,0 +1,10 @@
+diff --git a/types/constants.ts b/types/constants.ts
+index c26233dc3887acc76205c118de1b533012a46d4f..09dd2709721886c480b968116cfecc361a6f5e50 100644
+--- a/types/constants.ts
++++ b/types/constants.ts
+@@ -1,4 +1,4 @@
+-import type {IObject, Config} from "../siyuan";
++import type {Config} from "../siyuan";
+ 
+ const altNumber = navigator.platform.toUpperCase().indexOf("MAC") > -1 ? "⌃" : "⌥";
+ 

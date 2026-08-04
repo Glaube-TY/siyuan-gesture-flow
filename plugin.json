@@ -1,0 +1,57 @@
+{
+  "name": "siyuan-gesture-flow",
+  "author": "",
+  "url": "",
+  "version": "0.1.0",
+  "minAppVersion": "3.7.0",
+  "kernels": [
+    "windows",
+    "linux",
+    "darwin",
+    "ios",
+    "android",
+    "harmony",
+    "docker",
+    "all"
+  ],
+  "disabledInPublish": true,
+  "backends": [
+    "windows",
+    "linux",
+    "darwin",
+    "ios",
+    "android",
+    "harmony",
+    "docker"
+  ],
+  "frontends": [
+    "desktop",
+    "browser-desktop",
+    "desktop-window"
+  ],
+  "displayName": {
+    "default": "GestureFlow",
+    "zh-CN": "手势流"
+  },
+  "description": {
+    "default": "Mouse gesture plugin for SiYuan. Navigate tabs, scroll and trigger commands with right-button mouse gestures.",
+    "zh-CN": "思源笔记鼠标手势插件。通过右键手势切换标签页、滚动和触发命令。"
+  },
+  "readme": {
+    "default": "README.md",
+    "zh-CN": "README.zh-CN.md"
+  },
+  "funding": {
+    "openCollective": "",
+    "patreon": "",
+    "github": "",
+    "custom": []
+  },
+  "keywords": [
+    "gesture",
+    "mouse gesture",
+    "手势",
+    "鼠标手势",
+    "gestureflow"
+  ]
+}

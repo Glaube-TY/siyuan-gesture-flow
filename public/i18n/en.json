@@ -1,0 +1,5 @@
+{
+    "pluginName": "GestureFlow",
+    "loadingPlugin": "Loading GestureFlow",
+    "unloadingPlugin": "Unloading GestureFlow"
+}

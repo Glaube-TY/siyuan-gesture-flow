@@ -1,0 +1,6 @@
+allowBuilds:
+  '@parcel/watcher': true
+  esbuild: true
+
+patchedDependencies:
+  siyuan@1.2.3: patches/siyuan@1.2.3.patch
