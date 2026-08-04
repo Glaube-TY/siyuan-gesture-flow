@@ -11,51 +11,14 @@ import vitePluginYamlI18n from "./yaml-plugin";
 const env = process.env;
 const isSrcmap = env.VITE_SOURCEMAP === "inline";
 const isDev = env.NODE_ENV === "development";
-const buildTarget = env.VITE_BUILD_TARGET === "kernel" ? "kernel" : "app";
 
 const outputDir = isDev ? "dev" : "dist";
 
 console.log("isDev=>", isDev);
 console.log("isSrcmap=>", isSrcmap);
 console.log("outputDir=>", outputDir);
-console.log("buildTarget=>", buildTarget);
 
-export default defineConfig(buildTarget === "kernel" ? {
-    build: {
-        outDir: outputDir,
-        emptyOutDir: false,
-        minify: true,
-        sourcemap: isSrcmap ? "inline" : false,
-
-        lib: {
-            entry: resolve(__dirname, "src/kernel.ts"),
-            name: "KernelPluginSample",
-            fileName: () => "kernel.js",
-            formats: ["iife"],
-        },
-        rollupOptions: {
-            plugins: isDev ? [
-                watchExternalFiles(["src/kernel.ts"])
-            ] : [
-                cleanupDistFiles({
-                    patterns: ["i18n/*.yaml", "i18n/*.md"],
-                    distDir: outputDir
-                }),
-                zipPack({
-                    inDir: "./dist",
-                    outDir: "./",
-                    outFileName: "package.zip"
-                })
-            ],
-
-            external: [],
-
-            output: {
-                entryFileNames: "kernel.js",
-            },
-        },
-    }
-} : {
+export default defineConfig({
     resolve: {
         alias: {
             "@": resolve(__dirname, "src"),
@@ -106,7 +69,17 @@ export default defineConfig(buildTarget === "kernel" ? {
                     "./docs/*.md",
                     "./plugin.json"
                 ])
-            ] : [],
+            ] : [
+                cleanupDistFiles({
+                    patterns: ["i18n/*.yaml", "i18n/*.md"],
+                    distDir: outputDir
+                }),
+                zipPack({
+                    inDir: "./dist",
+                    outDir: "./",
+                    outFileName: "package.zip"
+                })
+            ],
 
             external: ["siyuan", "process"],
 
@@ -156,9 +129,7 @@ function cleanupDistFiles(options: { patterns: string[], distDir: string }) {
             async handler() {
                 const fg = await import("fast-glob");
                 const fs = await import("fs");
-                // const path = await import('path');
 
-                // 使用 glob 语法，确保能匹配到文件
                 const distPatterns = patterns.map(pat => `${distDir}/${pat}`);
                 console.debug("Cleanup searching patterns:", distPatterns);
 
@@ -167,8 +138,6 @@ function cleanupDistFiles(options: { patterns: string[], distDir: string }) {
                     absolute: true,
                     onlyFiles: false
                 });
-
-                // console.info('Files to be cleaned up:', files);
 
                 for (const file of files) {
                     try {
