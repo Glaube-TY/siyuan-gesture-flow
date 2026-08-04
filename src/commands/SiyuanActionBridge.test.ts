@@ -12,7 +12,63 @@ import { getActiveTab, getActiveEditor } from "siyuan";
 
 // --------------------------------------------------------------- helpers
 
-function makeScrollElement(scrollHeight = 1000): HTMLElement {
+/**
+ * Build the official SiYuan scroll DOM structure:
+ *
+ * ```html
+ * <div class="protyle-scroll">              ← scroll.element.parentElement
+ *   <div class="protyle-scroll__up"></div>  ← top button
+ *   <div class="protyle-scroll__bar"></div> ← scroll.element (block-index slider)
+ *   <div class="protyle-scroll__down"></div>← bottom button
+ * </div>
+ * ```
+ *
+ * `scroll.element` is the **bar** (not a scroll container).  The real
+ * document scroll container is `contentElement`.
+ */
+function makeOfficialScrollDom(opts: {
+    withUp?: boolean;
+    withDown?: boolean;
+    withBar?: boolean;
+} = {}): {
+    container: HTMLElement;
+    bar: HTMLElement;
+    up: HTMLElement | null;
+    down: HTMLElement | null;
+} {
+    const { withUp = true, withDown = true, withBar = true } = opts;
+    const container = document.createElement("div");
+    container.className = "protyle-scroll";
+
+    const up = withUp ? document.createElement("div") : null;
+    if (up) {
+        up.className = "protyle-scroll__up";
+        up.click = vi.fn();
+        container.appendChild(up);
+    }
+
+    const bar = document.createElement("div");
+    bar.className = "protyle-scroll__bar";
+    if (!withBar) {
+        // If no bar, still need a placeholder for structure tests
+    }
+    container.appendChild(bar);
+
+    const down = withDown ? document.createElement("div") : null;
+    if (down) {
+        down.className = "protyle-scroll__down";
+        down.click = vi.fn();
+        container.appendChild(down);
+    }
+
+    return { container, bar, up, down };
+}
+
+/**
+ * Build a contentElement (the real document scroll container) with
+ * scrollTop / scrollHeight / scrollTo stubs.
+ */
+function makeContentElement(scrollHeight = 1000): HTMLElement {
     const el = document.createElement("div");
     Object.defineProperty(el, "scrollHeight", { value: scrollHeight, configurable: true });
     el.scrollTo = vi.fn();
@@ -21,20 +77,22 @@ function makeScrollElement(scrollHeight = 1000): HTMLElement {
 }
 
 /**
- * Build a Protyle **wrapper** that matches the official SiYuan return
- * structure: `getActiveEditor()` returns a `Protyle` whose `.protyle`
- * field is the real `IProtyle` instance.
+ * Build a Protyle **wrapper** matching the official SiYuan structure:
+ *   getActiveEditor() returns { protyle: IProtyle }
  *
- *   editor.protyle.scroll.element   → scroll container
- *   editor.protyle.contentElement   → fallback content element
+ * Options:
+ * - `scrollBar`: the `protyle-scroll__bar` element (scroll.element).
+ *   Pass `null` to omit `protyle.scroll` entirely.
+ * - `contentEl`: the real document scroll container.
+ *   Pass `null` to omit `protyle.contentElement`.
  */
 function makeProtyleWrapper(opts: {
-    scrollEl?: HTMLElement | null;
+    scrollBar?: HTMLElement | null;
     contentEl?: HTMLElement | null;
 } = {}): unknown {
     const protyle: Record<string, unknown> = {};
-    if (opts.scrollEl !== undefined) {
-        protyle.scroll = opts.scrollEl ? { element: opts.scrollEl } : undefined;
+    if (opts.scrollBar !== undefined) {
+        protyle.scroll = opts.scrollBar ? { element: opts.scrollBar } : undefined;
     }
     if (opts.contentEl !== undefined) {
         protyle.contentElement = opts.contentEl;
@@ -64,58 +122,185 @@ afterEach(() => {
 
 // ============================================================ scroll tests
 describe("SiyuanActionBridge — scrollActiveDocument", () => {
-    it("真实 Protyle 包装结构：滚动到顶部调用 scrollTo(0)", () => {
-        const scrollEl = makeScrollElement(1000);
-        vi.mocked(getActiveEditor).mockReturnValue(makeProtyleWrapper({ scrollEl }) as never);
+    // -------------------------------------------------- official control
+    it("top：调用当前编辑器的 protyle-scroll__up 控件", () => {
+        const { bar, up } = makeOfficialScrollDom();
+        // Bar is attached to container so bar.parentElement === protyle-scroll
+        expect(up).not.toBeNull();
+        vi.mocked(getActiveEditor).mockReturnValue(
+            makeProtyleWrapper({ scrollBar: bar }) as never,
+        );
         const bridge = new SiyuanActionBridge();
         const result = bridge.scrollActiveDocument("top");
         expect(result.status).toBe("executed");
-        expect(scrollEl.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+        if (result.status === "executed") {
+            expect(result.method).toBe("official-control");
+        }
+        expect(up!.click).toHaveBeenCalledTimes(1);
     });
 
-    it("真实 Protyle 包装结构：滚动到底部调用 scrollTo(scrollHeight)", () => {
-        const scrollEl = makeScrollElement(2000);
-        vi.mocked(getActiveEditor).mockReturnValue(makeProtyleWrapper({ scrollEl }) as never);
+    it("bottom：调用当前编辑器的 protyle-scroll__down 控件", () => {
+        const { bar, down } = makeOfficialScrollDom();
+        expect(down).not.toBeNull();
+        vi.mocked(getActiveEditor).mockReturnValue(
+            makeProtyleWrapper({ scrollBar: bar }) as never,
+        );
         const bridge = new SiyuanActionBridge();
         const result = bridge.scrollActiveDocument("bottom");
         expect(result.status).toBe("executed");
-        expect(scrollEl.scrollTo).toHaveBeenCalledWith({ top: 2000, behavior: "auto" });
+        if (result.status === "executed") {
+            expect(result.method).toBe("official-control");
+        }
+        expect(down!.click).toHaveBeenCalledTimes(1);
     });
 
-    it("editor.protyle.scroll.element 优先于 contentElement", () => {
-        const scrollEl = makeScrollElement(1000);
-        const contentEl = document.createElement("div");
-        contentEl.scrollTo = vi.fn();
+    it("不查找其他分屏的按钮（只查 scroll.element.parentElement）", () => {
+        // Current editor's bar has NO parentElement (detached) — should
+        // NOT fall back to a global querySelector.
+        const bar = document.createElement("div");
+        bar.className = "protyle-scroll__bar";
+        // Deliberately do NOT attach bar to any container.
+        // Create a decoy button in the document that must NOT be used.
+        const decoyUp = document.createElement("div");
+        decoyUp.className = "protyle-scroll__up";
+        decoyUp.click = vi.fn();
+        document.body.appendChild(decoyUp);
+
+        const contentEl = makeContentElement(500);
         vi.mocked(getActiveEditor).mockReturnValue(
-            makeProtyleWrapper({ scrollEl, contentEl }) as never,
+            makeProtyleWrapper({ scrollBar: bar, contentEl }) as never,
+        );
+        const bridge = new SiyuanActionBridge();
+        const result = bridge.scrollActiveDocument("top");
+        // No parentElement → official control unavailable → fallback
+        expect(result.status).toBe("executed");
+        if (result.status === "executed") {
+            expect(result.method).toBe("content-fallback");
+        }
+        expect(decoyUp.click).not.toHaveBeenCalled();
+        decoyUp.remove();
+    });
+
+    it("官方控件缺失时回退到 contentElement", () => {
+        // Bar exists but parentElement has no __up / __down
+        const bar = document.createElement("div");
+        const container = document.createElement("div");
+        container.className = "protyle-scroll";
+        container.appendChild(bar);
+        const contentEl = makeContentElement(800);
+        vi.mocked(getActiveEditor).mockReturnValue(
+            makeProtyleWrapper({ scrollBar: bar, contentEl }) as never,
+        );
+        const bridge = new SiyuanActionBridge();
+        const result = bridge.scrollActiveDocument("top");
+        expect(result.status).toBe("executed");
+        if (result.status === "executed") {
+            expect(result.method).toBe("content-fallback");
+        }
+        expect(contentEl.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+    });
+
+    it("回退顶部将 contentElement 滚动到 0", () => {
+        const bar = document.createElement("div");
+        // No parentElement → no official control
+        const contentEl = makeContentElement(1000);
+        contentEl.scrollTop = 200; // currently scrolled down
+        vi.mocked(getActiveEditor).mockReturnValue(
+            makeProtyleWrapper({ scrollBar: bar, contentEl }) as never,
+        );
+        const bridge = new SiyuanActionBridge();
+        const result = bridge.scrollActiveDocument("top");
+        expect(result.status).toBe("executed");
+        expect(contentEl.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+    });
+
+    it("回退底部使用 contentElement.scrollHeight", () => {
+        const bar = document.createElement("div");
+        const contentEl = makeContentElement(1234);
+        vi.mocked(getActiveEditor).mockReturnValue(
+            makeProtyleWrapper({ scrollBar: bar, contentEl }) as never,
+        );
+        const bridge = new SiyuanActionBridge();
+        const result = bridge.scrollActiveDocument("bottom");
+        expect(result.status).toBe("executed");
+        expect(contentEl.scrollTo).toHaveBeenCalledWith({ top: 1234, behavior: "auto" });
+    });
+
+    it("绝不调用 scroll.element.scrollTo", () => {
+        const { bar, up } = makeOfficialScrollDom();
+        expect(up).not.toBeNull();
+        // Add a scrollTo spy on the bar — it must NEVER be called.
+        const barScrollTo = vi.fn();
+        bar.scrollTo = barScrollTo;
+        vi.mocked(getActiveEditor).mockReturnValue(
+            makeProtyleWrapper({ scrollBar: bar }) as never,
         );
         const bridge = new SiyuanActionBridge();
         bridge.scrollActiveDocument("top");
-        expect(scrollEl.scrollTo).toHaveBeenCalled();
-        expect(contentEl.scrollTo).not.toHaveBeenCalled();
+        bridge.scrollActiveDocument("bottom");
+        expect(barScrollTo).not.toHaveBeenCalled();
     });
 
-    it("没有 scroll.element 时使用 editor.protyle.contentElement", () => {
-        const contentEl = makeScrollElement(500);
+    it("绝不写入 scroll.element.scrollTop", () => {
+        const { bar } = makeOfficialScrollDom();
+        // Use a getter/setter spy to detect any writes to bar.scrollTop.
+        let barScrollTopValue = 0;
+        const scrollTopSpy = vi.fn((v: number) => { barScrollTopValue = v; });
+        Object.defineProperty(bar, "scrollTop", {
+            get: () => barScrollTopValue,
+            set: scrollTopSpy,
+            configurable: true,
+        });
         vi.mocked(getActiveEditor).mockReturnValue(
-            makeProtyleWrapper({ scrollEl: null, contentEl }) as never,
+            makeProtyleWrapper({ scrollBar: bar }) as never,
+        );
+        const bridge = new SiyuanActionBridge();
+        bridge.scrollActiveDocument("top");
+        bridge.scrollActiveDocument("bottom");
+        expect(scrollTopSpy).not.toHaveBeenCalled();
+    });
+
+    it("scrollTo 不可用时回退到 scrollTop 赋值（contentElement）", () => {
+        const bar = document.createElement("div");
+        const contentEl = document.createElement("div");
+        Object.defineProperty(contentEl, "scrollHeight", { value: 1500, configurable: true });
+        // No scrollTo function — only scrollTop
+        delete (contentEl as unknown as { scrollTo?: unknown }).scrollTo;
+        contentEl.scrollTop = 0;
+        vi.mocked(getActiveEditor).mockReturnValue(
+            makeProtyleWrapper({ scrollBar: bar, contentEl }) as never,
         );
         const bridge = new SiyuanActionBridge();
         const result = bridge.scrollActiveDocument("bottom");
         expect(result.status).toBe("executed");
-        expect(contentEl.scrollTo).toHaveBeenCalledWith({ top: 500, behavior: "auto" });
+        expect(contentEl.scrollTop).toBe(1500);
     });
 
-    it("只有旧的错误 editor.scroll 结构时不得被误认为正式 API", () => {
-        // Simulate the old wrong structure: scroll directly on editor
-        const scrollEl = makeScrollElement(1000);
-        const wrongEditor = { scroll: { element: scrollEl } };
-        vi.mocked(getActiveEditor).mockReturnValue(wrongEditor as never);
+    it("官方控件 click 抛错时安全回退到 contentElement", () => {
+        const { bar, up } = makeOfficialScrollDom();
+        expect(up).not.toBeNull();
+        // Make click throw
+        up!.click = vi.fn(() => { throw new Error("click failed"); });
+        const contentEl = makeContentElement(600);
+        vi.mocked(getActiveEditor).mockReturnValue(
+            makeProtyleWrapper({ scrollBar: bar, contentEl }) as never,
+        );
         const bridge = new SiyuanActionBridge();
         const result = bridge.scrollActiveDocument("top");
-        // Should NOT execute — the bridge now requires editor.protyle
+        // Should fall back to contentElement, not throw
+        expect(result.status).toBe("executed");
+        if (result.status === "executed") {
+            expect(result.method).toBe("content-fallback");
+        }
+        expect(contentEl.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+    });
+
+    // -------------------------------------------------- unavailable cases
+    it("没有活动编辑器时返回 unavailable", () => {
+        vi.mocked(getActiveEditor).mockReturnValue(null as never);
+        const bridge = new SiyuanActionBridge();
+        const result = bridge.scrollActiveDocument("top");
         expect(result.status).toBe("unavailable");
-        expect(scrollEl.scrollTo).not.toHaveBeenCalled();
     });
 
     it("没有 protyle 时返回 unavailable", () => {
@@ -125,31 +310,12 @@ describe("SiyuanActionBridge — scrollActiveDocument", () => {
         expect(result.status).toBe("unavailable");
     });
 
-    it("没有滚动元素时返回 unavailable", () => {
+    it("没有官方控件且没有 contentElement 时返回 unavailable", () => {
+        const bar = document.createElement("div");
+        // Bar with no parentElement → no official control
         vi.mocked(getActiveEditor).mockReturnValue(
-            makeProtyleWrapper({ scrollEl: null, contentEl: null }) as never,
+            makeProtyleWrapper({ scrollBar: bar, contentEl: null }) as never,
         );
-        const bridge = new SiyuanActionBridge();
-        const result = bridge.scrollActiveDocument("top");
-        expect(result.status).toBe("unavailable");
-    });
-
-    it("scrollTo 不存在时正确写入 scrollTop", () => {
-        const scrollEl = document.createElement("div");
-        Object.defineProperty(scrollEl, "scrollHeight", { value: 1500, configurable: true });
-        // No scrollTo function — only scrollTop
-        delete (scrollEl as unknown as { scrollTo?: unknown }).scrollTo;
-        vi.mocked(getActiveEditor).mockReturnValue(
-            makeProtyleWrapper({ scrollEl }) as never,
-        );
-        const bridge = new SiyuanActionBridge();
-        const result = bridge.scrollActiveDocument("bottom");
-        expect(result.status).toBe("executed");
-        expect(scrollEl.scrollTop).toBe(1500);
-    });
-
-    it("没有活动编辑器时返回 unavailable", () => {
-        vi.mocked(getActiveEditor).mockReturnValue(null as never);
         const bridge = new SiyuanActionBridge();
         const result = bridge.scrollActiveDocument("top");
         expect(result.status).toBe("unavailable");
@@ -163,11 +329,27 @@ describe("SiyuanActionBridge — scrollActiveDocument", () => {
     });
 
     it("调用 getActiveEditor 时明确使用当前活动窗口参数", () => {
-        const scrollEl = makeScrollElement(1000);
-        vi.mocked(getActiveEditor).mockReturnValue(makeProtyleWrapper({ scrollEl }) as never);
+        const { bar } = makeOfficialScrollDom();
+        vi.mocked(getActiveEditor).mockReturnValue(
+            makeProtyleWrapper({ scrollBar: bar }) as never,
+        );
         const bridge = new SiyuanActionBridge();
         bridge.scrollActiveDocument("top");
         expect(getActiveEditor).toHaveBeenCalledWith(true);
+    });
+
+    // ---------------------------------------------- backwards-compat guard
+    it("只有旧的错误 editor.scroll 结构时不得被误认为正式 API", () => {
+        // Simulate the old wrong structure: scroll directly on editor
+        // (no .protyle wrapper).  The bridge must reject this.
+        const scrollEl = document.createElement("div");
+        scrollEl.scrollTo = vi.fn();
+        const wrongEditor = { scroll: { element: scrollEl } };
+        vi.mocked(getActiveEditor).mockReturnValue(wrongEditor as never);
+        const bridge = new SiyuanActionBridge();
+        const result = bridge.scrollActiveDocument("top");
+        expect(result.status).toBe("unavailable");
+        expect(scrollEl.scrollTo).not.toHaveBeenCalled();
     });
 });
 

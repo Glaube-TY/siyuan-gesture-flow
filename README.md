@@ -11,7 +11,13 @@ GestureFlow is under active development. The following is **done**:
 - **Mouse input layer** — a PointerEvent-based adapter with a full state machine
   (IDLE → PENDING → TRACKING → COMPLETED/CANCELLED), pointer capture, capture-phase
   listeners, Alt-key suppression, Escape/blur/visibility/cancel handling, and button
-  release detection.
+  release detection.  Uses a **"capture first, replay later"** `contextmenu`
+  coordination model: every `contextmenu` that arrives while a right-click session is
+  active is intercepted on `window` (capture phase); if the session ends as a plain
+  click (PENDING), the event is replayed exactly once via a microtask so the normal
+  SiYuan menu appears; if a gesture forms (TRACKING) or is cancelled, the snapshot is
+  discarded and no menu appears.  Replayed events are marked with a `WeakSet` to
+  prevent recursive interception.
 - **Direction recognition pipeline** — uniform distance sampling → Ramer–Douglas–Peucker
   simplification → heading-based segmentation → 4/8-direction quantisation → adjacent
   duplicate merging. Supports smooth rounded corners without collapsing them into
@@ -34,8 +40,15 @@ GestureFlow is under active development. The following is **done**:
   per-direction / per-ID enable/disable.
 - **SiYuan action bridge** — `SiyuanActionBridge` centralises all SiYuan API
   access (no HTTP, no token).  Implements adjacent tab switching
-  (`getActiveTab` → `Wnd.switchTab`) and document scroll to top/bottom
-  (`getActiveEditor` → `editor.protyle.scroll.element`).
+  (`getActiveTab` → `Wnd.switchTab`) and document scroll to top/bottom.
+  Scrolling prefers reusing SiYuan's official `protyle-scroll__up` /
+  `protyle-scroll__down` buttons (which internally call `goHome` / `goEnd`
+  and handle dynamic block loading); if those are unavailable, it falls back
+  to setting `editor.protyle.contentElement.scrollTop`.  Note:
+  `editor.protyle.scroll.element` is the **block-index slider**
+  (`protyle-scroll__bar`), not a scroll container — the bridge never calls
+  `scrollTo` / `scrollTop` on it; it is used only to locate the official
+  scroll control via `parentElement`.
 - **Command dispatcher** — `GestureCommandDispatcher` validates session state,
   recognition result, and binding existence before executing the bound command
   exactly once per session.

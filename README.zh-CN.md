@@ -11,6 +11,11 @@ GestureFlow 正在开发中。以下功能**已完成**：
 - **鼠标输入层** — 基于 PointerEvent 的适配器，完整状态机
   (IDLE → PENDING → TRACKING → COMPLETED/CANCELLED)，支持 Pointer Capture、
   捕获阶段监听、Alt 临时禁用、Escape/blur/visibility/取消处理、按钮释放检测。
+  采用**"先截获、后决定"**的 `contextmenu` 协调模型：右键会话活动期间
+  （PENDING 或 TRACKING）收到的 `contextmenu` 一律在 `window` 捕获阶段截获；
+  若会话最终只是普通右键（PENDING 释放），则通过微任务重放一次，让思源菜单
+  正常出现；若形成手势（TRACKING）或被取消，则丢弃快照，不弹菜单。重放事件
+  使用 `WeakSet` 标记，避免递归拦截。
 - **方向识别管线** — 均匀距离采样 → Ramer–Douglas–Peucker 简化 →
   航向分段 → 4/8 方向量化 → 相邻同方向合并。支持平滑圆角转弯，
   不会将圆弧压缩成对角线。
@@ -27,8 +32,13 @@ GestureFlow 正在开发中。以下功能**已完成**：
 - **内存手势绑定** — `GestureBindingRegistry` 将方向序列映射到命令，
   支持 ID 唯一性、深拷贝不可变性、按方向 / 按 ID 启停。
 - **思源动作桥接** — `SiyuanActionBridge` 集中所有思源 API 访问（无 HTTP、无 Token）。
-  实现相邻标签页切换（`getActiveTab` → `Wnd.switchTab`）和文档滚动到顶部/底部
-  （`getActiveEditor` → `editor.protyle.scroll.element`）。
+  实现相邻标签页切换（`getActiveTab` → `Wnd.switchTab`）和文档滚动到顶部/底部。
+  滚动优先复用思源官方 `protyle-scroll__up` / `protyle-scroll__down` 按钮
+  （内部调用 `goHome` / `goEnd`，可处理动态加载文档）；若不可用，则回退到设置
+  `editor.protyle.contentElement.scrollTop`。注意：
+  `editor.protyle.scroll.element` 是**块索引滑杆**（`protyle-scroll__bar`），
+  不是滚动容器 — 桥接绝不对其调用 `scrollTo` / `scrollTop`，仅通过
+  `parentElement` 定位官方滚动控件。
 - **命令派发器** — `GestureCommandDispatcher` 在执行前验证会话状态、识别结果
   和绑定存在性，确保每个会话最多执行一次命令。
 

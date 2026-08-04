@@ -2,8 +2,9 @@ import { getActiveTab, getActiveEditor, Tab, Protyle } from "siyuan";
 
 /** Result of a scroll action. */
 export type ScrollResult =
-    | { status: "executed" }
-    | { status: "unavailable"; reason: string };
+    | { status: "executed"; method: "official-control" | "content-fallback" }
+    | { status: "unavailable"; reason: string }
+    | { status: "failed"; reason: string };
 
 /** Result of a tab-switch action. */
 export type SwitchTabResult =
@@ -28,10 +29,14 @@ export type SwitchTabResult =
  *   (types/protyle.d.ts, line 284).  **Not** the wrapper itself.
  * - `IProtyle.scroll?: Scroll` — scroll manager
  *   (types/protyle.d.ts, line 976).
- * - `Scroll.element: HTMLElement` — the scrolling HTMLElement
- *   (types/protyle.d.ts, line 45).
- * - `IProtyle.contentElement?: HTMLElement` — fallback scroll container
- *   (types/protyle.d.ts, line 982).
+ * - `Scroll.element: HTMLElement` — the `protyle-scroll__bar` element
+ *   (the block-index slider, **NOT** the document scroll container).
+ *   Confirmed by official source: `app/src/protyle/scroll/index.ts`.
+ * - `Scroll.parentElement` (private in type, but accessible at runtime) —
+ *   the `protyle-scroll` container that holds `__up`, `__bar`, `__down`.
+ * - `IProtyle.contentElement?: HTMLElement` — the **real** document scroll
+ *   container (types/protyle.d.ts, line 982).  Confirmed by official
+ *   source: `goHome` / `goEnd` set `protyle.contentElement.scrollTop`.
  * - `Tab.headElement: HTMLElement` — the tab header element
  *   (types/layout/Tab.d.ts, line 15).
  * - `Tab.parent: Wnd` — the owning window/split
@@ -42,18 +47,36 @@ export type SwitchTabResult =
  * - `Wnd.children: Tab[]` — all tabs in the same split
  *   (types/layout/Wnd.d.ts, line 11).
  *
- * The bridge never throws — it returns `unavailable` or `noop` when the
- * required elements are missing.  It never dispatches synthetic mouse
- * events, simulates keyboard shortcuts, or modifies SiYuan DOM.
+ * **Scroll strategy**: the bridge prefers reusing SiYuan's official
+ * `protyle-scroll__up` / `protyle-scroll__down` buttons (which internally
+ * call `goHome` / `goEnd` and handle dynamic block loading).  If those
+ * buttons are unavailable, it falls back to directly setting
+ * `contentElement.scrollTop`.
+ *
+ * The bridge never throws — it returns `unavailable`, `noop`, or `failed`
+ * when the required elements are missing or operations error.  It never
+ * dispatches synthetic mouse events (except `click()` on the official
+ * scroll buttons), simulates keyboard shortcuts, or modifies SiYuan DOM.
  */
 export class SiyuanActionBridge {
     /**
      * Scroll the active document to the top or bottom.
      *
      * Calls `getActiveEditor(true)` to obtain the **Protyle wrapper**,
-     * then accesses `editor.protyle.scroll.element` (falling back to
-     * `editor.protyle.contentElement`).  Uses native `element.scrollTo`
-     * / `scrollTop` assignment — no SiYuan HTTP API involved.
+     * then accesses `editor.protyle`.
+     *
+     * Priority:
+     * 1. **Official control**: if `protyle.scroll.element.parentElement`
+     *    contains `protyle-scroll__up` (for top) or `protyle-scroll__down`
+     *    (for bottom), call `click()` on that button.  This reuses SiYuan's
+     *    `goHome` / `goEnd` logic, which handles dynamic block loading.
+     * 2. **Content fallback**: set `protyle.contentElement.scrollTop` to
+     *    `0` (top) or `scrollHeight` (bottom) via `scrollTo` or direct
+     *    assignment.
+     *
+     * **Never** calls `scrollTo` / `scrollTop` on `scroll.element` — that
+     * element is the block-index slider (`protyle-scroll__bar`), not a
+     * scroll container.
      */
     scrollActiveDocument(target: "top" | "bottom"): ScrollResult {
         const editor = this.getActiveEditorSafe();
@@ -64,17 +87,34 @@ export class SiyuanActionBridge {
         if (!protyle) {
             return { status: "unavailable", reason: "editor has no protyle" };
         }
-        const scrollEl = this.getScrollElement(protyle);
-        if (!scrollEl) {
+
+        // --- Priority 1: official scroll control ---
+        const officialButton = this.findOfficialScrollButton(protyle, target);
+        if (officialButton) {
+            try {
+                officialButton.click();
+                return { status: "executed", method: "official-control" };
+            } catch {
+                // Button click failed — fall through to content fallback.
+            }
+        }
+
+        // --- Priority 2: contentElement fallback ---
+        const contentEl = protyle.contentElement;
+        if (!contentEl) {
             return { status: "unavailable", reason: "no scroll container" };
         }
-        const destination = target === "top" ? 0 : scrollEl.scrollHeight;
-        if (typeof scrollEl.scrollTo === "function") {
-            scrollEl.scrollTo({ top: destination, behavior: "auto" });
-        } else {
-            scrollEl.scrollTop = destination;
+        const destination = target === "top" ? 0 : contentEl.scrollHeight;
+        try {
+            if (typeof contentEl.scrollTo === "function") {
+                contentEl.scrollTo({ top: destination, behavior: "auto" });
+            } else {
+                contentEl.scrollTop = destination;
+            }
+            return { status: "executed", method: "content-fallback" };
+        } catch {
+            return { status: "failed", reason: "contentElement scroll failed" };
         }
-        return { status: "executed" };
     }
 
     /**
@@ -160,18 +200,46 @@ export class SiyuanActionBridge {
     }
 
     /**
-     * Resolve the scroll container from an IProtyle instance.
+     * Find the official SiYuan scroll button (`protyle-scroll__up` or
+     * `protyle-scroll__down`) for the given protyle.
      *
-     * Priority: `protyle.scroll.element` → `protyle.contentElement`.
+     * The official DOM structure (from `app/src/protyle/scroll/index.ts`):
      *
-     * @param protyle The IProtyle instance (obtained via `editor.protyle`).
+     * ```html
+     * <div class="protyle-scroll">
+     *   <div class="protyle-scroll__up">...</div>
+     *   <div class="protyle-scroll__bar">...</div>
+     *   <div class="protyle-scroll__down">...</div>
+     * </div>
+     * ```
+     *
+     * `protyle.scroll.element` is the `protyle-scroll__bar` element.
+     * Its `parentElement` is the `protyle-scroll` container, which also
+     * contains the `__up` and `__down` buttons.
+     *
+     * We scope the query to `scroll.element.parentElement` so we only
+     * find buttons in the **current** editor's scroll control — never
+     * buttons from other splits or windows.
+     *
+     * @param protyle The IProtyle instance.
+     * @param target "top" → find `__up`; "bottom" → find `__down`.
+     * @returns The button element, or `null` if not found.
      */
-    private getScrollElement(protyle: { scroll?: { element?: HTMLElement }; contentElement?: HTMLElement }): HTMLElement | null {
-        const scroll = protyle.scroll;
-        if (scroll?.element) {
-            return scroll.element;
+    private findOfficialScrollButton(
+        protyle: { scroll?: { element?: HTMLElement } },
+        target: "top" | "bottom",
+    ): HTMLElement | null {
+        const scrollEl = protyle.scroll?.element;
+        if (!scrollEl) {
+            return null;
         }
-        const content = protyle.contentElement;
-        return content ?? null;
+        const container = scrollEl.parentElement;
+        if (!container) {
+            return null;
+        }
+        const className = target === "top" ? "protyle-scroll__up" : "protyle-scroll__down";
+        // querySelector scoped to the container — never crosses into
+        // other editors.
+        return container.querySelector(`.${className}`);
     }
 }

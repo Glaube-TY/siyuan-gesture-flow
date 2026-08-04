@@ -1,5 +1,89 @@
 # Changelog
 
+## Stage 4 stabilization — contextmenu coordination and document scrolling fix
+
+### contextmenu coordination ("capture first, replay later")
+
+- **Problem**: the previous `contextmenu` suppression only took effect once a session
+  reached TRACKING.  In real SiYuan (Windows / Electron) the `contextmenu` event may
+  fire *before* the pointer has moved past the activation threshold (e.g.
+  `pointerdown → contextmenu → pointermove → pointerup`), so the menu appeared
+  mid-gesture and could not be retroactively hidden.
+- **New model**: `MouseGestureAdapter` now intercepts **every** `contextmenu` that
+  arrives while a right-click session is active (PENDING or TRACKING).  The listener
+  is registered on `window` in the **capture phase** so it runs before SiYuan's own
+  document/element handlers.
+  - Active session → `preventDefault` + `stopPropagation` + `stopImmediatePropagation`,
+    save a minimal snapshot (clientX/Y, screenX/Y, modifier keys, target).
+  - Session ends as plain right-click (PENDING, no gesture) → replay the snapshot
+    **exactly once** via a microtask so the normal SiYuan menu appears.  Replay target
+    resolution: original target → `document.elementFromPoint` → `document.body`.
+  - Session reaches TRACKING and completes or is cancelled → discard the snapshot;
+    no menu appears.
+  - Alt-suppressed right-clicks never create a session, so their `contextmenu` passes
+    through untouched.
+- **Recursion guard**: replayed events are marked with a private `WeakSet<Event>` so
+  the adapter does not re-intercept its own replay.  No double menu, no left-click
+  synthesis, no DOM menu hiding, no text-selection clearing.
+
+### Document scrolling fix
+
+- **Problem**: `scrollActiveDocument` used `editor.protyle.scroll.element` as the
+  scroll container.  That element is `protyle-scroll__bar` — the **block-index
+  slider**, not the document scroll container.  Setting its `scrollTop` had no effect
+  on the document, so U/D gestures showed a trail and command hint but never scrolled.
+- **Fix**:
+  - **Priority 1 — official control**: locate the current editor's
+    `protyle-scroll__up` / `protyle-scroll__down` button via
+    `editor.protyle.scroll.element.parentElement.querySelector(...)`, then call
+    `click()`.  This reuses SiYuan's `goHome` / `goEnd` logic, which handles dynamic
+    block loading for long documents.  The query is scoped to the current editor's
+    scroll control only — never crosses into other splits or windows.
+  - **Priority 2 — content fallback**: if the official buttons are unavailable (or
+    their `click()` throws), fall back to `editor.protyle.contentElement` — the real
+    document scroll container.  Top → `scrollTo({top: 0})`; bottom →
+    `scrollTo({top: scrollHeight})`.  Falls back to `scrollTop` assignment when
+    `scrollTo` is missing.
+  - `scroll.element` is **never** used as a scroll container — no `scrollTo`, no
+    `scrollTop` writes on it.  It is used only to locate the official scroll control
+    via `parentElement`.
+- **Result type**: `ScrollResult` now reports `method: "official-control" |
+  "content-fallback"` so callers (and dev-mode logs) can distinguish the path taken.
+
+### Testing
+
+- Rewrote `MouseGestureAdapter.test.ts` contextmenu scenarios (A–G + edge cases):
+  - A: contextmenu before move, gesture forms → intercepted, no replay, no menu.
+  - B: contextmenu before pointerup, plain right-click → replayed exactly once,
+    correct target / coords / modifiers, no recursive interception, no left-click.
+  - C: contextmenu after pointerup (natural order) → no early replay, passes through,
+    single menu.
+  - D: sub-threshold move with intercepted contextmenu → single replay on pointerup.
+  - E: Alt suppression → no session, contextmenu passes through.
+  - F: TRACKING + Escape / pointercancel / window-blur → cancelled, no replay.
+  - G: detach during PENDING with intercepted contextmenu → no residual snapshot /
+    replay task / listener.
+  - Edge: L-direction gesture fully suppresses menu; replay event not re-intercepted.
+- Rewrote `SiyuanActionBridge.test.ts` scroll fixtures to match the official DOM
+  structure: `scroll.element` is `protyle-scroll__bar` (no scrollTo/scrollTop),
+  `scroll.element.parentElement` is `protyle-scroll` containing `__up` / `__bar` /
+  `__down`; `contentElement` is the real scroll container.  Tests cover:
+  official-control click (top/bottom), no cross-split lookup, content-fallback
+  (top=0, bottom=scrollHeight), never call `scroll.element.scrollTo`,
+  never write `scroll.element.scrollTop`, `scrollTo`-missing fallback, official
+  click-throw safe fallback, unavailable cases (no editor / no protyle / no control
+  and no contentElement / `getActiveEditor` throws), `getActiveEditor(true)` arg,
+  old wrong `editor.scroll` structure rejected.
+
+### Documentation
+
+- `README.md` / `README.zh-CN.md`: corrected the bridge description — no longer
+  claims `editor.protyle.scroll.element` is the document scroll container; explains
+  it is the block-index slider, that `contentElement` is the direct scroll container,
+  and that the official `__up` / `__down` buttons reuse SiYuan's `goHome` / `goEnd`.
+- Added contextmenu coordination mechanism description to the mouse input layer
+  section.
+
 ## Stage 4 — Command registry, gesture bindings, and safe actions
 
 ### Command system
@@ -20,13 +104,15 @@
 
 - Added `SiyuanActionBridge` — centralises **all** SiYuan API/DOM access.  No HTTP,
   no token, no workspace paths.
-- **Scroll fix**: `scrollActiveDocument` now calls `getActiveEditor(true)` to obtain
-  the **Protyle wrapper**, then accesses `editor.protyle.scroll.element` (falling
-  back to `editor.protyle.contentElement`).  The previous implementation incorrectly
-  read `editor.scroll` / `editor.contentElement` directly from the wrapper, which
-  do not exist on the official `Protyle` type — scrolling was silently unavailable.
-  Scroll target for "top" is `0`; for "bottom" it is `scrollEl.scrollHeight`.
-  Falls back to `scrollTop` assignment when `scrollTo` is missing.
+- **Scroll fix (initial)**: `scrollActiveDocument` now calls `getActiveEditor(true)`
+  to obtain the **Protyle wrapper**, then accesses `editor.protyle`.  The previous
+  implementation incorrectly read `editor.scroll` / `editor.contentElement` directly
+  from the wrapper, which do not exist on the official `Protyle` type — scrolling was
+  silently unavailable.  *(Note: this initial version still treated
+  `editor.protyle.scroll.element` as the scroll container, which turned out to be
+  incorrect — see the "Stage 4 stabilization" section above for the corrected
+  approach using the official `protyle-scroll__up` / `__down` buttons and
+  `contentElement` fallback.)*
 - **Tab switching**: `switchAdjacentTab` uses `getActiveTab(true)` → `tab.parent`
   (Wnd) → `wnd.children` to find the current index, then
   `wnd.switchTab(targetTab.headElement, true)`.  The `pushBack=true` argument
