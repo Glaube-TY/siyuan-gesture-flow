@@ -16,11 +16,12 @@ GestureFlow 正在开发中。以下功能**已完成**：
   不会将圆弧压缩成对角线。
 - **识别结果校验** — 超过最大段数的手势标记为无效（而非截断），
   防止误匹配已绑定动作。
-- **自动化测试** — 105 个测试，覆盖识别管线和输入适配器。
+- **自动化测试** — 覆盖识别管线和输入适配器。
+- **Canvas 轨迹层** — 固定全视口 Canvas 实时绘制鼠标轨迹，DPR 自适应缩放，
+  提示元素显示当前方向序列（如 `R → D`），更新通过 `requestAnimationFrame` 合并。
 
 以下功能**尚未实现**：
 
-- Canvas 轨迹界面（可视化手势轨迹）
 - 动作注册表和思源具体动作（切换标签页、滚动、触发命令等）
 - 设置页面
 - 触控板 / 触摸输入
@@ -38,8 +39,13 @@ src/gesture/
     DirectionVectorizer.ts  航向分段 + 方向量化
     DirectionMatcher.ts     相邻同方向合并
     recognition.test.ts     管线测试
+  overlay/
+    GestureOverlay.ts       Canvas 轨迹 + 提示元素
+    overlay.test.ts         Overlay 测试
+    types.ts                Overlay 专用类型
   GestureEngine.ts         管线编排
   GestureSession.ts        单次手势状态 + 点累积
+  GestureFeedbackController.ts  RAF 合并 + 实时识别
   types.ts                 共享类型和枚举
 ```
 

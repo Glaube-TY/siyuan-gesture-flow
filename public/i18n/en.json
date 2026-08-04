@@ -1,5 +1,7 @@
 {
     "pluginName": "GestureFlow",
     "loadingPlugin": "Loading GestureFlow",
-    "unloadingPlugin": "Unloading GestureFlow"
+    "unloadingPlugin": "Unloading GestureFlow",
+    "gestureTooLong": "Gesture too long",
+    "gestureUnrecognised": "Unrecognised"
 }

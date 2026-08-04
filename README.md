@@ -18,11 +18,14 @@ GestureFlow is under active development. The following is **done**:
   diagonals.
 - **Recognition result validation** — gestures that exceed the maximum segment count are
   marked invalid (not truncated), preventing accidental action matches.
-- **Automated tests** — 105 tests covering the recognition pipeline and input adapter.
+- **Automated tests** — covers the recognition pipeline and input adapter.
+- **Canvas trajectory overlay** — a fixed full-viewport Canvas renders the live
+  mouse trail with DPR-aware scaling, plus a hint element showing the current
+  direction sequence (e.g. `R → D`).  Updates are coalesced via
+  `requestAnimationFrame`.
 
 The following is **not yet implemented**:
 
-- Canvas trajectory overlay (visual gesture trail)
 - Action registry and SiYuan-specific actions (tab switching, scrolling, commands, etc.)
 - Settings page
 - Touchpad / touch input support
@@ -40,8 +43,13 @@ src/gesture/
     DirectionVectorizer.ts  Heading segmentation + direction quantisation
     DirectionMatcher.ts     Adjacent-duplicate merging
     recognition.test.ts     Pipeline tests
+  overlay/
+    GestureOverlay.ts       Canvas trail + hint element
+    overlay.test.ts         Overlay tests
+    types.ts                Overlay-specific types
   GestureEngine.ts         Orchestrates the full pipeline
   GestureSession.ts        Per-gesture state + point accumulation
+  GestureFeedbackController.ts  RAF coalescing + live recognition
   types.ts                 Shared types and enums
 ```
 

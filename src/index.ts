@@ -3,18 +3,24 @@ import "./index.scss";
 import { MouseGestureAdapter } from "@/gesture/input/MouseGestureAdapter";
 import { DEFAULT_TRIGGER } from "@/gesture/types";
 import { GestureEngine } from "@/gesture/GestureEngine";
+import { GestureFeedbackController } from "@/gesture/GestureFeedbackController";
+import { GestureOverlay } from "@/gesture/overlay/GestureOverlay";
+import { OverlayI18n } from "@/gesture/overlay/types";
+
+/** Whether the plugin is running in development mode (concise debug logs). */
+const IS_DEV = process.env.DEV_MODE === "true" || process.env.NODE_ENV === "development";
 
 /**
  * GestureFlow plugin entry.
  *
- * Stage 2 wires the GestureEngine to the mouse gesture input layer. When a
- * gesture completes, the engine runs the full recognition pipeline
- * (sample → simplify → vectorize → match) and logs the resulting direction
- * sequence to the console. No actions are executed yet.
+ * Stage 3 wires the visual feedback layer (Canvas trail + hint) to the
+ * gesture input and recognition pipeline.  The {@link GestureFeedbackController}
+ * coalesces high-frequency pointer events into a single RAF-driven redraw
+ * and live recognition pass.
  */
 export default class GestureFlowPlugin extends Plugin {
     private adapter: MouseGestureAdapter | null = null;
-    private engine: GestureEngine | null = null;
+    private controller: GestureFeedbackController | null = null;
 
     onload(): void {
         console.log(`[${this.name}] loading`, this.i18n);
@@ -24,27 +30,41 @@ export default class GestureFlowPlugin extends Plugin {
             return; // non-DOM environment, nothing to attach
         }
 
-        this.engine = new GestureEngine();
+        const engine = new GestureEngine();
+
+        const overlayI18n: OverlayI18n = {
+            gestureTooLong: this.i18n?.gestureTooLong ?? "Gesture too long",
+            gestureUnrecognised: this.i18n?.gestureUnrecognised ?? "Unrecognised",
+        };
+
+        const overlay = new GestureOverlay(overlayI18n);
+        const controller = new GestureFeedbackController(engine, overlay);
+        this.controller = controller;
 
         this.adapter = new MouseGestureAdapter(DEFAULT_TRIGGER, {
             onStateChange: (session) => {
-                console.debug(`[${this.name}] state -> ${session.state}`, session.toJSON());
+                if (IS_DEV) {
+                    console.debug(`[${this.name}] state -> ${session.state}`);
+                }
+                controller.onStateChange(session);
+            },
+            onUpdate: (session) => {
+                controller.onUpdate(session);
             },
             onComplete: (session) => {
-                if (!this.engine) return;
-                const result = this.engine.recognize(session);
-                console.log(
-                    `[${this.name}] gesture complete: ${result.valid ? `[${result.directions.join(", ")}]` : `invalid (${result.invalidReason})`}`,
-                    { session: session.toJSON(), result },
-                );
+                controller.onComplete(session);
+                if (IS_DEV) {
+                    const result = engine.recognize(session);
+                    console.debug(
+                        `[${this.name}] gesture complete: ${result.valid ? `[${result.directions.join(", ")}]` : `invalid (${result.invalidReason})`}`,
+                    );
+                }
             },
             onCancel: (session) => {
-                if (!this.engine) return;
-                const result = this.engine.recognize(session);
-                console.log(
-                    `[${this.name}] gesture cancelled (${session.cancelReason}): ${result.valid ? `[${result.directions.join(", ")}]` : `invalid (${result.invalidReason})`}`,
-                    { session: session.toJSON(), result },
-                );
+                controller.onCancel(session);
+                if (IS_DEV) {
+                    console.debug(`[${this.name}] gesture cancelled (${session.cancelReason})`);
+                }
             },
         });
         this.adapter.attach(document);
@@ -53,7 +73,8 @@ export default class GestureFlowPlugin extends Plugin {
     onunload(): void {
         this.adapter?.detach();
         this.adapter = null;
-        this.engine = null;
+        this.controller?.destroy();
+        this.controller = null;
         console.log(`[${this.name}] unloading`);
     }
 }

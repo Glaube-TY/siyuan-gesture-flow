@@ -1,5 +1,7 @@
 {
     "pluginName": "手势流",
     "loadingPlugin": "正在加载手势流",
-    "unloadingPlugin": "正在卸载手势流"
+    "unloadingPlugin": "正在卸载手势流",
+    "gestureTooLong": "手势过长",
+    "gestureUnrecognised": "未识别"
 }
