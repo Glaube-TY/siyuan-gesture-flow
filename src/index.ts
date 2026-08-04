@@ -9,12 +9,13 @@ import { OverlayI18n } from "@/gesture/overlay/types";
 import { CommandRegistry } from "@/commands/CommandRegistry";
 import { CommandExecutor } from "@/commands/CommandExecutor";
 import { SiyuanActionBridge } from "@/commands/SiyuanActionBridge";
+import { GestureCommandDispatcher } from "@/commands/GestureCommandDispatcher";
 import { registerBuiltinCommands } from "@/commands/registerBuiltinCommands";
 import { GestureBindingRegistry } from "@/gesture/bindings/GestureBindingRegistry";
 import { DEFAULT_BINDINGS } from "@/gesture/bindings/defaultBindings";
 import { createCommandLabelResolver } from "@/gesture/bindings/CommandLabelResolver";
-import { buildCommandContext } from "@/commands/types";
-import { GestureState } from "@/gesture/types";
+import { GestureSession } from "@/gesture/GestureSession";
+import { RecognitionResult } from "@/gesture/GestureEngine";
 
 /** Whether the plugin is running in development mode (concise debug logs). */
 const IS_DEV = process.env.DEV_MODE === "true" || process.env.NODE_ENV === "development";
@@ -24,17 +25,28 @@ const IS_DEV = process.env.DEV_MODE === "true" || process.env.NODE_ENV === "deve
  *
  * Stage 4 wires the command registry, gesture bindings, and the
  * SiyuanActionBridge to the existing feedback controller.  When a
- * gesture completes, the bound command is executed exactly once.
+ * gesture completes, the bound command is executed exactly once via
+ * the {@link GestureCommandDispatcher}.
+ *
+ * Responsibilities kept in this file:
+ * - Instance creation and wiring.
+ * - Adapter → controller callback connection.
+ * - Concise development-only logging (sessionId, commandId, status).
+ * - Unload cleanup.
+ *
+ * All dispatch decisions live in {@link GestureCommandDispatcher}; this
+ * file does not inspect session state or recognition results directly.
  */
 export default class GestureFlowPlugin extends Plugin {
     private adapter: MouseGestureAdapter | null = null;
     private controller: GestureFeedbackController | null = null;
+    private dispatcher: GestureCommandDispatcher | null = null;
     private commandExecutor: CommandExecutor | null = null;
-    private bindingRegistry: GestureBindingRegistry | null = null;
 
     onload(): void {
-        console.log(`[${this.name}] loading`, this.i18n);
-        console.log(`frontend: ${getFrontend()}; backend: ${getBackend()}`);
+        if (IS_DEV) {
+            console.log(`[${this.name}] loading (frontend: ${getFrontend()}, backend: ${getBackend()})`);
+        }
 
         if (typeof document === "undefined") {
             return; // non-DOM environment, nothing to attach
@@ -52,7 +64,10 @@ export default class GestureFlowPlugin extends Plugin {
         // --- Gesture bindings ---
         const bindingRegistry = new GestureBindingRegistry(commandRegistry);
         bindingRegistry.registerMany(DEFAULT_BINDINGS);
-        this.bindingRegistry = bindingRegistry;
+
+        // --- Dispatcher (owns the dispatch decision tree) ---
+        const dispatcher = new GestureCommandDispatcher(bindingRegistry, commandExecutor);
+        this.dispatcher = dispatcher;
 
         // --- Feedback controller ---
         const engine = new GestureEngine();
@@ -73,7 +88,10 @@ export default class GestureFlowPlugin extends Plugin {
             overlay,
             commandLabelResolver,
             onGestureComplete: (session, result) => {
-                this.handleGestureComplete(session, result);
+                // Fire-and-forget — the dispatcher's promise never rejects
+                // (the executor converts all errors into `failed` results).
+                // Awaited only to log the outcome in dev mode.
+                void this.handleGestureComplete(session, result);
             },
         });
         this.controller = controller;
@@ -103,49 +121,31 @@ export default class GestureFlowPlugin extends Plugin {
     }
 
     /**
-     * Handle a completed gesture by executing the bound command.
+     * Handle a completed gesture by dispatching the bound command.
      *
-     * Execution conditions (all must be true):
-     * - session.state === COMPLETED
-     * - result.valid === true
-     * - result.invalidReason === null
-     * - result.directions non-empty
-     * - an enabled binding exists for the directions
-     * - the binding references a registered command
+     * Delegates all decision logic to {@link GestureCommandDispatcher}.
+     * This method only logs a concise outcome line in dev mode — it
+     * never prints session points, DOM, or full result objects.
      */
     private async handleGestureComplete(
-        session: { id: number; state: GestureState; points: { x: number; y: number; t: number }[]; durationMs: number | null },
-        result: { valid: boolean; invalidReason: string | null; directions: string[]; rawPointCount: number; sampledPointCount: number; simplifiedPointCount: number },
+        session: GestureSession,
+        result: RecognitionResult,
     ): Promise<void> {
-        // Guard: only execute for valid completed gestures.
-        if (session.state !== GestureState.COMPLETED) return;
-        if (!result.valid || result.invalidReason !== null) return;
-        if (result.directions.length === 0) return;
+        const dispatcher = this.dispatcher;
+        if (!dispatcher) return;
 
-        const bindingRegistry = this.bindingRegistry;
-        const commandExecutor = this.commandExecutor;
-        if (!bindingRegistry || !commandExecutor) return;
-
-        const resolved = bindingRegistry.resolve(result.directions as never);
-        if (!resolved) return;
-
-        const context = buildCommandContext(
-            session.id,
-            session.points,
-            result as never,
-            session.durationMs,
-        );
-
-        const execResult = await commandExecutor.execute(
-            resolved.command.id,
-            context,
-            resolved.binding.commandParams,
-        );
+        const dispatchResult = await dispatcher.dispatch(session, result);
 
         if (IS_DEV) {
-            console.debug(
-                `[${this.name}] session ${session.id} → ${resolved.command.id} → ${execResult.status}`,
-            );
+            if (dispatchResult.status === "executed") {
+                console.debug(
+                    `[${this.name}] session ${session.id} → ${dispatchResult.commandId} → ${dispatchResult.result.status}`,
+                );
+            } else {
+                console.debug(
+                    `[${this.name}] session ${session.id} skipped: ${dispatchResult.reason}`,
+                );
+            }
         }
     }
 
@@ -154,9 +154,11 @@ export default class GestureFlowPlugin extends Plugin {
         this.adapter = null;
         this.controller?.destroy();
         this.controller = null;
+        this.dispatcher = null;
         this.commandExecutor?.reset();
         this.commandExecutor = null;
-        this.bindingRegistry = null;
-        console.log(`[${this.name}] unloading`);
+        if (IS_DEV) {
+            console.log(`[${this.name}] unloading`);
+        }
     }
 }

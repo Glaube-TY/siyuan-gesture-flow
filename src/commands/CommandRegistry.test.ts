@@ -51,6 +51,42 @@ describe("CommandRegistry — 批量注册", () => {
         reg.registerMany([makeCmd("a.one"), makeCmd("a.two"), makeCmd("b.one")]);
         expect(reg.list().length).toBe(3);
     });
+
+    it("registerMany 原子性：批量中某项失败时不留下前面已注册的部分", () => {
+        const reg = new CommandRegistry();
+        const batch = [
+            makeCmd("a.one"),
+            makeCmd("a.two"),
+            makeCmd("a.one"), // duplicate id within batch
+        ];
+        expect(() => reg.registerMany(batch)).toThrow();
+        // None of the batch should be registered.
+        expect(reg.has("a.one")).toBe(false);
+        expect(reg.has("a.two")).toBe(false);
+    });
+
+    it("registerMany 原子性：与已注册命令冲突时不影响批量", () => {
+        const reg = new CommandRegistry();
+        reg.register(makeCmd("existing.cmd"));
+        const batch = [
+            makeCmd("new.one"),
+            makeCmd("existing.cmd"), // conflicts with already-registered
+        ];
+        expect(() => reg.registerMany(batch)).toThrow();
+        // new.one should not be registered (atomic failure).
+        expect(reg.has("new.one")).toBe(false);
+        expect(reg.has("existing.cmd")).toBe(true);
+    });
+
+    it("registerMany 原子性：空 ID 在批量中导致整批失败", () => {
+        const reg = new CommandRegistry();
+        const batch = [
+            makeCmd("valid.one"),
+            makeCmd(""), // empty id
+        ];
+        expect(() => reg.registerMany(batch)).toThrow();
+        expect(reg.has("valid.one")).toBe(false);
+    });
 });
 
 describe("CommandRegistry — 重复 ID", () => {

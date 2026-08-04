@@ -22,34 +22,57 @@ GestureFlow 正在开发中。以下功能**已完成**：
   PENDING 不可见、卸载清理）。
 - **Canvas 轨迹层** — 固定全视口 Canvas 实时绘制鼠标轨迹，DPR 自适应缩放，
   提示元素显示当前方向序列（如 `R → D`），更新通过 `requestAnimationFrame` 合并。
+- **命令注册表** — 类型化的 `CommandRegistry`，支持原子批量注册、分组元数据
+  和统一的 `CommandExecutionResult` 语义。
+- **内存手势绑定** — `GestureBindingRegistry` 将方向序列映射到命令，
+  支持 ID 唯一性、深拷贝不可变性、按方向 / 按 ID 启停。
+- **思源动作桥接** — `SiyuanActionBridge` 集中所有思源 API 访问（无 HTTP、无 Token）。
+  实现相邻标签页切换（`getActiveTab` → `Wnd.switchTab`）和文档滚动到顶部/底部
+  （`getActiveEditor` → `editor.protyle.scroll.element`）。
+- **命令派发器** — `GestureCommandDispatcher` 在执行前验证会话状态、识别结果
+  和绑定存在性，确保每个会话最多执行一次命令。
 
 以下功能**尚未实现**：
 
-- 动作注册表和思源具体动作（切换标签页、滚动、触发命令等）
 - 设置页面
+- 配置持久化
+- 破坏性动作（关闭标签页、删除文档、新建文档、定位文档树）
 - 触控板 / 触摸输入
 
 ## 架构
 
 ```
-src/gesture/
-  input/
-    InputAdapter.ts         抽象输入适配器基类
-    MouseGestureAdapter.ts  鼠标 PointerEvent 适配器
-  recognition/
-    PathSampler.ts          均匀弧长重采样
-    PathSimplifier.ts       RDP 简化 + 抖动/短段处理
-    DirectionVectorizer.ts  航向分段 + 方向量化
-    DirectionMatcher.ts     相邻同方向合并
-    recognition.test.ts     管线测试
-  overlay/
-    GestureOverlay.ts       Canvas 轨迹 + 提示元素
-    overlay.test.ts         Overlay 测试
-    types.ts                Overlay 专用类型
-  GestureEngine.ts         管线编排
-  GestureSession.ts        单次手势状态 + 点累积
-  GestureFeedbackController.ts  RAF 合并 + 实时识别
-  types.ts                 共享类型和枚举
+src/
+  commands/
+    CommandRegistry.ts          原子命令注册
+    CommandExecutor.ts          统一执行 + 去重 + 错误捕获
+    GestureCommandDispatcher.ts 会话 → 绑定 → 命令派发
+    SiyuanActionBridge.ts       所有思源 API/DOM 访问（标签页、滚动）
+    registerBuiltinCommands.ts  默认标签页/滚动命令
+    types.ts                    命令 / 上下文 / 结果类型
+  gesture/
+    input/
+      InputAdapter.ts           抽象输入适配器基类
+      MouseGestureAdapter.ts    鼠标 PointerEvent 适配器
+    recognition/
+      PathSampler.ts            均匀弧长重采样
+      PathSimplifier.ts         RDP 简化 + 抖动/短段处理
+      DirectionVectorizer.ts    航向分段 + 方向量化
+      DirectionMatcher.ts       相邻同方向合并
+      recognition.test.ts       管线测试
+    overlay/
+      GestureOverlay.ts         Canvas 轨迹 + 提示元素
+      overlay.test.ts           Overlay 测试
+      types.ts                  Overlay 专用类型
+    bindings/
+      GestureBindingRegistry.ts 方向 → 命令绑定（不可变，ID 索引）
+      defaultBindings.ts        L/R/U/D → tabs.previous/next, scroll.top/bottom
+      CommandLabelResolver.ts   为 Overlay 解析命令标签
+    GestureEngine.ts            管线编排
+    GestureSession.ts           单次手势状态 + 点累积
+    GestureFeedbackController.ts  RAF 合并 + 实时识别 + 异步回调
+    types.ts                    共享类型和枚举
+  index.ts                      插件入口 — 装配、开发日志、卸载清理
 ```
 
 ## 开发

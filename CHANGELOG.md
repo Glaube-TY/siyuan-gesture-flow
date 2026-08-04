@@ -1,5 +1,97 @@
 # Changelog
 
+## Stage 4 — Command registry, gesture bindings, and safe actions
+
+### Command system
+
+- Added `CommandRegistry` with atomic `registerMany` (two-phase validate-then-commit
+  so a duplicate id in the middle of a batch leaves nothing registered).
+- Added `CommandExecutor` with per-session de-duplication (bounded LRU set), uniform
+  `CommandExecutionResult` semantics, and try/catch that converts both sync throws
+  and async rejections into `failed` results — no unhandled promise rejections.
+- Added `GestureCommandDispatcher` — the single decision point between a completed
+  `GestureSession` + `RecognitionResult` and `CommandExecutor`.  Validates session
+  state (COMPLETED only), result validity (valid + non-empty directions + null
+  invalidReason), binding existence and enabled state before dispatching.  Re-uses
+  the same `RecognitionResult` produced by `GestureFeedbackController` — never
+  re-invokes `engine.recognize`.
+
+### SiYuan action bridge
+
+- Added `SiyuanActionBridge` — centralises **all** SiYuan API/DOM access.  No HTTP,
+  no token, no workspace paths.
+- **Scroll fix**: `scrollActiveDocument` now calls `getActiveEditor(true)` to obtain
+  the **Protyle wrapper**, then accesses `editor.protyle.scroll.element` (falling
+  back to `editor.protyle.contentElement`).  The previous implementation incorrectly
+  read `editor.scroll` / `editor.contentElement` directly from the wrapper, which
+  do not exist on the official `Protyle` type — scrolling was silently unavailable.
+  Scroll target for "top" is `0`; for "bottom" it is `scrollEl.scrollHeight`.
+  Falls back to `scrollTop` assignment when `scrollTo` is missing.
+- **Tab switching**: `switchAdjacentTab` uses `getActiveTab(true)` → `tab.parent`
+  (Wnd) → `wnd.children` to find the current index, then
+  `wnd.switchTab(targetTab.headElement, true)`.  The `pushBack=true` argument
+  matches the official SiYuan click handler, allowing history navigation back to
+  the previous tab.  No wrap-around (returns `noop` at edges); never crosses split
+  panes or windows.
+
+### Gesture bindings
+
+- Added `GestureBindingRegistry` — maps direction sequences to commands with:
+  - ID uniqueness (empty / whitespace-only ids rejected; duplicate ids rejected).
+  - Duplicate direction-sequence rejection.
+  - Dual index (by direction key and by id) backed by a single authoritative record.
+  - `setEnabled` / `setEnabledById` keep both indices consistent.
+  - Deep-copy immutability: `list()`, `resolve()`, and `getById()` return defensive
+    copies of `directions` and `commandParams`; external mutation cannot affect the
+    internal state.
+  - Atomic `registerMany` (validate-then-commit).
+- Default bindings: `L → tabs.previous`, `R → tabs.next`, `U → scroll.top`,
+  `D → scroll.bottom`.
+
+### Command context snapshot
+
+- `buildCommandContext` produces a fully isolated snapshot: `directions` array is
+  copied, every point is copied, `start` / `end` are independent objects (not
+  references into `session.points`).  `invalidReason` retains the precise
+  `InvalidReason` union type.  No live `GestureSession` reference, no DOM objects,
+  no event objects are retained.
+
+### Async callback error handling
+
+- `GestureFeedbackController.onGestureComplete` callback type now accepts
+  `void | Promise<void>`.  Sync throws and async rejections are both caught via
+  `try/catch` + `Promise.catch` and routed to an injectable `onCallbackError`
+  handler.  The overlay's final-frame feedback is shown immediately and never
+  blocks on command execution.  No unhandled promise rejections.
+
+### index.ts cleanup
+
+- Removed `as never` casts and hand-written pseudo-types from `handleGestureComplete`.
+  The method now receives the real `GestureSession` and `RecognitionResult` types.
+- Dev logging limited to `sessionId`, `commandId`, and `status` — no full i18n
+  objects, no DOM, no point arrays, no credentials.
+
+### Testing
+
+- Added `GestureCommandDispatcher.test.ts` (21 tests): happy path, de-duplication,
+  state guards (CANCELLED, TRACKING), result guards (invalid, empty, too-many-segments,
+  cancelled), binding guards (no binding, disabled), command-not-found, sync/async
+  commands, sync throw → failed, async reject → no unhandled rejection, context
+  snapshot isolation, strict direction matching (D-R / R-D).
+- Added `types.test.ts` (10 tests): CommandContext snapshot isolation for
+  directions, points, start/end, invalidReason type constraint.
+- Extended `GestureBindingRegistry.test.ts` (30 tests): ID management, immutability,
+  atomic registerMany.
+- Extended `SiyuanActionBridge.test.ts` (20 tests): real Protyle wrapper structure,
+  `editor.protyle.scroll.element` priority, `contentElement` fallback, old
+  `editor.scroll` structure not mistaken for the official API, no-protyle /
+  no-scroll-element / `scrollTo`-missing / `getActiveEditor`-throws cases,
+  `getActiveEditor(true)` / `getActiveTab(true)` called with current-window arg.
+- Extended `feedback.test.ts` (21 tests): onComplete reuses the same
+  RecognitionResult (no re-recognition), cancel does not trigger callback, duplicate
+  onComplete does not re-callback, async callback failure safely caught, sync
+  callback throw safely caught, overlay not blocked by command promise.
+
 ## Stage 3 — Gesture trail and live feedback
 
 ### Canvas trajectory overlay

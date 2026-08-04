@@ -21,7 +21,7 @@ export interface OverlayState {
     directions: Direction[];
     /** Visual status of the hint. */
     status: OverlayStatus;
-    /** Localised label for the bound command (future use, currently null). */
+    /** Localised label for the bound command, or null when no binding matches. */
     commandLabel: string | null;
 }
 

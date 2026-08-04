@@ -12,8 +12,24 @@ export interface FeedbackControllerOptions {
     overlay: GestureOverlay;
     /** Resolver for live command labels (null = no command labels). */
     commandLabelResolver?: CommandLabelResolver | null;
-    /** Optional callback invoked once per completed gesture. */
-    onGestureComplete?: (session: GestureSession, result: RecognitionResult) => void;
+    /**
+     * Optional callback invoked once per completed gesture.
+     *
+     * May be sync (returning `void`) or async (returning `Promise<void>`).
+     * The controller does **not** await the returned promise — the
+     * overlay's final-frame feedback is shown immediately and never
+     * blocks on command execution.  Rejections are caught internally so
+     * they never surface as unhandled promise rejections or break the
+     * feedback loop.
+     */
+    onGestureComplete?: (session: GestureSession, result: RecognitionResult) => void | Promise<void>;
+    /**
+     * Optional error handler invoked when the completion callback throws
+     * (sync) or rejects (async).  Defaults to a concise `console.error`.
+     * In production only a short label is logged; the error object is
+     * never serialised.
+     */
+    onCallbackError?: (err: unknown) => void;
 }
 
 /**
@@ -51,8 +67,9 @@ export class GestureFeedbackController {
     private readonly overlay: GestureOverlay;
     private readonly commandLabelResolver: CommandLabelResolver | null;
     private readonly onGestureComplete:
-        | ((session: GestureSession, result: RecognitionResult) => void)
+        | ((session: GestureSession, result: RecognitionResult) => void | Promise<void>)
         | null;
+    private readonly onCallbackError: (err: unknown) => void;
     private latestSession: GestureSession | null = null;
     private rafId: number | null = null;
     /** Tracks the last completed session id to prevent duplicate callbacks. */
@@ -63,6 +80,7 @@ export class GestureFeedbackController {
         this.overlay = opts.overlay;
         this.commandLabelResolver = opts.commandLabelResolver ?? null;
         this.onGestureComplete = opts.onGestureComplete ?? null;
+        this.onCallbackError = opts.onCallbackError ?? defaultCallbackErrorHandler;
     }
 
     // --------------------------------------------------------- adapter bridge
@@ -96,6 +114,13 @@ export class GestureFeedbackController {
      * The {@link onGestureComplete} callback (if provided) is invoked
      * exactly once per session id — duplicate `onComplete` calls for the
      * same session are silently ignored.
+     *
+     * The callback may be sync or async.  The controller does **not**
+     * await async callbacks — the overlay's final-frame feedback is
+     * shown immediately and never blocks on command execution.  Async
+     * rejections are caught via `Promise.resolve(...).catch(...)` so
+     * they never surface as unhandled promise rejections or break the
+     * feedback loop.
      */
     onComplete(session: GestureSession): RecognitionResult {
         this.latestSession = session;
@@ -105,6 +130,8 @@ export class GestureFeedbackController {
         }
         const result = this.engine.recognize(session);
         const state = this.buildState(session, result);
+        // Show the final frame immediately — command execution must not
+        // delay the visual feedback.
         this.overlay.showFinalThenHide(state);
         this.latestSession = null;
 
@@ -114,14 +141,7 @@ export class GestureFeedbackController {
         if (this.lastCompletedSessionId !== session.id) {
             this.lastCompletedSessionId = session.id;
             if (this.onGestureComplete) {
-                try {
-                    this.onGestureComplete(session, result);
-                } catch (err) {
-                    // Swallow callback errors so they don't break the
-                    // feedback loop.  The executor itself has its own
-                    // error handling.
-                    console.error("[GestureFlow] onGestureComplete callback threw", err);
-                }
+                this.invokeCompletionCallback(session, result);
             }
         }
 
@@ -198,4 +218,47 @@ export class GestureFeedbackController {
             commandLabel,
         };
     }
+
+    /**
+     * Invoke the completion callback, handling both sync and async
+     * rejections safely.
+     *
+     * - Synchronous throws are caught immediately.
+     * - Async rejections are caught via `Promise.resolve(...).catch(...)`.
+     *
+     * Either way, {@link onCallbackError} is invoked with the error so
+     * the caller can log it concisely.  The error is never re-thrown,
+     * so a failing callback cannot break the overlay or prevent
+     * subsequent gestures.
+     */
+    private invokeCompletionCallback(
+        session: GestureSession,
+        result: RecognitionResult,
+    ): void {
+        try {
+            const ret = this.onGestureComplete!(session, result);
+            // Promise.resolve wraps both `void` and `Promise<void>` —
+            // if the callback was sync, the promise is already resolved
+            // and `.catch` is a no-op.
+            if (ret && typeof (ret as Promise<void>).then === "function") {
+                (ret as Promise<void>).catch((err) => {
+                    this.onCallbackError(err);
+                });
+            }
+        } catch (err) {
+            // Synchronous throw — handle immediately.
+            this.onCallbackError(err);
+        }
+    }
+}
+
+/**
+ * Default error handler for the completion callback.
+ *
+ * Logs a short label without serialising the error object, so no
+ * internal structures or user data leak to the console in production.
+ */
+function defaultCallbackErrorHandler(err: unknown): void {
+    const label = err instanceof Error ? err.name : typeof err;
+    console.error(`[GestureFlow] onGestureComplete callback failed (${label})`);
 }

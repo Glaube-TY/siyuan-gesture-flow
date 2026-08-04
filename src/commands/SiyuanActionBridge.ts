@@ -17,23 +17,30 @@ export type SwitchTabResult =
  * **All** SiYuan DOM selectors and API calls are centralised here.  No
  * other module in the codebase may query SiYuan-specific selectors.
  *
- * API verification basis (node_modules/siyuan types):
+ * API verification basis (node_modules/siyuan types + official source):
  *
  * - `getActiveTab(wndActive?: boolean): Tab` — returns the active tab
- *   (siyuan.d.ts).
- * - `getActiveEditor(wndActive?: boolean): Protyle` — returns the active
- *   editor instance (siyuan.d.ts).
- * - `Tab.headElement: HTMLElement` — the tab header element passed to
- *   `Wnd.switchTab` (types/layout/Tab.d.ts).
- * - `Tab.parent: Wnd` — the owning window/split (types/layout/Tab.d.ts).
- * - `Wnd.switchTab(target: HTMLElement, ...): void` — switches to the
- *   tab whose head element is `target` (types/layout/Wnd.d.ts).
+ *   (siyuan.d.ts, line 315).  Default `wndActive=true`.
+ * - `getActiveEditor(wndActive?: boolean): Protyle` — returns the
+ *   **Protyle wrapper** instance (siyuan.d.ts, line 320).  Default
+ *   `wndActive=true`.
+ * - `Protyle.protyle: IProtyle` — the actual IProtyle instance
+ *   (types/protyle.d.ts, line 284).  **Not** the wrapper itself.
+ * - `IProtyle.scroll?: Scroll` — scroll manager
+ *   (types/protyle.d.ts, line 976).
+ * - `Scroll.element: HTMLElement` — the scrolling HTMLElement
+ *   (types/protyle.d.ts, line 45).
+ * - `IProtyle.contentElement?: HTMLElement` — fallback scroll container
+ *   (types/protyle.d.ts, line 982).
+ * - `Tab.headElement: HTMLElement` — the tab header element
+ *   (types/layout/Tab.d.ts, line 15).
+ * - `Tab.parent: Wnd` — the owning window/split
+ *   (types/layout/Tab.d.ts, line 13).
+ * - `Wnd.switchTab(target: HTMLElement, pushBack?: boolean, ...): void`
+ *   (types/layout/Wnd.d.ts, line 18).  Official source confirms that
+ *   user-initiated tab clicks pass `pushBack=true` (Wnd.ts click handler).
  * - `Wnd.children: Tab[]` — all tabs in the same split
- *   (types/layout/Wnd.d.ts).
- * - `Protyle.scroll?: Scroll` — scroll manager; `Scroll.element` is the
- *   scrolling HTMLElement (types/protyle.d.ts, line 44-58).
- * - `Protyle.contentElement?: HTMLElement` — fallback scroll container
- *   (types/protyle.d.ts).
+ *   (types/layout/Wnd.d.ts, line 11).
  *
  * The bridge never throws — it returns `unavailable` or `noop` when the
  * required elements are missing.  It never dispatches synthetic mouse
@@ -43,17 +50,21 @@ export class SiyuanActionBridge {
     /**
      * Scroll the active document to the top or bottom.
      *
-     * Uses `getActiveEditor()` to obtain the Protyle instance, then
-     * scrolls `protyle.scroll.element` (falling back to
-     * `protyle.contentElement`).  Uses native `element.scrollTo` /
-     * `scrollTop` assignment — no SiYuan HTTP API involved.
+     * Calls `getActiveEditor(true)` to obtain the **Protyle wrapper**,
+     * then accesses `editor.protyle.scroll.element` (falling back to
+     * `editor.protyle.contentElement`).  Uses native `element.scrollTo`
+     * / `scrollTop` assignment — no SiYuan HTTP API involved.
      */
     scrollActiveDocument(target: "top" | "bottom"): ScrollResult {
         const editor = this.getActiveEditorSafe();
         if (!editor) {
             return { status: "unavailable", reason: "no active editor" };
         }
-        const scrollEl = this.getScrollElement(editor);
+        const protyle = editor.protyle;
+        if (!protyle) {
+            return { status: "unavailable", reason: "editor has no protyle" };
+        }
+        const scrollEl = this.getScrollElement(protyle);
         if (!scrollEl) {
             return { status: "unavailable", reason: "no scroll container" };
         }
@@ -69,9 +80,13 @@ export class SiyuanActionBridge {
     /**
      * Switch to the adjacent tab in the same window split.
      *
-     * Uses `getActiveTab()` → `tab.parent` (Wnd) → `wnd.children` to
+     * Uses `getActiveTab(true)` → `tab.parent` (Wnd) → `wnd.children` to
      * find the current tab's index, then switches to the previous/next
-     * tab via `wnd.switchTab(targetTab.headElement)`.
+     * tab via `wnd.switchTab(targetTab.headElement, true)`.
+     *
+     * The `pushBack=true` argument matches the official SiYuan click
+     * handler behaviour, allowing the user to navigate back to the
+     * previous tab.
      *
      * - Does **not** wrap around: at the leftmost/rightmost tab returns
      *   `noop`.
@@ -104,14 +119,18 @@ export class SiyuanActionBridge {
         if (!targetTab || !targetTab.headElement) {
             return { status: "unavailable", reason: "target tab has no head element" };
         }
-        wnd.switchTab(targetTab.headElement);
+        // pushBack=true matches official user-click behaviour.
+        wnd.switchTab(targetTab.headElement, true);
         return { status: "executed" };
     }
 
     // --------------------------------------------------------------- internals
 
     /**
-     * Get the active editor, or null if unavailable.
+     * Get the active editor wrapper, or null if unavailable.
+     *
+     * Passes `wndActive=true` explicitly for clarity — this ensures we
+     * get the editor from the currently active window.
      *
      * Wrapped in try/catch because `getActiveEditor` may throw in
      * non-standard environments (e.g. during testing or if the layout
@@ -119,7 +138,7 @@ export class SiyuanActionBridge {
      */
     private getActiveEditorSafe(): Protyle | null {
         try {
-            const editor = getActiveEditor();
+            const editor = getActiveEditor(true);
             return editor ?? null;
         } catch {
             return null;
@@ -128,10 +147,12 @@ export class SiyuanActionBridge {
 
     /**
      * Get the active tab, or null if unavailable.
+     *
+     * Passes `wndActive=true` explicitly for clarity.
      */
     private getActiveTabSafe(): Tab | null {
         try {
-            const tab = getActiveTab();
+            const tab = getActiveTab(true);
             return tab ?? null;
         } catch {
             return null;
@@ -139,16 +160,18 @@ export class SiyuanActionBridge {
     }
 
     /**
-     * Resolve the scroll container for a Protyle editor.
+     * Resolve the scroll container from an IProtyle instance.
      *
      * Priority: `protyle.scroll.element` → `protyle.contentElement`.
+     *
+     * @param protyle The IProtyle instance (obtained via `editor.protyle`).
      */
-    private getScrollElement(editor: Protyle): HTMLElement | null {
-        const scroll = (editor as unknown as { scroll?: { element?: HTMLElement } }).scroll;
+    private getScrollElement(protyle: { scroll?: { element?: HTMLElement }; contentElement?: HTMLElement }): HTMLElement | null {
+        const scroll = protyle.scroll;
         if (scroll?.element) {
             return scroll.element;
         }
-        const content = (editor as unknown as { contentElement?: HTMLElement }).contentElement;
+        const content = protyle.contentElement;
         return content ?? null;
     }
 }

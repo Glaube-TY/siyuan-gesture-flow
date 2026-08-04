@@ -27,34 +27,60 @@ GestureFlow is under active development. The following is **done**:
   mouse trail with DPR-aware scaling, plus a hint element showing the current
   direction sequence (e.g. `R → D`).  Updates are coalesced via
   `requestAnimationFrame`.
+- **Command registry** — a typed `CommandRegistry` with atomic batch
+  registration, group metadata, and uniform `CommandExecutionResult` semantics.
+- **In-memory gesture bindings** — a `GestureBindingRegistry` maps direction
+  sequences to commands with ID uniqueness, deep-copy immutability, and
+  per-direction / per-ID enable/disable.
+- **SiYuan action bridge** — `SiyuanActionBridge` centralises all SiYuan API
+  access (no HTTP, no token).  Implements adjacent tab switching
+  (`getActiveTab` → `Wnd.switchTab`) and document scroll to top/bottom
+  (`getActiveEditor` → `editor.protyle.scroll.element`).
+- **Command dispatcher** — `GestureCommandDispatcher` validates session state,
+  recognition result, and binding existence before executing the bound command
+  exactly once per session.
 
 The following is **not yet implemented**:
 
-- Action registry and SiYuan-specific actions (tab switching, scrolling, commands, etc.)
 - Settings page
+- Configuration persistence
+- Destructive actions (close tab, delete doc, new doc, locate in doc tree)
 - Touchpad / touch input support
 
 ## Architecture
 
 ```
-src/gesture/
-  input/
-    InputAdapter.ts         Abstract base adapter
-    MouseGestureAdapter.ts  Mouse-specific PointerEvent adapter
-  recognition/
-    PathSampler.ts          Uniform arc-length resampling
-    PathSimplifier.ts       RDP simplification + jitter/short-segment removal
-    DirectionVectorizer.ts  Heading segmentation + direction quantisation
-    DirectionMatcher.ts     Adjacent-duplicate merging
-    recognition.test.ts     Pipeline tests
-  overlay/
-    GestureOverlay.ts       Canvas trail + hint element
-    overlay.test.ts         Overlay tests
-    types.ts                Overlay-specific types
-  GestureEngine.ts         Orchestrates the full pipeline
-  GestureSession.ts        Per-gesture state + point accumulation
-  GestureFeedbackController.ts  RAF coalescing + live recognition
-  types.ts                 Shared types and enums
+src/
+  commands/
+    CommandRegistry.ts          Atomic command registration
+    CommandExecutor.ts          Uniform execution + de-duplication + error containment
+    GestureCommandDispatcher.ts Session → binding → command dispatch
+    SiyuanActionBridge.ts       All SiYuan API/DOM access (tabs, scroll)
+    registerBuiltinCommands.ts  Default tab/scroll commands
+    types.ts                    Command / context / result types
+  gesture/
+    input/
+      InputAdapter.ts           Abstract base adapter
+      MouseGestureAdapter.ts    Mouse-specific PointerEvent adapter
+    recognition/
+      PathSampler.ts            Uniform arc-length resampling
+      PathSimplifier.ts         RDP simplification + jitter/short-segment removal
+      DirectionVectorizer.ts    Heading segmentation + direction quantisation
+      DirectionMatcher.ts       Adjacent-duplicate merging
+      recognition.test.ts       Pipeline tests
+    overlay/
+      GestureOverlay.ts         Canvas trail + hint element
+      overlay.test.ts           Overlay tests
+      types.ts                  Overlay-specific types
+    bindings/
+      GestureBindingRegistry.ts Direction → command bindings (immutable, ID-indexed)
+      defaultBindings.ts        L/R/U/D → tabs.previous/next, scroll.top/bottom
+      CommandLabelResolver.ts   Resolve command labels for overlay display
+    GestureEngine.ts            Orchestrates the full pipeline
+    GestureSession.ts           Per-gesture state + point accumulation
+    GestureFeedbackController.ts  RAF coalescing + live recognition + async callback
+    types.ts                    Shared types and enums
+  index.ts                      Plugin entry — wiring, dev logging, unload cleanup
 ```
 
 ## Development

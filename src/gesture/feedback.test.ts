@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { GestureFeedbackController } from "./GestureFeedbackController";
-import { GestureEngine } from "./GestureEngine";
+import { GestureEngine, RecognitionResult } from "./GestureEngine";
 import { GestureOverlay } from "./overlay/GestureOverlay";
 import { OverlayI18n } from "./overlay/types";
 import { GestureSession } from "./GestureSession";
@@ -367,6 +367,181 @@ describe("GestureFeedbackController — 定时器竞争", () => {
         expect(overlay.hintVisible).toBe(false);
         // No Canvas content should be visible (hint is hidden, trail cleared)
         // The Canvas element may exist but trail is cleared by hide()
+
+        controller.destroy();
+    });
+});
+
+// ============================================================ Stage 4 — command dispatch integration
+describe("GestureFeedbackController — 命令派发集成", () => {
+    it("onComplete 使用同一次 RecognitionResult（回调不再次调用 engine.recognize）", () => {
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const recognizeSpy = vi.spyOn(engine, "recognize");
+
+        let capturedResult: RecognitionResult | null = null;
+        let recognizeCallsDuringCallback = 0;
+        const controller = new GestureFeedbackController({
+            engine,
+            overlay,
+            onGestureComplete: (_session, result) => {
+                capturedResult = result;
+                // Count recognize calls made *inside* the callback.
+                recognizeCallsDuringCallback = recognizeSpy.mock.calls.length;
+            },
+        });
+
+        const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+        controller.onStateChange(session);
+        session.complete();
+
+        const callsBeforeComplete = recognizeSpy.mock.calls.length;
+        const returnedResult = controller.onComplete(session);
+        const callsAfterComplete = recognizeSpy.mock.calls.length;
+
+        // onComplete should have called recognize exactly once.
+        expect(callsAfterComplete - callsBeforeComplete).toBe(1);
+
+        // The callback should have received the *same* result object —
+        // no re-recognition occurred inside the callback.
+        expect(capturedResult).toBe(returnedResult);
+        expect(recognizeCallsDuringCallback).toBe(callsAfterComplete);
+
+        controller.destroy();
+    });
+
+    it("cancel 不触发完成回调", () => {
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const completeSpy = vi.fn();
+        const controller = new GestureFeedbackController({
+            engine,
+            overlay,
+            onGestureComplete: completeSpy,
+        });
+
+        const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]);
+        controller.onStateChange(session);
+        session.cancel("escape");
+        controller.onCancel(session);
+
+        expect(completeSpy).not.toHaveBeenCalled();
+        controller.destroy();
+    });
+
+    it("重复 onComplete 不重复回调", () => {
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const completeSpy = vi.fn();
+        const controller = new GestureFeedbackController({
+            engine,
+            overlay,
+            onGestureComplete: completeSpy,
+        });
+
+        const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+        controller.onStateChange(session);
+        session.complete();
+        controller.onComplete(session);
+        controller.onComplete(session);
+        controller.onComplete(session);
+
+        expect(completeSpy).toHaveBeenCalledTimes(1);
+        controller.destroy();
+    });
+
+    it("异步完成回调失败被安全捕获（不产生 unhandled rejection）", async () => {
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const errors: unknown[] = [];
+        const controller = new GestureFeedbackController({
+            engine,
+            overlay,
+            onGestureComplete: async () => {
+                throw new Error("async callback failure");
+            },
+            onCallbackError: (err) => {
+                errors.push(err);
+            },
+        });
+
+        const unhandled: unknown[] = [];
+        const rejectionHandler = (event: PromiseRejectionEvent) => {
+            unhandled.push(event.reason);
+        };
+        window.addEventListener("unhandledrejection", rejectionHandler);
+
+        try {
+            const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+            controller.onStateChange(session);
+            session.complete();
+            // onComplete should not throw — the async rejection is caught.
+            controller.onComplete(session);
+
+            // Wait for the microtask queue to flush.
+            await new Promise((r) => setTimeout(r, 20));
+
+            expect(errors.length).toBe(1);
+            expect(unhandled.length).toBe(0);
+        } finally {
+            window.removeEventListener("unhandledrejection", rejectionHandler);
+            controller.destroy();
+        }
+    });
+
+    it("同步完成回调抛错被安全捕获", () => {
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const errors: unknown[] = [];
+        const controller = new GestureFeedbackController({
+            engine,
+            overlay,
+            onGestureComplete: () => {
+                throw new Error("sync callback failure");
+            },
+            onCallbackError: (err) => {
+                errors.push(err);
+            },
+        });
+
+        const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+        controller.onStateChange(session);
+        session.complete();
+        // onComplete should not throw — the sync error is caught.
+        expect(() => controller.onComplete(session)).not.toThrow();
+        expect(errors.length).toBe(1);
+
+        controller.destroy();
+    });
+
+    it("Overlay 最终显示不受命令 Promise 完成速度影响", () => {
+        vi.useFakeTimers();
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const controller = new GestureFeedbackController({
+            engine,
+            overlay,
+            onGestureComplete: async () => {
+                // Simulate a slow command — but the overlay should already
+                // be showing the final result.
+                await new Promise((r) => setTimeout(r, 5000));
+            },
+        });
+
+        const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+        controller.onStateChange(session);
+        session.complete();
+        controller.onComplete(session);
+
+        // The overlay should be visible immediately after onComplete,
+        // without waiting for the async callback to resolve.
+        expect(overlay.hintVisible).toBe(true);
+
+        // Advance time — the hide timer should fire at 300ms, before
+        // the 5000ms command completes.  This proves the overlay is
+        // not blocked by the command.
+        vi.advanceTimersByTime(300);
+        expect(overlay.hintVisible).toBe(false);
 
         controller.destroy();
     });

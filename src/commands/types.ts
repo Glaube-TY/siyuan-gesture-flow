@@ -1,6 +1,6 @@
 import { Direction } from "@/gesture/recognition/DirectionVectorizer";
 import { RecognitionResult } from "@/gesture/GestureEngine";
-import { GesturePoint } from "@/gesture/types";
+import { GesturePoint, InvalidReason } from "@/gesture/types";
 
 /**
  * Read-only execution context passed to every command.
@@ -13,20 +13,20 @@ import { GesturePoint } from "@/gesture/types";
 export interface CommandContext {
     /** Unique session identifier (matches {@link GestureSession.id}). */
     readonly sessionId: number;
-    /** Final direction sequence of the completed gesture. */
+    /** Final direction sequence of the completed gesture (deep copy). */
     readonly directions: readonly Direction[];
-    /** Gesture start point (CSS px). */
+    /** Gesture start point (CSS px) — independent object, no shared reference. */
     readonly start: { readonly x: number; readonly y: number };
-    /** Gesture end point (CSS px). */
+    /** Gesture end point (CSS px) — independent object, no shared reference. */
     readonly end: { readonly x: number; readonly y: number };
-    /** Read-only copy of the raw gesture trail. */
-    readonly points: readonly { x: number; y: number }[];
+    /** Read-only deep copy of the raw gesture trail. */
+    readonly points: readonly { readonly x: number; readonly y: number }[];
     /** Gesture duration in milliseconds (null if not yet completed). */
     readonly durationMs: number | null;
     /** Key recognition metrics (no sensitive data). */
     readonly recognition: {
         readonly valid: boolean;
-        readonly invalidReason: string | null;
+        readonly invalidReason: InvalidReason | null;
         readonly rawPointCount: number;
         readonly sampledPointCount: number;
         readonly simplifiedPointCount: number;
@@ -40,19 +40,31 @@ export type CommandExecutionResult =
     | { status: "noop"; reason: string }
     | { status: "failed"; reason: string; error?: string };
 
-/** Build a CommandContext from a session and recognition result. */
+/**
+ * Build a CommandContext from a session's raw data and recognition result.
+ *
+ * All arrays and objects are **deep-copied** so the context is a fully
+ * independent snapshot — modifying the original session or result after
+ * building the context has no effect on the context.
+ */
 export function buildCommandContext(
     sessionId: number,
     points: readonly GesturePoint[],
     result: RecognitionResult,
     durationMs: number | null,
 ): CommandContext {
+    // Deep-copy trail points — each point is a fresh object.
     const trail = points.map((p) => ({ x: p.x, y: p.y }));
-    const start = trail[0] ?? { x: 0, y: 0 };
-    const end = trail[trail.length - 1] ?? start;
+    // start and end are independent objects (not aliases into trail).
+    const first = points[0];
+    const last = points[points.length - 1];
+    const start = first ? { x: first.x, y: first.y } : { x: 0, y: 0 };
+    const end = last ? { x: last.x, y: last.y } : { x: start.x, y: start.y };
     return {
         sessionId,
-        directions: result.directions,
+        // Deep-copy directions so external mutation of result.directions
+        // cannot affect the context.
+        directions: result.directions.slice(),
         start,
         end,
         points: trail,

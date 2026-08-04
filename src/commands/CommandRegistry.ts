@@ -29,12 +29,31 @@ export class CommandRegistry {
     }
 
     /**
-     * Register multiple commands at once.
+     * Register multiple commands atomically.
+     *
+     * The entire batch is validated before any command is committed.  If
+     * any command has an empty id, a duplicate id (either against the
+     * registry or within the batch), the registry is left unchanged —
+     * no partial registration occurs.
+     *
      * @throws if any command has an empty or duplicate id.
      */
     registerMany(commands: readonly CommandDefinition[]): void {
+        // Phase 1: validate the entire batch without mutating state.
+        const seen = new Set<string>();
         for (const cmd of commands) {
-            this.register(cmd);
+            if (!cmd.id || cmd.id.trim().length === 0) {
+                throw new Error("Command id must not be empty");
+            }
+            if (this.commands.has(cmd.id) || seen.has(cmd.id)) {
+                throw new Error(`Command already registered: ${cmd.id}`);
+            }
+            seen.add(cmd.id);
+        }
+
+        // Phase 2: commit — all validations passed.
+        for (const cmd of commands) {
+            this.commands.set(cmd.id, cmd);
         }
     }
 
