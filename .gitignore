@@ -9,3 +9,7 @@ dev
 dist
 build
 tmp
+.env
+.siyuan-api-token.local
+.siyuan-api-token.*
+.siyuan-dev-target.json
