@@ -1,112 +1,71 @@
 # Changelog
 
-## v0.3.5 2024-04-30
+## v0.1.0 — Stage 1-2 stabilization
 
-* [Add `direction` to plugin method `Setting.addItem`](https://github.com/siyuan-note/siyuan/issues/11183)
+### Input layer
 
+- Implemented `MouseGestureAdapter` with a full state machine
+  (IDLE → PENDING → TRACKING → COMPLETED/CANCELLED).
+- All pointer listeners use the **capture phase** so gestures are observed
+  before SiYuan's own handlers.
+- Added `lostpointercapture`, `window.blur`, `visibilitychange`, and Escape
+  cancellation paths.
+- Alt key temporarily disables gestures; non-mouse `pointerType` is ignored.
+- Trigger-button release detection via `buttons` mask.
+- Pointer Capture lifecycle managed correctly; idempotent `attach()`/`detach()`.
+- Adapter and Session use **config copies** to isolate active sessions from
+  external config mutations.
 
-## 0.3.4 2024-02-20
+### Recognition pipeline
 
-* [Add plugin event bus `click-flashcard-action`](https://github.com/siyuan-note/siyuan/issues/10318)
+- Replaced per-point local-angle simplification with **Ramer–Douglas–Peucker**
+  (RDP), preserving smooth arc shape instead of collapsing it into a diagonal.
+- Fixed `removeJitter` to only skip the jitter point B, keeping C for
+  re-evaluation — previous `i += 2` unconditionally discarded C.
+- Added `simplifyTolerance` config (default 2.8 px).
+- Pipeline: raw points → uniform sampling → RDP → jitter removal →
+  short-segment merging → heading segmentation → direction quantisation →
+  adjacent-duplicate merging.
+- Smooth rounded turns (R→D, R→U, L→D, L→U) now correctly recognised across
+  varying arc point counts (10–90), radii (30–100 px), speeds, and jitter.
 
-## 0.3.3 2024-01-24
+### Recognition result validation
 
-* Update dock icon class
+- `RecognitionResult` now carries `valid`, `invalidReason`, `rawDirections`,
+  and `directions`.
+- Gestures exceeding `maximumSegments` are **invalidated** (not truncated),
+  with `rawDirections` preserved for debugging and `directions` emptied.
+- `InvalidReason` is a strict union type: `too-short | too-many-segments |
+  cancelled | empty`.
+- Cancelled sessions produce `valid === false` with `invalidReason: "cancelled"`.
 
-## 0.3.2 2024-01-09
+### Testing
 
-* [Add plugin `protyleOptions`](https://github.com/siyuan-note/siyuan/issues/10090)
-* [Add plugin api `uninstall`](https://github.com/siyuan-note/siyuan/issues/10063)
-* [Add plugin method `updateCards`](https://github.com/siyuan-note/siyuan/issues/10065)
-* [Add plugin function `lockScreen`](https://github.com/siyuan-note/siyuan/issues/10063)
-* [Add plugin event bus `lock-screen`](https://github.com/siyuan-note/siyuan/pull/9967)
-* [Add plugin event bus `open-menu-inbox`](https://github.com/siyuan-note/siyuan/pull/9967)
+- 85 recognition-pipeline tests (straight lines, sharp folds, reversals,
+  short paths, smooth turns with varying density/radius/speed/jitter,
+  maximum-segments invalidation, cancelled sessions, empty/single-point paths).
+- 20 `MouseGestureAdapter` tests using `happy-dom` (basic state machine,
+  contextmenu suppression, all cancel paths, Alt suppression, pointerType
+  filter, pointerId filter, button-release detection, idempotent attach/detach,
+  timer cleanup, CANCELLED not executable).
 
+### Build & engineering
 
-## 0.3.1 2023-12-06
+- `emptyOutDir` set to `true` — stale `dist/` files removed on every build.
+- Removed non-existent `docs/*.md` glob from static copy and watch patterns.
+- Added `scripts/verify_build.js` — checks `dist/` and `package.zip` for
+  required files (index.js, plugin.json, icon.png, preview.png, i18n/*.json,
+  README*.md) and forbidden files (kernel.js, .env, .siyuan-dev-target.json,
+  template leftovers).
+- `.gitignore` no longer ignores `pnpm-lock.yaml`.
+- Added `packageManager: pnpm@10.14.0` to `package.json`.
+- TypeScript `strict: true` enabled.
+- CI workflow updated: pnpm 10, `--frozen-lockfile`, runs
+  `pnpm check → pnpm test → pnpm build → pnpm verify`.
 
-* [Support `Dock Plugin` and `Command Palette` on mobile](https://github.com/siyuan-note/siyuan/issues/9926)
+### Documentation & metadata
 
-## 0.3.0 2023-12-05
-
-* Upgrade Siyuan to 0.9.0
-* Support more platforms
-
-## 0.2.9 2023-11-28
-
-* [Add plugin method `openMobileFileById`](https://github.com/siyuan-note/siyuan/issues/9738)
-
-
-## 0.2.8 2023-11-15
-
-* [`resize` cannot be triggered after dragging to unpin the dock](https://github.com/siyuan-note/siyuan/issues/9640)
-
-## 0.2.7 2023-10-31
-
-* [Export `Constants` to plugin](https://github.com/siyuan-note/siyuan/issues/9555)
-* [Add plugin `app.appId`](https://github.com/siyuan-note/siyuan/issues/9538)
-* [Add plugin event bus `switch-protyle`](https://github.com/siyuan-note/siyuan/issues/9454)
-
-## 0.2.6 2023-10-24
-
-* [Deprecated `loaded-protyle` use `loaded-protyle-static` instead](https://github.com/siyuan-note/siyuan/issues/9468)
-
-## 0.2.5 2023-10-10
-
-* [Add plugin event bus `open-menu-doctree`](https://github.com/siyuan-note/siyuan/issues/9351)
-
-## 0.2.4 2023-09-19
-
-* Supports use in windows
-* [Add plugin function `transaction`](https://github.com/siyuan-note/siyuan/issues/9172)
-
-## 0.2.3 2023-09-05
-
-* [Add plugin function `transaction`](https://github.com/siyuan-note/siyuan/issues/9172)
-* [Plugin API add openWindow and command.globalCallback](https://github.com/siyuan-note/siyuan/issues/9032)
-
-## 0.2.2 2023-08-29
-
-* [Add plugin event bus `destroy-protyle`](https://github.com/siyuan-note/siyuan/issues/9033)
-* [Add plugin event bus `loaded-protyle-dynamic`](https://github.com/siyuan-note/siyuan/issues/9021)
-
-## 0.2.1 2023-08-21
-
-* [Plugin API add getOpenedTab method](https://github.com/siyuan-note/siyuan/issues/9002)
-* [Plugin API custom.fn => custom.id in openTab](https://github.com/siyuan-note/siyuan/issues/8944)
-
-## 0.2.0 2023-08-15
-
-* [Add plugin event bus `open-siyuan-url-plugin` and `open-siyuan-url-block`](https://github.com/siyuan-note/siyuan/pull/8927)
-
-
-## 0.1.12 2023-08-01
-
-* Upgrade siyuan to 0.7.9
-
-## 0.1.11
-
-* [Add `input-search` event bus to plugins](https://github.com/siyuan-note/siyuan/issues/8725)
-
-
-## 0.1.10
-
-* [Add `bind this` example for eventBus in plugins](https://github.com/siyuan-note/siyuan/issues/8668)
-* [Add `open-menu-breadcrumbmore` event bus to plugins](https://github.com/siyuan-note/siyuan/issues/8666)
-
-## 0.1.9
-
-* [Add `open-menu-xxx` event bus for plugins ](https://github.com/siyuan-note/siyuan/issues/8617)
-
-## 0.1.8
-
-* [Add protyleSlash to the plugin](https://github.com/siyuan-note/siyuan/issues/8599)
-* [Add plugin API protyle](https://github.com/siyuan-note/siyuan/issues/8445)
-
-## 0.1.7
-
-* [Support build js and json](https://github.com/siyuan-note/plugin-sample/pull/8)
-
-## 0.1.6
-
-* add `fetchPost` example
+- Rewrote `README.md` and `README.zh-CN.md` to reflect actual project state.
+- Updated `plugin.json` and `package.json` metadata (author, repository, URL).
+- No longer describes Kernel Plugin, symbolic-link deployment, or template
+  boilerplate.

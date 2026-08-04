@@ -6,20 +6,22 @@ import { Direction, Segment } from "./DirectionVectorizer";
  * Responsibilities:
  *
  * - Merge adjacent segments that share the same direction label.
- * - Enforce {@link maximumSegments}: sequences longer than the limit are
- *   truncated to the first N segments (compound gestures are never artificially
- *   capped to two directions).
+ * - Return the **full** merged sequence without truncation.  The caller
+ *   (GestureEngine) decides whether the sequence exceeds the maximum allowed
+ *   segments and, if so, marks the gesture as invalid rather than silently
+ *   truncating — a truncated sequence could accidentally match a bound action.
  *
  * Also provides {@link equals} for comparing two direction sequences, used
  * later by the binding system to detect which gesture was performed and to
  * flag duplicate bindings.
  */
 export class DirectionMatcher {
-    constructor(private readonly maximumSegments: number) {}
-
     /**
      * Reduce a list of (possibly noisy) segments into a clean direction
      * sequence with no adjacent duplicates.
+     *
+     * The returned array is the complete merged sequence; it is never
+     * truncated.
      */
     match(segments: Segment[]): Direction[] {
         if (segments.length === 0) return [];
@@ -30,10 +32,6 @@ export class DirectionMatcher {
             if (segments[i].direction !== prev) {
                 directions.push(segments[i].direction);
             }
-        }
-
-        if (directions.length > this.maximumSegments) {
-            return directions.slice(0, this.maximumSegments);
         }
         return directions;
     }

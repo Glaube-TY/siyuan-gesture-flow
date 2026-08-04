@@ -34,7 +34,7 @@ export default class GestureFlowPlugin extends Plugin {
                 if (!this.engine) return;
                 const result = this.engine.recognize(session);
                 console.log(
-                    `[${this.name}] gesture complete: [${result.directions.join(", ")}]`,
+                    `[${this.name}] gesture complete: ${result.valid ? `[${result.directions.join(", ")}]` : `invalid (${result.invalidReason})`}`,
                     { session: session.toJSON(), result },
                 );
             },
@@ -42,7 +42,7 @@ export default class GestureFlowPlugin extends Plugin {
                 if (!this.engine) return;
                 const result = this.engine.recognize(session);
                 console.log(
-                    `[${this.name}] gesture cancelled (${session.cancelReason}): [${result.directions.join(", ")}]`,
+                    `[${this.name}] gesture cancelled (${session.cancelReason}): ${result.valid ? `[${result.directions.join(", ")}]` : `invalid (${result.invalidReason})`}`,
                     { session: session.toJSON(), result },
                 );
             },

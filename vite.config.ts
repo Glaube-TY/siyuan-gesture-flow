@@ -40,7 +40,6 @@ export default defineConfig({
         viteStaticCopy({
             targets: [
                 { src: "./README*.md", dest: "./" },
-                { src: "./docs/*.md", dest: "./docs" },
                 { src: "./plugin.json", dest: "./" },
                 { src: "./preview.png", dest: "./" },
                 { src: "./icon.png", dest: "./" }
@@ -57,7 +56,7 @@ export default defineConfig({
 
     build: {
         outDir: outputDir,
-        emptyOutDir: false,
+        emptyOutDir: true,
         minify: true,
         sourcemap: isSrcmap ? "inline" : false,
 
@@ -72,7 +71,6 @@ export default defineConfig({
                 watchExternalFiles([
                     "public/i18n/**",
                     "./README*.md",
-                    "./docs/*.md",
                     "./plugin.json"
                 ])
             ] : [

@@ -28,7 +28,7 @@ export class GestureSession {
 
     constructor(trigger: GestureTriggerConfig) {
         this.id = nextSessionId++;
-        this.trigger = trigger;
+        this.trigger = { ...trigger };
         this.startTime = now();
     }
 

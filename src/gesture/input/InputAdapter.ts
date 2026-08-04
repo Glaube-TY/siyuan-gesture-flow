@@ -20,6 +20,9 @@ export interface GestureAdapterEvents {
  * into the common GestureSession state machine. Concrete adapters must attach
  * every listener in {@link attach} and remove every one of them in {@link detach}
  * so that the plugin can clean up fully on unload.
+ *
+ * The adapter stores a **copy** of the trigger configuration so that mutations
+ * to the original object after construction do not affect an active session.
  */
 export abstract class InputAdapter {
     protected readonly config: GestureTriggerConfig;
@@ -27,7 +30,9 @@ export abstract class InputAdapter {
     protected session: GestureSession | null = null;
 
     constructor(config: GestureTriggerConfig, events: GestureAdapterEvents) {
-        this.config = config;
+        // Shallow copy — all fields are primitives, so this is sufficient to
+        // isolate the adapter from external config mutations.
+        this.config = { ...config };
         this.events = events;
     }
 

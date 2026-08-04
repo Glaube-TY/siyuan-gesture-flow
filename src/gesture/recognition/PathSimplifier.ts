@@ -1,31 +1,39 @@
 import { SampledPoint } from "./PathSampler";
 
 /**
- * Removes too-short and jittery segments from a sampled path.
+ * Simplifies a sampled path using Ramer–Douglas–Peucker (RDP) and jitter
+ * removal.
  *
- * The simplifier works in three passes:
+ * Pipeline:
  *
- * 1. **Collinear removal** — points whose neighbours form a nearly straight
- *    line (turn angle below a small threshold) are dropped.  This reduces a
- *    dense uniform-sampled path to its corner points without losing any
- *    significant turn.
+ * 1. **RDP simplification** — reduces dense uniform-sampled points to their
+ *    corner points while preserving the overall shape within `tolerance`.
+ *    Unlike per-point local-angle removal (which collapses every small-turn
+ *    interior point and thereby flattens smooth arcs into diagonals), RDP
+ *    keeps the characteristic points of a curve because it measures the
+ *    perpendicular deviation from the chord, not the local turn angle.
  *
  * 2. **Jitter removal** — a small back-and-forth detour (A → B → C where
  *    B is a short reversal and C is close to A) is collapsed by skipping B.
+ *    C is retained and re-evaluated against A in the next iteration.
  *
  * 3. **Short-segment merging** — any remaining segment shorter than
- *    `minimumSegmentLength` is merged into its neighbour.
+ *    `minimumSegmentLength` is merged into its neighbour by dropping an
+ *    endpoint.
  *
  * The first and last points are always preserved so the overall extent of the
  * gesture is never lost.
  */
 export class PathSimplifier {
-    constructor(private readonly minimumSegmentLength: number) {}
+    constructor(
+        private readonly tolerance: number,
+        private readonly minimumSegmentLength: number,
+    ) {}
 
     simplify(points: SampledPoint[]): SampledPoint[] {
         if (points.length <= 2) return points.slice();
 
-        let result = this.removeCollinearPoints(points, 5);
+        let result = rdp(points, this.tolerance);
         result = this.removeJitter(result);
         result = this.mergeShortSegments(result);
         return result;
@@ -34,35 +42,12 @@ export class PathSimplifier {
     // ------------------------------------------------------------------ passes
 
     /**
-     * Remove interior points that are (nearly) collinear with their neighbours.
-     * A point is kept only when the turn angle at that point exceeds
-     * `angleThresholdDeg`.  The first and last points are always kept.
-     */
-    private removeCollinearPoints(
-        points: SampledPoint[],
-        angleThresholdDeg: number,
-    ): SampledPoint[] {
-        if (points.length <= 2) return points.slice();
-        const thresholdRad = (angleThresholdDeg * Math.PI) / 180;
-        const result: SampledPoint[] = [points[0]];
-
-        for (let i = 1; i < points.length - 1; i++) {
-            const a = points[i - 1];
-            const b = points[i];
-            const c = points[i + 1];
-            if (turnAngleRad(a, b, c) > thresholdRad) {
-                result.push(b);
-            }
-        }
-
-        result.push(points[points.length - 1]);
-        return result;
-    }
-
-    /**
      * Remove small back-and-forth detours: A → B → C where both A→B and B→C
      * are short and the turn at B is a near-reversal (> 90°), and the direct
      * path A→C is long enough to be meaningful.
+     *
+     * Only B is skipped; C is kept and re-examined against A in the next
+     * iteration so that legitimate subsequent turns are never lost.
      */
     private removeJitter(points: SampledPoint[]): SampledPoint[] {
         if (points.length <= 2) return points.slice();
@@ -82,8 +67,10 @@ export class PathSimplifier {
                     const acLen = distance(a, c);
                     const turn = turnAngleDeg(a, b, c);
                     if (acLen >= minLen && turn > 90) {
-                        // B is a short reversal detour — skip it.
-                        i += 2;
+                        // B is a short reversal detour — skip B only.
+                        // C will be reconsidered in the next iteration
+                        // against the same `a`.
+                        i += 1;
                         continue;
                     }
                 }
@@ -144,6 +131,81 @@ export class PathSimplifier {
     }
 }
 
+// ----------------------------------------------------------------- RDP
+
+/**
+ * Iterative Ramer–Douglas–Peucker simplification.
+ *
+ * Uses an explicit stack instead of recursion to avoid call-stack overflow
+ * on long gesture paths.  Returns a new array containing only the points
+ * whose perpendicular distance from the chord exceeds `tolerance` (plus the
+ * two endpoints, which are always kept).
+ */
+function rdp(points: SampledPoint[], tolerance: number): SampledPoint[] {
+    const n = points.length;
+    if (n <= 2) return points.slice();
+
+    const keep = new Array<boolean>(n).fill(false);
+    keep[0] = true;
+    keep[n - 1] = true;
+
+    const stack: Array<[number, number]> = [[0, n - 1]];
+    while (stack.length > 0) {
+        const [start, end] = stack.pop()!;
+        if (end - start < 2) continue;
+
+        const ax = points[start].x;
+        const ay = points[start].y;
+        const bx = points[end].x;
+        const by = points[end].y;
+
+        let dmax = 0;
+        let index = -1;
+        for (let i = start + 1; i < end; i++) {
+            const d = perpendicularDistance(points[i], ax, ay, bx, by);
+            if (d > dmax) {
+                dmax = d;
+                index = i;
+            }
+        }
+
+        if (dmax > tolerance && index !== -1) {
+            keep[index] = true;
+            stack.push([start, index]);
+            stack.push([index, end]);
+        }
+    }
+
+    const result: SampledPoint[] = [];
+    for (let i = 0; i < n; i++) {
+        if (keep[i]) result.push(points[i]);
+    }
+    return result;
+}
+
+/**
+ * Perpendicular distance from point `p` to the infinite line through
+ * `(ax, ay)` and `(bx, by)`.  When the two reference points coincide the
+ * ordinary Euclidean distance is returned instead.
+ */
+function perpendicularDistance(
+    p: SampledPoint,
+    ax: number,
+    ay: number,
+    bx: number,
+    by: number,
+): number {
+    const dx = bx - ax;
+    const dy = by - ay;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) {
+        const px = p.x - ax;
+        const py = p.y - ay;
+        return Math.sqrt(px * px + py * py);
+    }
+    return Math.abs(dy * p.x - dx * p.y + bx * ay - by * ax) / Math.sqrt(lenSq);
+}
+
 // ----------------------------------------------------------------- utilities
 
 function distance(a: SampledPoint, b: SampledPoint): number {
@@ -153,11 +215,10 @@ function distance(a: SampledPoint, b: SampledPoint): number {
 }
 
 /**
- * Turn angle at vertex B for the polyline A → B → C, in radians (0–π).
- * 0 = straight ahead (collinear, same direction), π = full reversal.
- * Computed from the incoming direction (A→B) and outgoing direction (B→C).
+ * Turn angle at vertex B for the polyline A → B → C, in degrees (0–180).
+ * 0 = straight ahead (collinear, same direction), 180 = full reversal.
  */
-function turnAngleRad(a: SampledPoint, b: SampledPoint, c: SampledPoint): number {
+function turnAngleDeg(a: SampledPoint, b: SampledPoint, c: SampledPoint): number {
     const v1x = b.x - a.x;
     const v1y = b.y - a.y;
     const v2x = c.x - b.x;
@@ -167,10 +228,5 @@ function turnAngleRad(a: SampledPoint, b: SampledPoint, c: SampledPoint): number
     const m2 = Math.sqrt(v2x * v2x + v2y * v2y);
     if (m1 === 0 || m2 === 0) return 0;
     const cos = Math.max(-1, Math.min(1, dot / (m1 * m2)));
-    return Math.acos(cos);
-}
-
-/** Same as {@link turnAngleRad} but returns degrees (0–180). */
-function turnAngleDeg(a: SampledPoint, b: SampledPoint, c: SampledPoint): number {
-    return (turnAngleRad(a, b, c) * 180) / Math.PI;
+    return (Math.acos(cos) * 180) / Math.PI;
 }

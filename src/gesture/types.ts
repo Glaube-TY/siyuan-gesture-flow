@@ -33,11 +33,21 @@ export interface GesturePoint {
 /** Reasons a gesture session ended in CANCELLED. */
 export type GestureCancelReason =
     | "pointercancel"
+    | "lostpointercapture"
     | "visibilitychange"
+    | "window-blur"
     | "escape"
     | "suppression-key"
     | "timeout"
-    | "manual";
+    | "manual"
+    | "button-released";
+
+/** Reasons a recognition result is marked invalid. */
+export type InvalidReason =
+    | "too-short"
+    | "too-many-segments"
+    | "cancelled"
+    | "empty";
 
 /** Modifier keys that can temporarily disable gestures while held. */
 export type SuppressionKey = "Alt" | "Control" | "Shift" | "Meta";

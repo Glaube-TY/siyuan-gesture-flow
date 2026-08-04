@@ -3,10 +3,11 @@
   "version": "0.1.0",
   "type": "module",
   "description": "鼠标手势插件 / Mouse gesture plugin for SiYuan",
-  "repository": "",
-  "homepage": "",
-  "author": "",
+  "repository": "https://github.com/Glaube-TY/siyuan-gesture-flow",
+  "homepage": "https://github.com/Glaube-TY/siyuan-gesture-flow",
+  "author": "Glaube-TY",
   "license": "MIT",
+  "packageManager": "pnpm@10.14.0",
   "scripts": {
     "dev": "cross-env NODE_ENV=development VITE_SOURCEMAP=inline vite build --watch",
     "build": "cross-env NODE_ENV=production vite build",
@@ -17,7 +18,8 @@
     "make-link": "node --no-warnings ./scripts/make_dev_link.js",
     "make-link-win": "pnpm dev:setup",
     "update-version": "node --no-warnings ./scripts/update_version.js",
-    "make-install": "pnpm run build && node --no-warnings ./scripts/make_install.js"
+    "make-install": "pnpm run build && node --no-warnings ./scripts/make_install.js",
+    "verify": "node --no-warnings ./scripts/verify_build.js"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^3.1.0",
@@ -26,6 +28,7 @@
     "cross-env": "^7.0.3",
     "fast-glob": "^3.2.12",
     "glob": "^10.0.0",
+    "happy-dom": "^20.11.1",
     "js-yaml": "^4.1.0",
     "minimist": "^1.2.8",
     "npm-run-all": "^4.1.5",
