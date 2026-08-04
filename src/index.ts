@@ -2,16 +2,19 @@ import { Plugin, getFrontend, getBackend } from "siyuan";
 import "./index.scss";
 import { MouseGestureAdapter } from "@/gesture/input/MouseGestureAdapter";
 import { DEFAULT_TRIGGER } from "@/gesture/types";
+import { GestureEngine } from "@/gesture/GestureEngine";
 
 /**
  * GestureFlow plugin entry.
  *
- * Stage 1 wires the mouse gesture input layer. The adapter drives the
- * IDLE -> PENDING -> TRACKING -> COMPLETED/CANCELLED state machine and only
- * logs the complete GestureSession to the console; no actions are executed yet.
+ * Stage 2 wires the GestureEngine to the mouse gesture input layer. When a
+ * gesture completes, the engine runs the full recognition pipeline
+ * (sample → simplify → vectorize → match) and logs the resulting direction
+ * sequence to the console. No actions are executed yet.
  */
 export default class GestureFlowPlugin extends Plugin {
     private adapter: MouseGestureAdapter | null = null;
+    private engine: GestureEngine | null = null;
 
     onload(): void {
         console.log(`[${this.name}] loading`, this.i18n);
@@ -21,15 +24,27 @@ export default class GestureFlowPlugin extends Plugin {
             return; // non-DOM environment, nothing to attach
         }
 
+        this.engine = new GestureEngine();
+
         this.adapter = new MouseGestureAdapter(DEFAULT_TRIGGER, {
             onStateChange: (session) => {
                 console.debug(`[${this.name}] state -> ${session.state}`, session.toJSON());
             },
             onComplete: (session) => {
-                console.log(`[${this.name}] gesture complete`, session);
+                if (!this.engine) return;
+                const result = this.engine.recognize(session);
+                console.log(
+                    `[${this.name}] gesture complete: [${result.directions.join(", ")}]`,
+                    { session: session.toJSON(), result },
+                );
             },
             onCancel: (session) => {
-                console.log(`[${this.name}] gesture cancelled (${session.cancelReason})`, session);
+                if (!this.engine) return;
+                const result = this.engine.recognize(session);
+                console.log(
+                    `[${this.name}] gesture cancelled (${session.cancelReason}): [${result.directions.join(", ")}]`,
+                    { session: session.toJSON(), result },
+                );
             },
         });
         this.adapter.attach(document);
@@ -38,6 +53,7 @@ export default class GestureFlowPlugin extends Plugin {
     onunload(): void {
         this.adapter?.detach();
         this.adapter = null;
+        this.engine = null;
         console.log(`[${this.name}] unloading`);
     }
 }
