@@ -20,12 +20,12 @@ jobs:
           node-version: 20
           registry-url: "https://registry.npmjs.org"
 
-      # Install pnpm 10
+      # Install pnpm (must match packageManager field exactly)
       - name: Install pnpm
         uses: pnpm/action-setup@v4
         id: pnpm-install
         with:
-          version: 10
+          version: 10.14.0
           run_install: false
 
       # Get pnpm store directory

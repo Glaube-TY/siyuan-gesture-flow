@@ -493,3 +493,115 @@ describe("MouseGestureAdapter — CANCELLED 不可执行", () => {
         expect(events.onComplete).not.toHaveBeenCalled();
     });
 });
+
+describe("MouseGestureAdapter — pointerup 终点记录", () => {
+    it("pointermove 在 x=20, pointerup 在 x=40 → 最后一点为 x=40", () => {
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2,
+            buttons: RIGHT_BUTTON_MASK,
+            clientX: 0,
+            clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK,
+            clientX: 20,
+            clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2,
+            buttons: 0,
+            clientX: 40,
+            clientY: 0,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+        const session = events.onComplete.mock.calls[0][0] as GestureSession;
+        const lastPoint = session.points[session.points.length - 1];
+        expect(lastPoint.x).toBe(40);
+    });
+
+    it("pointermove 和 pointerup 坐标相同时不重复添加", () => {
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2,
+            buttons: RIGHT_BUTTON_MASK,
+            clientX: 0,
+            clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK,
+            clientX: 40,
+            clientY: 0,
+        });
+        const beforeCount = (events.onUpdate.mock.calls[0]?.[0] as GestureSession | undefined)?.points.length;
+        dispatchPointer(target, "pointerup", {
+            button: 2,
+            buttons: 0,
+            clientX: 40,
+            clientY: 0,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+        const session = events.onComplete.mock.calls[0][0] as GestureSession;
+        // The last pointermove was at (40, 0), pointerup is also at (40, 0)
+        // → no duplicate point should be added.
+        if (beforeCount !== undefined) {
+            expect(session.points.length).toBe(beforeCount);
+        }
+        const lastPoint = session.points[session.points.length - 1];
+        expect(lastPoint.x).toBe(40);
+        expect(lastPoint.y).toBe(0);
+    });
+
+    it("快速完成最后一个方向段时 pointerup 终点参与识别", () => {
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2,
+            buttons: RIGHT_BUTTON_MASK,
+            clientX: 0,
+            clientY: 0,
+        });
+        // Move right past threshold
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK,
+            clientX: 30,
+            clientY: 0,
+        });
+        // pointerup at a significantly different position (x=80)
+        // This tests that the pointerup endpoint is recorded and extends
+        // the gesture path, ensuring the recognition pipeline sees the full
+        // extent of the movement.
+        dispatchPointer(target, "pointerup", {
+            button: 2,
+            buttons: 0,
+            clientX: 80,
+            clientY: 0,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+        const session = events.onComplete.mock.calls[0][0] as GestureSession;
+        const lastPoint = session.points[session.points.length - 1];
+        expect(lastPoint.x).toBe(80);
+    });
+
+    it("普通右键未达到阈值时不触发 onComplete", () => {
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2,
+            buttons: RIGHT_BUTTON_MASK,
+            clientX: 0,
+            clientY: 0,
+        });
+        // Small movement below threshold
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK,
+            clientX: 5,
+            clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2,
+            buttons: 0,
+            clientX: 8,
+            clientY: 0,
+        });
+        expect(events.onComplete).not.toHaveBeenCalled();
+    });
+});

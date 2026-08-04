@@ -4,11 +4,15 @@
  * Checks both the `dist` directory and `package.zip` for required and
  * forbidden files.  Exits with code 1 on any violation.
  *
+ * Uses `adm-zip` (pure JavaScript) to read ZIP entries — no dependency on
+ * system `tar`, `unzip`, or PowerShell, so it works identically on Windows,
+ * Linux, and GitHub Actions runners.
+ *
  * Usage:  node scripts/verify_build.js
  */
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import AdmZip from "adm-zip";
 
 const ROOT = process.cwd();
 const DIST_DIR = path.join(ROOT, "dist");
@@ -20,6 +24,7 @@ const REQUIRED_FILES = [
     "icon.png",
     "preview.png",
     "README.md",
+    "README.zh-CN.md",
 ];
 
 const REQUIRED_GLOBS = [
@@ -39,6 +44,13 @@ const FORBIDDEN_PATTERNS = [
     /^plugin-sample/i,
 ];
 
+// Patterns that indicate sensitive data leakage.
+const SENSITIVE_PATTERNS = [
+    /\.env$/,
+    /api-token/i,
+    /\.siyuan-dev-target\.json$/,
+];
+
 let errors = 0;
 
 function fail(msg) {
@@ -50,12 +62,10 @@ function ok(msg) {
     console.log(`  [OK]   ${msg}`);
 }
 
-function globMatches(dir, pattern) {
-    // Simple glob: convert to regex
-    const regex = new RegExp(
-        "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$"
+function globToRegex(pattern) {
+    return new RegExp(
+        "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$",
     );
-    return walkFiles(dir).some((f) => regex.test(f));
 }
 
 function walkFiles(dir, base = dir) {
@@ -76,7 +86,31 @@ function checkForbidden(name) {
     if (FORBIDDEN_FILES.includes(name)) {
         return true;
     }
-    return FORBIDDEN_PATTERNS.some((pat) => pat.test(name));
+    if (FORBIDDEN_PATTERNS.some((pat) => pat.test(name))) {
+        return true;
+    }
+    if (SENSITIVE_PATTERNS.some((pat) => pat.test(name))) {
+        return true;
+    }
+    return false;
+}
+
+/**
+ * Check for path-traversal attempts in ZIP entries (e.g. `../foo` or
+ * absolute paths like `/etc/passwd` or `C:\...`).
+ */
+function isPathTraversal(entry) {
+    // Normalise separators.
+    const normalised = entry.replace(/\\/g, "/");
+    // Absolute Unix path.
+    if (normalised.startsWith("/")) return true;
+    // Drive letter (Windows).
+    if (/^[a-zA-Z]:/.test(normalised)) return true;
+    // Parent-directory reference.
+    if (normalised.includes("../") || normalised === "..") return true;
+    // UNC path.
+    if (normalised.startsWith("//")) return true;
+    return false;
 }
 
 // --------------------------------------------------------------- dist
@@ -102,7 +136,8 @@ function verifyDist() {
 
     // Required globs
     for (const glob of REQUIRED_GLOBS) {
-        if (globMatches(DIST_DIR, glob)) {
+        const regex = globToRegex(glob);
+        if (allFiles.some((f) => regex.test(f))) {
             ok(`dist/${glob}`);
         } else {
             fail(`dist/${glob} — no matching file found`);
@@ -112,15 +147,7 @@ function verifyDist() {
     // Forbidden files
     for (const file of allFiles) {
         if (checkForbidden(file)) {
-            fail(`dist/${file} — forbidden file present`);
-        }
-    }
-
-    // Check for index.css (may or may not exist if no styles, but if it exists it's fine)
-    // Check no .siyuan-dev-target.json or dev tokens
-    for (const file of allFiles) {
-        if (file.endsWith(".siyuan-dev-target.json") || file.includes("api-token")) {
-            fail(`dist/${file} — sensitive file present`);
+            fail(`dist/${file} — forbidden or sensitive file present`);
         }
     }
 
@@ -136,23 +163,26 @@ function verifyZip() {
         return;
     }
 
-    // Use `tar -tf` to list ZIP contents (available on Windows 10+ and Linux).
-    let zipEntries;
+    let entries;
     try {
-        const output = execSync(
-            `tar -tf "${ZIP_PATH}"`,
-            { encoding: "utf8", maxBuffer: 1024 * 1024 },
-        );
-        zipEntries = output.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+        const zip = new AdmZip(ZIP_PATH);
+        entries = zip.getEntries().map((e) => e.entryName);
     } catch (e) {
         fail(`Failed to read package.zip: ${e.message}`);
         return;
     }
 
-    console.log(`  package.zip contains ${zipEntries.length} entries`);
+    console.log(`  package.zip contains ${entries.length} entries`);
 
-    // Normalize entries (strip leading ./ if present)
-    const normalized = zipEntries.map((e) => e.replace(/^\.\//, ""));
+    // Normalise entries (strip leading ./ if present).
+    const normalized = entries.map((e) => e.replace(/^\.\//, ""));
+
+    // Path-traversal check.
+    for (const entry of normalized) {
+        if (isPathTraversal(entry)) {
+            fail(`package.zip/${entry} — path-traversal entry detected`);
+        }
+    }
 
     // Required files
     for (const req of REQUIRED_FILES) {
@@ -164,18 +194,19 @@ function verifyZip() {
     }
 
     // Required globs
-    const i18nGlob = "i18n/*.json";
-    const i18nRegex = new RegExp("^" + i18nGlob.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$");
-    if (normalized.some((e) => i18nRegex.test(e))) {
-        ok("package.zip/i18n/*.json");
-    } else {
-        fail("package.zip/i18n/*.json — no matching file found");
+    for (const glob of REQUIRED_GLOBS) {
+        const regex = globToRegex(glob);
+        if (normalized.some((e) => regex.test(e))) {
+            ok(`package.zip/${glob}`);
+        } else {
+            fail(`package.zip/${glob} — no matching file found`);
+        }
     }
 
     // Forbidden files
     for (const entry of normalized) {
         if (checkForbidden(entry)) {
-            fail(`package.zip/${entry} — forbidden file present`);
+            fail(`package.zip/${entry} — forbidden or sensitive file present`);
         }
     }
 

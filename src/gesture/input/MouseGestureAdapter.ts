@@ -195,6 +195,14 @@ export class MouseGestureAdapter extends InputAdapter {
         }
 
         if (session.state === GestureState.TRACKING) {
+            // Record the pointerup position as the final point so the
+            // recognition pipeline sees the true end of the gesture.  If the
+            // pointerup lands at the same coordinates as the last pointermove,
+            // no duplicate is added.
+            const last = session.points[session.points.length - 1];
+            if (!last || last.x !== e.clientX || last.y !== e.clientY) {
+                session.addPoint(e.clientX, e.clientY, this.timestamp(e));
+            }
             session.complete();
             this.endGesture();
             this.events.onComplete?.(session);

@@ -98,64 +98,35 @@ export class GestureEngine {
 
         const isCancelled = session.state === GestureState.CANCELLED;
 
-        // --- Reject paths whose total arc length is too short to carry a
-        //     meaningful direction.
-        if (pathLength(simplified) < this.minimumSegmentLength) {
-            return {
-                valid: false,
-                invalidReason: "too-short",
-                directions: [],
-                rawDirections: [],
-                segments: [],
-                rawPointCount: rawPoints.length,
-                sampledPointCount: sampled.length,
-                simplifiedPointCount: simplified.length,
-                cancelled: isCancelled,
-                cancelReason: session.cancelReason,
-            };
+        // --- Run the full pipeline regardless of cancellation state so that
+        //     debugging data (rawDirections, segments, point counts) is always
+        //     available.  The "natural" invalid reason is computed first;
+        //     cancellation overrides it as the primary reason afterwards.
+        const pathTooShort = pathLength(simplified) < this.minimumSegmentLength;
+
+        let segments: Segment[] = [];
+        let rawDirections: Direction[] = [];
+
+        if (!pathTooShort) {
+            segments = this.vectorizer.vectorize(simplified);
+            rawDirections = this.matcher.match(segments);
         }
 
-        const segments = this.vectorizer.vectorize(simplified);
-        const rawDirections = this.matcher.match(segments);
-
-        // --- Empty direction sequence (e.g. single point after simplification).
-        if (rawDirections.length === 0) {
-            return {
-                valid: false,
-                invalidReason: "empty",
-                directions: [],
-                rawDirections: [],
-                segments,
-                rawPointCount: rawPoints.length,
-                sampledPointCount: sampled.length,
-                simplifiedPointCount: simplified.length,
-                cancelled: isCancelled,
-                cancelReason: session.cancelReason,
-            };
+        // Determine the "natural" invalid reason (before cancel override).
+        let naturalReason: InvalidReason | null;
+        if (pathTooShort) {
+            naturalReason = "too-short";
+        } else if (rawDirections.length === 0) {
+            naturalReason = "empty";
+        } else if (rawDirections.length > this.maximumSegments) {
+            naturalReason = "too-many-segments";
+        } else {
+            naturalReason = null;
         }
 
-        // --- Too many segments: the gesture is invalid.  Keep the full
-        //     rawDirections for debugging but do not produce an executable
-        //     direction sequence — a truncated sequence could accidentally
-        //     match a bound action.
-        if (rawDirections.length > this.maximumSegments) {
-            return {
-                valid: false,
-                invalidReason: "too-many-segments",
-                directions: [],
-                rawDirections,
-                segments,
-                rawPointCount: rawPoints.length,
-                sampledPointCount: sampled.length,
-                simplifiedPointCount: simplified.length,
-                cancelled: isCancelled,
-                cancelReason: session.cancelReason,
-            };
-        }
-
-        // --- Cancelled sessions: keep debugging info but mark as invalid.
-        //     The future action system must only accept valid === true and a
-        //     completed session.
+        // --- Cancelled sessions: override to "cancelled" as the primary
+        //     reason.  Short paths and too-many-segments are still computed
+        //     for debugging, but the main invalidReason must be "cancelled".
         if (isCancelled) {
             return {
                 valid: false,
@@ -168,6 +139,21 @@ export class GestureEngine {
                 simplifiedPointCount: simplified.length,
                 cancelled: true,
                 cancelReason: session.cancelReason,
+            };
+        }
+
+        if (naturalReason !== null) {
+            return {
+                valid: false,
+                invalidReason: naturalReason,
+                directions: [],
+                rawDirections,
+                segments,
+                rawPointCount: rawPoints.length,
+                sampledPointCount: sampled.length,
+                simplifiedPointCount: simplified.length,
+                cancelled: false,
+                cancelReason: null,
             };
         }
 

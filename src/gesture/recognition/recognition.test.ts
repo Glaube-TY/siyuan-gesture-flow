@@ -597,3 +597,271 @@ describe("DirectionMatcher", () => {
         expect(matcher.isEmpty(["R"])).toBe(false);
     });
 });
+
+// ----------------------------------------------------------- reversal tests
+
+describe("GestureEngine — 同直线反向手势保留", () => {
+    /**
+     * Build a reversal path along a single axis: go from `start` to `peak`,
+     * then reverse to `end`.  All three points are collinear, so standard
+     * RDP would delete the peak.
+     */
+    function buildReversalPath(
+        start: [number, number],
+        peak: [number, number],
+        end: [number, number],
+        step = 2,
+    ): GesturePoint[] {
+        return buildPath([start, peak, end], step);
+    }
+
+    /** Recognise a reversal gesture and return the direction sequence. */
+    function recognizeReversal(
+        start: [number, number],
+        peak: [number, number],
+        end: [number, number],
+        step = 2,
+    ): string[] {
+        const session = new GestureSession(DEFAULT_TRIGGER);
+        for (const p of buildReversalPath(start, peak, end, step)) {
+            session.addPoint(p.x, p.y, p.t);
+        }
+        session.activate();
+        session.complete();
+        return new GestureEngine().recognize(session).directions;
+    }
+
+    // --- basic unequal-length reversals (the core bug)
+
+    it("不等长 R-L: (0,0)→(200,0)→(80,0) → [R, L]", () => {
+        expect(recognizeReversal([0, 0], [200, 0], [80, 0])).toEqual(["R", "L"]);
+    });
+
+    it("不等长 L-R: (200,0)→(0,0)→(120,0) → [L, R]", () => {
+        expect(recognizeReversal([200, 0], [0, 0], [120, 0])).toEqual(["L", "R"]);
+    });
+
+    it("不等长 D-U: (0,0)→(0,200)→(0,80) → [D, U]", () => {
+        expect(recognizeReversal([0, 0], [0, 200], [0, 80])).toEqual(["D", "U"]);
+    });
+
+    it("不等长 U-D: (0,200)→(0,0)→(0,120) → [U, D]", () => {
+        expect(recognizeReversal([0, 200], [0, 0], [0, 120])).toEqual(["U", "D"]);
+    });
+
+    // --- triple reversals
+
+    it("R-L-R: (0,0)→(200,0)→(50,0)→(150,0) → [R, L, R]", () => {
+        const session = new GestureSession(DEFAULT_TRIGGER);
+        for (const p of buildPath([[0, 0], [200, 0], [50, 0], [150, 0]], 2)) {
+            session.addPoint(p.x, p.y, p.t);
+        }
+        session.activate();
+        session.complete();
+        expect(new GestureEngine().recognize(session).directions).toEqual(["R", "L", "R"]);
+    });
+
+    it("D-U-D: (0,0)→(0,200)→(0,50)→(0,150) → [D, U, D]", () => {
+        const session = new GestureSession(DEFAULT_TRIGGER);
+        for (const p of buildPath([[0, 0], [0, 200], [0, 50], [0, 150]], 2)) {
+            session.addPoint(p.x, p.y, p.t);
+        }
+        session.activate();
+        session.complete();
+        expect(new GestureEngine().recognize(session).directions).toEqual(["D", "U", "D"]);
+    });
+
+    // --- jitter around reversal point
+
+    it("反向点前后 2～5px 抖动仍正确识别 R-L", () => {
+        for (const amplitude of [2, 3, 5]) {
+            const path = buildReversalPath([0, 0], [200, 0], [80, 0]);
+            const jittered = addJitter(path, amplitude);
+            const session = new GestureSession(DEFAULT_TRIGGER);
+            for (const p of jittered) {
+                session.addPoint(p.x, p.y, p.t);
+            }
+            session.activate();
+            session.complete();
+            const result = new GestureEngine().recognize(session);
+            expect(result.valid).toBe(true);
+            expect(result.directions).toEqual(["R", "L"]);
+        }
+    });
+
+    // --- asymmetric distances from start/end
+
+    it("反向点距起点和终点不对称: (0,0)→(300,0)→(50,0) → [R, L]", () => {
+        expect(recognizeReversal([0, 0], [300, 0], [50, 0])).toEqual(["R", "L"]);
+    });
+
+    // ---不完全返回原点
+
+    it("不完全返回原点: (0,0)→(200,0)→(80,0) → [R, L] (终点非起点)", () => {
+        const result = recognizeReversal([0, 0], [200, 0], [80, 0]);
+        expect(result).toEqual(["R", "L"]);
+    });
+
+    // --- second segment length ratios: 30%, 60%, 120%
+
+    it("第二段为第一段 30%: (0,0)→(200,0)→(140,0) → [R, L]", () => {
+        // First segment 200px, second 60px (30% of 200)
+        expect(recognizeReversal([0, 0], [200, 0], [140, 0])).toEqual(["R", "L"]);
+    });
+
+    it("第二段为第一段 60%: (0,0)→(200,0)→(80,0) → [R, L]", () => {
+        // First segment 200px, second 120px (60% of 200)
+        expect(recognizeReversal([0, 0], [200, 0], [80, 0])).toEqual(["R", "L"]);
+    });
+
+    it("第二段为第一段 120%: (0,0)→(200,0)→(-40,0) → [R, L]", () => {
+        // First segment 200px, second 240px (120% of 200)
+        expect(recognizeReversal([0, 0], [200, 0], [-40, 0])).toEqual(["R", "L"]);
+    });
+
+    // --- total length below threshold → invalid
+
+    it("总长度不足阈值时仍判定无效", () => {
+        // Total arc length = 12 + 8 = 20px, but simplified path may be shorter.
+        // Use a path where the simplified length < minimumSegmentLength (18).
+        // First segment 10px, second 5px → total 15px < 18.
+        const session = new GestureSession(DEFAULT_TRIGGER);
+        for (const p of buildReversalPath([0, 0], [10, 0], [5, 0], 1)) {
+            session.addPoint(p.x, p.y, p.t);
+        }
+        session.activate();
+        session.complete();
+        const result = new GestureEngine().recognize(session);
+        expect(result.valid).toBe(false);
+        expect(result.directions).toEqual([]);
+    });
+
+    // --- smooth U-turn should NOT be just [R, L]
+
+    it("平滑 U 形转弯识别为多方向而非直接反向", () => {
+        // Semicircle U-turn: go right 100px, curve around (radius 40), come back left.
+        // Path: (0, 100) → (100, 100) → semicircle → (100, 100) → (0, 100)
+        // The semicircle goes from (100,100) up to (100,20) and back to (100,100).
+        // Actually, a proper U-turn: go right, curve up and around, come back left.
+        // Center of semicircle at (100, 60), radius 40.
+        // Start of arc: (100, 100), end of arc: (100, 20)... no.
+        //
+        // Let's do: right from (0,60) to (100,60), then semicircle above
+        // from (100,60) → (100,60) going through (140,60)→(140,20)→(100,20)→(60,20)→(60,60)→(100,60)
+        // That's a full circle, not a U-turn.
+        //
+        // Simpler: right from (0, 50) to (100, 50), then semicircle from
+        // (100, 50) curving up to (100, 50) on the other side... no.
+        //
+        // A U-turn: go right, curve 180°, come back left.
+        // (0, 50) → right → (100, 50) → arc (center at (100, 0), r=50) → (100, -50) → left → (0, -50)
+        // But negative y is off-screen. Let's use:
+        // (0, 100) → right → (100, 100) → arc (center at (100, 50), r=50, from bottom to top) → (100, 0) → left → (0, 0)
+        //
+        // Arc from (100,100) to (100,0) around center (100,50):
+        // start angle = atan2(100-50, 100-100) = atan2(50, 0) = π/2 (down)
+        // end angle = atan2(0-50, 100-100) = atan2(-50, 0) = -π/2 (up)
+        // Going clockwise (through x > 100): angle goes from π/2 to -π/2 via 0
+        const points: GesturePoint[] = [];
+        let t = 0;
+        // Straight right: (0,100) → (100,100)
+        for (let x = 0; x <= 100; x += 2) {
+            points.push({ x, y: 100, t });
+            t += 16;
+        }
+        // Semicircle: center (100, 50), radius 50, from angle π/2 to -π/2 via 0 (clockwise)
+        const cx = 100, cy = 50, r = 50;
+        const arcSteps = 60;
+        for (let i = 1; i <= arcSteps; i++) {
+            const f = i / arcSteps;
+            const angle = Math.PI / 2 - f * Math.PI; // π/2 → -π/2
+            points.push({
+                x: cx + Math.cos(angle) * r,
+                y: cy + Math.sin(angle) * r,
+                t,
+            });
+            t += 16;
+        }
+        // Straight left: (100, 0) → (0, 0)
+        for (let x = 100; x >= 0; x -= 2) {
+            points.push({ x, y: 0, t });
+            t += 16;
+        }
+
+        const session = new GestureSession(DEFAULT_TRIGGER);
+        for (const p of points) {
+            session.addPoint(p.x, p.y, p.t);
+        }
+        session.activate();
+        session.complete();
+        const result = new GestureEngine().recognize(session);
+        expect(result.valid).toBe(true);
+        // Should NOT be just [R, L] — the U-turn introduces D or U directions.
+        expect(result.directions).not.toEqual(["R", "L"]);
+        expect(result.directions.length).toBeGreaterThanOrEqual(3);
+    });
+
+    // --- existing symmetric reversals still work
+
+    it("对称 R-L (返回原点) 仍然通过", () => {
+        expect(recognizeReversal([0, 0], [200, 0], [0, 0])).toEqual(["R", "L"]);
+    });
+
+    it("对称 D-U (返回原点) 仍然通过", () => {
+        expect(recognizeReversal([0, 0], [0, 200], [0, 0])).toEqual(["D", "U"]);
+    });
+});
+
+// ----------------------------------------------------------- cancel semantics
+
+describe("GestureEngine — 取消状态统一语义", () => {
+    it("短路径取消: invalidReason 为 cancelled 而非 too-short", () => {
+        const engine = new GestureEngine();
+        const session = new GestureSession(DEFAULT_TRIGGER);
+        for (const p of buildPath([[0, 0], [5, 0]], 1)) {
+            session.addPoint(p.x, p.y, p.t);
+        }
+        session.activate();
+        session.cancel("escape");
+        const result = engine.recognize(session);
+        expect(result.valid).toBe(false);
+        expect(result.invalidReason).toBe("cancelled");
+        expect(result.directions).toEqual([]);
+        expect(result.cancelled).toBe(true);
+    });
+
+    it("正常路径取消: invalidReason 为 cancelled, rawDirections 非空", () => {
+        const engine = new GestureEngine();
+        const session = makeCancelledSession([[0, 0], [200, 0], [200, 200]], "escape");
+        const result = engine.recognize(session);
+        expect(result.valid).toBe(false);
+        expect(result.invalidReason).toBe("cancelled");
+        expect(result.directions).toEqual([]);
+        expect(result.rawDirections.length).toBeGreaterThan(0);
+        expect(result.cancelled).toBe(true);
+    });
+
+    it("超多段取消: invalidReason 为 cancelled 而非 too-many-segments", () => {
+        const engine = new GestureEngine({ ...DEFAULT_RECOGNIZER_CONFIG, maximumSegments: 3 });
+        const session = new GestureSession(DEFAULT_TRIGGER);
+        // 8-direction zigzag
+        for (const p of buildPath([
+            [0, 0], [100, 0], [100, 100],
+            [200, 100], [200, 0],
+            [300, 0], [300, 100],
+            [400, 100], [400, 0],
+            [500, 0],
+        ], 2)) {
+            session.addPoint(p.x, p.y, p.t);
+        }
+        session.activate();
+        session.cancel("escape");
+        const result = engine.recognize(session);
+        expect(result.valid).toBe(false);
+        expect(result.invalidReason).toBe("cancelled");
+        expect(result.directions).toEqual([]);
+        // rawDirections 保留完整序列用于调试
+        expect(result.rawDirections.length).toBeGreaterThan(3);
+        expect(result.cancelled).toBe(true);
+    });
+});
