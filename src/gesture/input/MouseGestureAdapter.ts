@@ -44,15 +44,22 @@ interface ContextmenuSnapshot {
  * hidden.
  *
  * The new model intercepts **every** `contextmenu` that arrives while a
- * right-click session is active (PENDING or TRACKING):
+ * right-click session is active (PENDING or TRACKING), **and** for a brief
+ * suppression window after a confirmed gesture ends:
  *
  * - If the session later reaches TRACKING and completes/cancels, the
- *   intercepted event is **discarded** — no menu is shown.
+ *   intercepted event is **discarded** and a post-gesture suppression window
+ *   is started — no menu is shown, even if the platform dispatches a trailing
+ *   `contextmenu` after `pointerup`.
  * - If the session ends in PENDING (plain right-click, no gesture), the
  *   intercepted event is **replayed** exactly once via a microtask, so the
  *   user sees the normal SiYuan context menu.
- * - If no session is active (Alt-suppressed, non-mouse, different button),
- *   the `contextmenu` passes through untouched.
+ * - If no session is active and no suppression window is open
+ *   (Alt-suppressed, non-mouse, different button, or idle), the
+ *   `contextmenu` passes through untouched.
+ * - The suppression window is short (~400 ms) and is terminated immediately
+ *   by a new `pointerdown`, so the next independent right-click is never
+ *   affected.
  *
  * Replayed events are marked with a private `WeakSet` so the adapter does
  * not re-intercept its own replay.
@@ -75,16 +82,28 @@ export class MouseGestureAdapter extends InputAdapter {
     private contextmenuSnapshot: ContextmenuSnapshot | null = null;
 
     /**
-     * Whether a contextmenu has been intercepted during the current session.
-     * Used to decide whether to replay on pointerup-PENDING.
+     * True once the session reached TRACKING.  Stays true until the next
+     * pointerdown.  Used to distinguish gesture cancellations (suppress menu)
+     * from plain-right-click cancellations (replay menu).
      */
-    private contextmenuIntercepted = false;
+    private gestureConfirmed = false;
 
     /**
-     * Pending replay task id (microtask sentinel).  Used only for cleanup
-     * tracking — the actual replay is scheduled via `queueMicrotask`.
+     * True for a brief window after a confirmed gesture ends.  Any
+     * `contextmenu` arriving during this window is intercepted and
+     * discarded — this catches the trailing `contextmenu` that some
+     * platforms (Windows / Electron) dispatch *after* `pointerup`, which
+     * would otherwise appear after a completed or cancelled gesture.
+     *
+     * The window is short ({@link POST_GESTURE_SUPPRESS_MS}) so it does
+     * not affect the next independent right-click.
      */
-    private replayPending = false;
+    private postGestureSuppress = false;
+
+    private postGestureSuppressTimer: ReturnType<typeof setTimeout> | null = null;
+
+    /** Duration of the post-gesture suppression window (ms). */
+    private static readonly POST_GESTURE_SUPPRESS_MS = 400;
 
     /**
      * WeakSet of events created by this adapter for replay.  The contextmenu
@@ -146,9 +165,10 @@ export class MouseGestureAdapter extends InputAdapter {
         this.clearTimeout();
         this.releaseCapture();
         // Clear any pending contextmenu state so unload leaves nothing behind.
+        this.clearPostGestureSuppressTimer();
+        this.postGestureSuppress = false;
+        this.gestureConfirmed = false;
         this.contextmenuSnapshot = null;
-        this.contextmenuIntercepted = false;
-        this.replayPending = false;
         this.attached = false;
         this.target = null;
     }
@@ -174,9 +194,13 @@ export class MouseGestureAdapter extends InputAdapter {
 
         const session = new GestureSession(this.config);
         this.session = session;
-        this.contextmenuIntercepted = false;
+        // Reset menu coordination state for a new interaction.  This also
+        // terminates any stale post-gesture suppression from a previous
+        // gesture so it cannot shield the new right-click.
+        this.clearPostGestureSuppressTimer();
+        this.postGestureSuppress = false;
+        this.gestureConfirmed = false;
         this.contextmenuSnapshot = null;
-        this.replayPending = false;
         this.pointerId = e.pointerId;
         session.addPoint(e.clientX, e.clientY, this.timestamp(e));
         this.capture(e);
@@ -216,6 +240,10 @@ export class MouseGestureAdapter extends InputAdapter {
             const threshold = this.config.activationDistance;
             if (dx * dx + dy * dy >= threshold * threshold) {
                 session.activate();
+                // From this moment on, the interaction is a confirmed gesture.
+                // Any contextmenu for this right-click must be discarded,
+                // regardless of the final direction or command.
+                this.gestureConfirmed = true;
                 this.events.onStateChange?.(session);
             }
         }
@@ -247,19 +275,21 @@ export class MouseGestureAdapter extends InputAdapter {
                 session.addPoint(e.clientX, e.clientY, this.timestamp(e));
             }
             session.complete();
-            // Gesture completed — discard any intercepted contextmenu.
-            // No menu should appear after a gesture.
+            // Gesture completed — discard any intercepted contextmenu and
+            // enter a brief suppression window to catch trailing contextmenu
+            // events that some platforms dispatch after pointerup.
             this.discardContextmenu();
+            this.enterPostGestureSuppress();
             this.endGesture();
             this.events.onComplete?.(session);
         } else {
             // PENDING: released without enough movement → no gesture.
             // If we intercepted a contextmenu, replay it so the user gets
-            // the normal right-click menu.
+            // the normal right-click menu.  If no contextmenu was intercepted,
+            // the natural contextmenu (if any) will pass through untouched.
             const snapshot = this.contextmenuSnapshot;
-            const wasIntercepted = this.contextmenuIntercepted;
             this.reset();
-            if (wasIntercepted && snapshot) {
+            if (snapshot) {
                 this.scheduleContextmenuReplay(snapshot);
             }
         }
@@ -299,8 +329,22 @@ export class MouseGestureAdapter extends InputAdapter {
      * If no session is active, let the event pass through untouched.
      */
     private handleContextMenu(e: Event): void {
-        // Don't intercept our own replayed events.
+        // Always let our own replayed events through (recursion guard).
         if (MouseGestureAdapter.replayMarkers.has(e)) {
+            return;
+        }
+
+        // Post-gesture suppression: a confirmed gesture just ended.  Eat the
+        // trailing contextmenu that some platforms dispatch after pointerup.
+        // This is direction- and command-agnostic — it applies to ALL
+        // confirmed gestures (U, D, L, R, compounds, cancelled, etc.).
+        if (this.postGestureSuppress) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            // Ate the expected trailing menu — clear suppression early.
+            this.clearPostGestureSuppressTimer();
+            this.postGestureSuppress = false;
             return;
         }
 
@@ -312,11 +356,11 @@ export class MouseGestureAdapter extends InputAdapter {
         // Active session (PENDING or TRACKING) — intercept the contextmenu.
         e.preventDefault();
         e.stopPropagation();
-        // stopImmediatePropagation ensures SiYuan's own capture-phase
-        // listeners (if any are on the same target) do not also run.
         e.stopImmediatePropagation();
 
-        // Save a snapshot for potential replay.
+        // Save a snapshot for potential replay (only useful in PENDING;
+        // if the session is already TRACKING the snapshot will be
+        // discarded when the gesture completes/cancels).
         const me = e as MouseEvent;
         this.contextmenuSnapshot = {
             clientX: me.clientX,
@@ -329,7 +373,6 @@ export class MouseGestureAdapter extends InputAdapter {
             metaKey: me.metaKey,
             target: me.target,
         };
-        this.contextmenuIntercepted = true;
     }
 
     private handleVisibilityChange(): void {
@@ -462,9 +505,25 @@ export class MouseGestureAdapter extends InputAdapter {
             return;
         }
         session.cancel(reason);
-        // Cancelled gestures must not show a menu — discard any intercepted
-        // contextmenu.
-        this.discardContextmenu();
+
+        if (reason === "manual") {
+            // Detach — full cleanup, no protection needed.
+            this.discardContextmenu();
+        } else if (this.gestureConfirmed) {
+            // Gesture was confirmed (TRACKING reached) — suppress the
+            // trailing menu, just like a completed gesture.
+            this.discardContextmenu();
+            this.enterPostGestureSuppress();
+        } else {
+            // PENDING cancel — no gesture was formed.  If we intercepted a
+            // contextmenu, replay it so the user gets the normal menu.
+            const snapshot = this.contextmenuSnapshot;
+            this.discardContextmenu();
+            if (snapshot) {
+                this.scheduleContextmenuReplay(snapshot);
+            }
+        }
+
         this.endGesture();
         this.events.onCancel?.(session);
     }
@@ -475,7 +534,34 @@ export class MouseGestureAdapter extends InputAdapter {
      */
     private discardContextmenu(): void {
         this.contextmenuSnapshot = null;
-        this.contextmenuIntercepted = false;
+    }
+
+    /**
+     * Enter the post-gesture suppression window.  Any `contextmenu` arriving
+     * during this window is intercepted and discarded.  This catches the
+     * trailing `contextmenu` that some platforms (Windows / Electron)
+     * dispatch after `pointerup`, which would otherwise appear after a
+     * completed or cancelled gesture.
+     *
+     * The window is short ({@link POST_GESTURE_SUPPRESS_MS}) so it does not
+     * affect the next independent right-click.  A new `pointerdown` also
+     * terminates the suppression immediately.
+     */
+    private enterPostGestureSuppress(): void {
+        this.clearPostGestureSuppressTimer();
+        this.postGestureSuppress = true;
+        const self = this;
+        this.postGestureSuppressTimer = setTimeout(() => {
+            self.postGestureSuppress = false;
+            self.postGestureSuppressTimer = null;
+        }, MouseGestureAdapter.POST_GESTURE_SUPPRESS_MS);
+    }
+
+    private clearPostGestureSuppressTimer(): void {
+        if (this.postGestureSuppressTimer !== null) {
+            clearTimeout(this.postGestureSuppressTimer);
+            this.postGestureSuppressTimer = null;
+        }
     }
 
     /** Common cleanup after a terminal state (COMPLETED/CANCELLED). */
@@ -511,13 +597,8 @@ export class MouseGestureAdapter extends InputAdapter {
      * 3. `document.body` (last resort).
      */
     private scheduleContextmenuReplay(snapshot: ContextmenuSnapshot): void {
-        if (this.replayPending) {
-            return; // prevent double replay
-        }
-        this.replayPending = true;
         const self = this;
         queueMicrotask(() => {
-            self.replayPending = false;
             self.dispatchContextmenuReplay(snapshot);
         });
     }

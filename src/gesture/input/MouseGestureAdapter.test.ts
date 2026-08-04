@@ -285,8 +285,8 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
         // should pass through.
     });
 
-    // ---------------------------------------------------------- Scenario C
-    it("场景 C：contextmenu 在 pointerup 后自然触发 → 不提前重放，不阻止", () => {
+    // ---------------------------------------------------------- Scenario C1
+    it("场景 C1：普通右键，contextmenu 在 pointerup 后到来 → 不阻止", () => {
         adapter.attach(target);
         dispatchPointer(target, "pointerdown", {
             button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
@@ -300,6 +300,28 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
         // Natural contextmenu fires after pointerup — should pass through.
         const ctxEvent = dispatchContextmenu({ target });
         expect(ctxEvent.defaultPrevented).toBe(false);
+    });
+
+    // ---------------------------------------------------------- Scenario C2
+    it("场景 C2：有效手势完成后 contextmenu 晚到 → 阻止且不重放", () => {
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        // Move past threshold → TRACKING.
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        // pointerup → COMPLETED.
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 40, clientY: 0,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        // Late contextmenu after pointerup — must be blocked by
+        // post-gesture suppression (this is the core bug fix).
+        const ctxEvent = dispatchContextmenu({ target });
+        expect(ctxEvent.defaultPrevented).toBe(true);
     });
 
     // ---------------------------------------------------------- Scenario D
@@ -342,7 +364,7 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
     });
 
     // ---------------------------------------------------------- Scenario F
-    it("场景 F：进入 TRACKING 后 Escape 取消 → 不重放菜单", () => {
+    it("场景 F：进入 TRACKING 后 Escape 取消 → post-gesture suppress 阻止菜单", () => {
         adapter.attach(target);
         dispatchPointer(target, "pointerdown", {
             button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
@@ -359,12 +381,12 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
         window.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape" }));
         expect(events.onCancel).toHaveBeenCalledTimes(1);
 
-        // A contextmenu now should pass through (session is CANCELLED, not active).
+        // Post-gesture suppression is active — contextmenu must be blocked.
         const ctxEvent2 = dispatchContextmenu({ target });
-        expect(ctxEvent2.defaultPrevented).toBe(false);
+        expect(ctxEvent2.defaultPrevented).toBe(true);
     });
 
-    it("场景 F2：TRACKING 中 pointercancel → 不重放菜单", () => {
+    it("场景 F2：TRACKING 中 pointercancel → post-gesture suppress 阻止菜单", () => {
         adapter.attach(target);
         dispatchPointer(target, "pointerdown", {
             button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
@@ -378,12 +400,12 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
         });
         expect(events.onCancel).toHaveBeenCalledTimes(1);
 
-        // No replay — contextmenu passes through.
+        // Post-gesture suppression is active — contextmenu must be blocked.
         const ctxEvent = dispatchContextmenu({ target });
-        expect(ctxEvent.defaultPrevented).toBe(false);
+        expect(ctxEvent.defaultPrevented).toBe(true);
     });
 
-    it("场景 F3：TRACKING 中 window blur → 不重放菜单", () => {
+    it("场景 F3：TRACKING 中 window blur → post-gesture suppress 阻止菜单", () => {
         adapter.attach(target);
         dispatchPointer(target, "pointerdown", {
             button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
@@ -395,8 +417,9 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
         window.dispatchEvent(new Event("blur"));
         expect(events.onCancel).toHaveBeenCalledTimes(1);
 
+        // Post-gesture suppression is active — contextmenu must be blocked.
         const ctxEvent = dispatchContextmenu({ target });
-        expect(ctxEvent.defaultPrevented).toBe(false);
+        expect(ctxEvent.defaultPrevented).toBe(true);
     });
 
     // ---------------------------------------------------------- Scenario G
@@ -468,6 +491,387 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
         expect(replayReceived[0].clientX).toBe(5);
 
         target.removeEventListener("contextmenu", listener);
+    });
+});
+
+// ============================================== direction-independence
+describe("MouseGestureAdapter — 菜单屏蔽与方向无关", () => {
+    /** Dispatch a contextmenu event on window. */
+    function dispatchContextmenu(opts: {
+        clientX?: number;
+        clientY?: number;
+        target?: EventTarget;
+    } = {}): MouseEvent {
+        const event = new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: opts.clientX ?? 0,
+            clientY: opts.clientY ?? 0,
+            button: 2,
+        });
+        (opts.target ?? window).dispatchEvent(event);
+        return event;
+    }
+
+    /**
+     * Generate a confirmed gesture along the given waypoints and verify
+     * that a late contextmenu (after pointerup) is blocked.
+     *
+     * The adapter must suppress the menu for ALL confirmed gestures
+     * regardless of direction, segment count, or eventual command.
+     */
+    function expectLateContextmenuBlocked(
+        waypoints: { x: number; y: number }[],
+    ): void {
+        adapter.attach(target);
+        const start = { x: 100, y: 100 };
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            clientX: start.x, clientY: start.y,
+        });
+        for (const wp of waypoints) {
+            dispatchPointer(target, "pointermove", {
+                buttons: RIGHT_BUTTON_MASK, clientX: wp.x, clientY: wp.y,
+            });
+        }
+        const last = waypoints[waypoints.length - 1] ?? start;
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: last.x, clientY: last.y,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        // Late contextmenu after pointerup — must be blocked.
+        const ctxEvent = dispatchContextmenu({
+            target,
+            clientX: start.x,
+            clientY: start.y,
+        });
+        expect(ctxEvent.defaultPrevented).toBe(true);
+    }
+
+    it("有效 U 完成后晚到 contextmenu 被阻止", () => {
+        expectLateContextmenuBlocked([{ x: 100, y: 70 }]);
+    });
+
+    it("有效 D 完成后晚到 contextmenu 被阻止", () => {
+        expectLateContextmenuBlocked([{ x: 100, y: 130 }]);
+    });
+
+    it("有效 L 完成后晚到 contextmenu 被阻止", () => {
+        expectLateContextmenuBlocked([{ x: 70, y: 100 }]);
+    });
+
+    it("有效 R 完成后晚到 contextmenu 被阻止", () => {
+        expectLateContextmenuBlocked([{ x: 130, y: 100 }]);
+    });
+
+    it("有效 U-D 复合手势完成后晚到 contextmenu 被阻止", () => {
+        expectLateContextmenuBlocked([
+            { x: 100, y: 70 },
+            { x: 100, y: 130 },
+        ]);
+    });
+
+    it("有效 L-R 复合手势完成后晚到 contextmenu 被阻止", () => {
+        expectLateContextmenuBlocked([
+            { x: 70, y: 100 },
+            { x: 130, y: 100 },
+        ]);
+    });
+
+    it("有效 R-D-L 复合手势完成后晚到 contextmenu 被阻止", () => {
+        expectLateContextmenuBlocked([
+            { x: 130, y: 100 },
+            { x: 130, y: 130 },
+            { x: 70, y: 130 },
+        ]);
+    });
+
+    it("菜单屏蔽不依赖方向 — 所有方向行为一致", () => {
+        // Quick smoke test: run U, D, L, R in sequence on the same adapter
+        // and verify each blocks the late contextmenu.
+        adapter.attach(target);
+        const dirs = [
+            { x: 130, y: 100 }, // R
+            { x: 100, y: 70 },  // U
+            { x: 70, y: 100 },  // L
+            { x: 100, y: 130 }, // D
+        ];
+        for (const dir of dirs) {
+            dispatchPointer(target, "pointerdown", {
+                button: 2, buttons: RIGHT_BUTTON_MASK,
+                clientX: 100, clientY: 100,
+            });
+            dispatchPointer(target, "pointermove", {
+                buttons: RIGHT_BUTTON_MASK,
+                clientX: dir.x, clientY: dir.y,
+            });
+            dispatchPointer(target, "pointerup", {
+                button: 2, buttons: 0,
+                clientX: dir.x, clientY: dir.y,
+            });
+            const ctxEvent = dispatchContextmenu({
+                target, clientX: 100, clientY: 100,
+            });
+            expect(ctxEvent.defaultPrevented).toBe(true);
+        }
+        expect(events.onComplete).toHaveBeenCalledTimes(4);
+    });
+
+    it("菜单屏蔽不依赖命令结果 — 即使 onComplete 回调抛错也阻止菜单", () => {
+        // Replace onComplete with a throwing function to prove the adapter's
+        // menu suppression is independent of command execution.
+        const throwingEvents = makeSpyEvents();
+        throwingEvents.onComplete = vi.fn(() => {
+            throw new Error("command failed");
+        });
+        const throwingAdapter = new MouseGestureAdapter(TEST_TRIGGER, throwingEvents);
+        throwingAdapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        // pointerup will call onComplete which throws — the adapter must
+        // still enter post-gesture suppression.
+        expect(() => {
+            dispatchPointer(target, "pointerup", {
+                button: 2, buttons: 0, clientX: 40, clientY: 0,
+            });
+        }).toThrow("command failed");
+
+        // Late contextmenu must still be blocked.
+        const event = new MouseEvent("contextmenu", {
+            bubbles: true, cancelable: true, button: 2,
+        });
+        window.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(true);
+        throwingAdapter.detach();
+    });
+
+    it("TRACKING 中 contextmenu 被阻止", () => {
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        // contextmenu during TRACKING — intercepted.
+        const event = new MouseEvent("contextmenu", {
+            bubbles: true, cancelable: true, button: 2,
+        });
+        window.dispatchEvent(event);
+        expect(event.defaultPrevented).toBe(true);
+    });
+});
+
+// ============================================== post-gesture suppression timer
+describe("MouseGestureAdapter — post-gesture suppression 计时器", () => {
+    function dispatchContextmenu(opts: {
+        clientX?: number;
+        clientY?: number;
+        target?: EventTarget;
+    } = {}): MouseEvent {
+        const event = new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: opts.clientX ?? 0,
+            clientY: opts.clientY ?? 0,
+            button: 2,
+        });
+        (opts.target ?? window).dispatchEvent(event);
+        return event;
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    it("保护期内 contextmenu 被阻止，保护期结束后放行", () => {
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 40, clientY: 0,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        // Within the suppression window — blocked.
+        const ctx1 = dispatchContextmenu({ target });
+        expect(ctx1.defaultPrevented).toBe(true);
+
+        // After eating one contextmenu, suppression is cleared early.
+        // A second contextmenu passes through.
+        const ctx2 = dispatchContextmenu({ target });
+        expect(ctx2.defaultPrevented).toBe(false);
+    });
+
+    it("保护期超时后 contextmenu 正常放行", () => {
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 40, clientY: 0,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        // Advance past the 400ms suppression window.
+        vi.advanceTimersByTime(500);
+
+        // Suppression has expired — contextmenu passes through.
+        const ctxEvent = dispatchContextmenu({ target });
+        expect(ctxEvent.defaultPrevented).toBe(false);
+    });
+
+    it("保护期结束后新的普通右键不受影响", () => {
+        adapter.attach(target);
+        // First: a completed gesture.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 40, clientY: 0,
+        });
+
+        // Advance past suppression.
+        vi.advanceTimersByTime(500);
+
+        // New plain right-click — contextmenu should pass through.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 2, clientY: 0,
+        });
+        const ctxEvent = dispatchContextmenu({ target });
+        expect(ctxEvent.defaultPrevented).toBe(false);
+    });
+
+    it("新 pointerdown 立即终止旧保护期", () => {
+        adapter.attach(target);
+        // First gesture completes → enters suppression.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 40, clientY: 0,
+        });
+
+        // Immediately start a new plain right-click (no time advance).
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 2, clientY: 0,
+        });
+        // The new interaction's contextmenu should pass through — the
+        // old suppression was terminated by the new pointerdown.
+        const ctxEvent = dispatchContextmenu({ target });
+        expect(ctxEvent.defaultPrevented).toBe(false);
+    });
+
+    it("快速连续两个手势不会相互污染", () => {
+        adapter.attach(target);
+        // First gesture.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 40, clientY: 0,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        // Immediately start a second gesture (new pointerdown terminates
+        // the first suppression, then a new one starts on completion).
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 40, clientY: 0,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(2);
+
+        // Late contextmenu — blocked by the second gesture's suppression.
+        const ctxEvent = dispatchContextmenu({ target });
+        expect(ctxEvent.defaultPrevented).toBe(true);
+    });
+
+    it("手势后立即普通右键 → 普通右键菜单正常出现一次", () => {
+        adapter.attach(target);
+        // First: a completed gesture.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 40, clientY: 0,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        // Immediately do a plain right-click (new pointerdown terminates
+        // the old suppression).
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        // No movement — PENDING release.
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 2, clientY: 0,
+        });
+
+        // Natural contextmenu should pass through.
+        const ctxEvent = dispatchContextmenu({ target });
+        expect(ctxEvent.defaultPrevented).toBe(false);
+    });
+
+    it("detach 清理保护定时器 — 无残留", () => {
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 20, clientY: 0,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 40, clientY: 0,
+        });
+        // Suppression is active with a pending timer.
+        adapter.detach();
+
+        // Advance past the suppression window — the timer was cleared,
+        // so no state changes occur.
+        vi.advanceTimersByTime(500);
+
+        // contextmenu passes through (adapter is detached).
+        const ctxEvent = dispatchContextmenu({ target });
+        expect(ctxEvent.defaultPrevented).toBe(false);
     });
 });
 
