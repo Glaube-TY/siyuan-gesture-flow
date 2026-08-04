@@ -10,9 +10,9 @@
 - DPR-aware: internal pixel dimensions scale with `devicePixelRatio`; CSS
   dimensions track `window.innerWidth`/`innerHeight`.  Resize listener keeps
   the Canvas in sync across display changes.
-- Trail colour reads SiYuan CSS theme variables (`--b3-theme-primary`,
-  `--b3-theme-on-primary`, `--b3-theme-background`) with stable fallbacks, so
-  both light and dark themes are readable.
+- Trail colour reads the SiYuan CSS theme variable `--b3-theme-primary` at
+  draw time with a stable fallback, so both light and dark themes are
+  readable.
 - Canvas creation and destruction are idempotent; repeated mount/unmount cycles
   leave no duplicate elements.
 
@@ -21,7 +21,12 @@
 - A long-lived `position: fixed` hint `<div>` follows the last trail point,
   showing the current direction sequence (e.g. `R → D`).
 - Hint flips/clamps near window edges so it never overflows the viewport.
-- Uses `textContent` only (no `innerHTML`); styles use SiYuan CSS variables.
+- Uses `textContent` only (no `innerHTML`); hint colours use CSS `var()`
+  with SiYuan theme variables (`--b3-theme-on-background`,
+  `--b3-theme-surface`, `--b3-theme-primary-light`) and stable fallbacks,
+  so the browser re-resolves colours automatically on theme switch.
+- `white-space: pre-line` and `max-width` allow the future `commandLabel`
+  to wrap onto a second line without using `innerHTML`.
 - `commandLabel` field reserved for the future action system; currently `null`.
 
 ### RAF coalescing controller
@@ -53,11 +58,41 @@
 - Production builds no longer log per-move session data; dev mode retains
   concise debug logging.
 
+### Timer competition fix
+
+- `GestureFeedbackController.onStateChange(PENDING)` now cancels stale hide
+  timers and clears the previous gesture's trail, so a new gesture starting
+  during the previous gesture's ~300 ms hide-delay window is never hidden
+  by the old timer.
+- `GestureOverlay.show()` defensively cancels any pending hide timer.
+- At most one hide timer exists at any time; `showFinalThenHide` cancels
+  the previous timer before setting a new one.
+
+### Resize hint repositioning
+
+- On window resize, the hint is repositioned using the latest `OverlayState`
+  so it stays within the new viewport bounds.
+
+### Build verification
+
+- `verify_build.js` now scans text files (`.js`, `.json`, `.md`, `.css`,
+  `.html`, `.txt`) in both `dist/` and `package.zip` for hardcoded
+  credentials (`Authorization: token ...`, `SIYUAN_API_TOKEN=...`, generic
+  API key patterns).  Placeholders like `<TOKEN>` and `YOUR_TOKEN` are
+  excluded.  Matched values are never printed.
+
 ### Testing
 
-- Added overlay + integration tests covering element creation/idempotency,
-  DPR scaling, resize, RAF coalescing, hint positioning, status display,
-  complete/cancel hiding, and unload cleanup.
+- Overlay tests cover element creation/idempotency, Canvas property checks,
+  DPR scaling, resize handling, Canvas drawing calls (via mock
+  `CanvasRenderingContext2D`), hint positioning with realistic
+  `getBoundingClientRect` mocks, edge clamping (right/bottom/left-top/tiny
+  window), theme variable usage, commandLabel wrapping, timer competition
+  (via Vitest fake timers), and unload cleanup.
+- FeedbackController tests cover RAF coalescing, lifecycle, PENDING
+  invisibility, and timer competition scenarios (consecutive gestures,
+  immediate PENDING after complete, three-gesture sequence, cancel/destroy
+  timer cleanup).
 
 ## v0.1.0 — Stage 1-2 stabilization
 

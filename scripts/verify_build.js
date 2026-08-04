@@ -2,7 +2,8 @@
  * Build artifact verification.
  *
  * Checks both the `dist` directory and `package.zip` for required and
- * forbidden files.  Exits with code 1 on any violation.
+ * forbidden files, plus content-level scanning for hardcoded credentials.
+ * Exits with code 1 on any violation.
  *
  * Uses `adm-zip` (pure JavaScript) to read ZIP entries — no dependency on
  * system `tar`, `unzip`, or PowerShell, so it works identically on Windows,
@@ -51,11 +52,77 @@ const SENSITIVE_PATTERNS = [
     /\.siyuan-dev-target\.json$/,
 ];
 
+/**
+ * File extensions whose contents are scanned for hardcoded credentials.
+ * Binary formats (images, fonts, zips) are skipped.
+ */
+const TEXT_EXTENSIONS = new Set([
+    ".js", ".json", ".md", ".css", ".html", ".txt", ".xml", ".svg", ".yaml", ".yml",
+]);
+
+/**
+ * Maximum file size (in bytes) for content scanning.  Larger files are
+ * skipped to avoid reading huge minified bundles byte-by-byte; the limit
+ * is generous enough for any reasonable plugin bundle.
+ */
+const MAX_SCAN_SIZE = 2 * 1024 * 1024; // 2 MB
+
+/**
+ * Credential patterns for content scanning.
+ *
+ * Each entry has:
+ * - `regex`: the pattern to match
+ * - `label`: human-readable description (printed on violation, never the
+ *   matched value itself)
+ * - `allow`: optional list of strings that, if the match equals one of
+ *   them, suppresses the violation (for placeholders like `<TOKEN>`)
+ */
+/** @type {Array<{regex: RegExp, label: string, allow?: string[]}>} */
+const CREDENTIAL_PATTERNS = [
+    // Authorization: token <something>
+    {
+        regex: /Authorization\s*[:=]\s*["']?(?:token|Bearer)\s+([A-Za-z0-9_\-]{8,})["']?/i,
+        label: "Authorization header with credential",
+    },
+    // SIYUAN_API_TOKEN=<value> (but not empty or placeholder)
+    {
+        regex: /SIYUAN_API_TOKEN\s*=\s*["']?([A-Za-z0-9_\-]{8,})["']?/i,
+        label: "SIYUAN_API_TOKEN assignment",
+        allow: ["YOUR_TOKEN", "<TOKEN>", "your_token_here", "PLACEHOLDER"],
+    },
+    // Generic API key patterns
+    {
+        regex: /(?:api[_-]?key|api[_-]?secret|access[_-]?token|secret[_-]?key)\s*[:=]\s*["']([A-Za-z0-9_\-]{16,})["']/i,
+        label: "Hardcoded API key or secret",
+        allow: ["YOUR_TOKEN", "<TOKEN>", "your_token_here", "PLACEHOLDER"],
+    },
+    // SiYuan-specific token in URL
+    {
+        regex: /(?:127\.0\.0\.1|localhost)(?::\d+)?/i,
+        label: "localhost URL reference (informational, not a violation by itself)",
+    },
+];
+
+/**
+ * Explicit placeholder strings that are always safe and should never be
+ * flagged as credentials.
+ */
+const SAFE_PLACEHOLDERS = new Set([
+    "<token>", "<TOKEN>", "your_token", "YOUR_TOKEN",
+    "your_token_here", "YOUR_TOKEN_HERE",
+    "placeholder", "PLACEHOLDER",
+    "", // empty string
+]);
+
 let errors = 0;
 
 function fail(msg) {
     console.error(`  [FAIL] ${msg}`);
     errors++;
+}
+
+function warn(msg) {
+    console.log(`  [WARN] ${msg}`);
 }
 
 function ok(msg) {
@@ -113,6 +180,93 @@ function isPathTraversal(entry) {
     return false;
 }
 
+/**
+ * Whether a file's extension qualifies it for text content scanning.
+ */
+function isTextFile(name) {
+    const ext = path.extname(name).toLowerCase();
+    return TEXT_EXTENSIONS.has(ext);
+}
+
+/**
+ * Scan text content for hardcoded credentials.
+ *
+ * Reports the file path and credential type but **never** prints the
+ * matched value itself.
+ */
+function scanContent(filePath, content) {
+    for (const pattern of CREDENTIAL_PATTERNS) {
+        const match = pattern.regex.exec(content);
+        if (!match) continue;
+
+        // If the matched group is a known placeholder, skip.
+        if (match[1]) {
+            const value = match[1].trim();
+            if (SAFE_PLACEHOLDERS.has(value)) continue;
+            if (pattern.allow && pattern.allow.includes(value)) continue;
+        }
+
+        // The "localhost URL" pattern is informational only.
+        if (pattern.label.includes("informational")) {
+            warn(`${filePath} — ${pattern.label}`);
+            continue;
+        }
+
+        fail(`${filePath} — ${pattern.label} detected (value redacted)`);
+    }
+}
+
+/**
+ * Read a file from dist and scan its content if it's a text file.
+ */
+function scanDistFile(distPath, relPath) {
+    if (!isTextFile(relPath)) return;
+    const fullPath = path.join(distPath, relPath);
+    let stat;
+    try {
+        stat = fs.statSync(fullPath);
+    } catch {
+        return;
+    }
+    if (stat.size > MAX_SCAN_SIZE) {
+        warn(`${relPath} — skipped content scan (file too large: ${stat.size} bytes)`);
+        return;
+    }
+    let content;
+    try {
+        content = fs.readFileSync(fullPath, "utf-8");
+    } catch {
+        return;
+    }
+    scanContent(relPath, content);
+}
+
+/**
+ * Read a ZIP entry and scan its content if it's a text file.
+ */
+function scanZipEntry(zip, entryName) {
+    if (!isTextFile(entryName)) return;
+    let entry;
+    try {
+        entry = zip.getEntry(entryName);
+    } catch {
+        return;
+    }
+    if (!entry || entry.header.size > MAX_SCAN_SIZE) {
+        if (entry) {
+            warn(`${entryName} — skipped content scan (entry too large: ${entry.header.size} bytes)`);
+        }
+        return;
+    }
+    let content;
+    try {
+        content = entry.getData().toString("utf-8");
+    } catch {
+        return;
+    }
+    scanContent(`package.zip/${entryName}`, content);
+}
+
 // --------------------------------------------------------------- dist
 
 function verifyDist() {
@@ -152,6 +306,13 @@ function verifyDist() {
     }
 
     ok("dist forbidden-file scan complete");
+
+    // Content scanning
+    console.log("  Scanning dist text file contents for credentials...");
+    for (const file of allFiles) {
+        scanDistFile(DIST_DIR, file);
+    }
+    ok("dist content scan complete");
 }
 
 // --------------------------------------------------------------- zip
@@ -163,9 +324,10 @@ function verifyZip() {
         return;
     }
 
+    let zip;
     let entries;
     try {
-        const zip = new AdmZip(ZIP_PATH);
+        zip = new AdmZip(ZIP_PATH);
         entries = zip.getEntries().map((e) => e.entryName);
     } catch (e) {
         fail(`Failed to read package.zip: ${e.message}`);
@@ -211,6 +373,13 @@ function verifyZip() {
     }
 
     ok("package.zip forbidden-file scan complete");
+
+    // Content scanning
+    console.log("  Scanning package.zip text entries for credentials...");
+    for (const entry of normalized) {
+        scanZipEntry(zip, entry);
+    }
+    ok("package.zip content scan complete");
 }
 
 // --------------------------------------------------------------- main

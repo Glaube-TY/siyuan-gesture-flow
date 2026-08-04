@@ -18,7 +18,11 @@ GestureFlow is under active development. The following is **done**:
   diagonals.
 - **Recognition result validation** — gestures that exceed the maximum segment count are
   marked invalid (not truncated), preventing accidental action matches.
-- **Automated tests** — covers the recognition pipeline and input adapter.
+- **Automated tests** — covers the recognition pipeline, mouse input adapter,
+  Canvas Overlay (element lifecycle, DPR scaling, drawing calls, hint edge
+  clamping, theme variable usage, commandLabel wrapping), and
+  FeedbackController (RAF coalescing, timer competition, PENDING
+  invisibility, unload cleanup).
 - **Canvas trajectory overlay** — a fixed full-viewport Canvas renders the live
   mouse trail with DPR-aware scaling, plus a hint element showing the current
   direction sequence (e.g. `R → D`).  Updates are coalesced via

@@ -12,15 +12,34 @@ const TEST_I18N: OverlayI18n = {
     gestureUnrecognised: "未识别",
 };
 
+/**
+ * Minimal mock of CanvasRenderingContext2D so that the overlay can be
+ * constructed in happy-dom without a real 2D context.
+ */
+function installMockCanvas() {
+    const proxy = new Proxy({} as Record<string, unknown>, {
+        get(_target, prop: string) {
+            if (prop === "canvas") return null;
+            return (..._args: unknown[]) => { /* no-op */ };
+        },
+        set() { return true; },
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(
+        proxy as unknown as CanvasRenderingContext2D,
+    );
+}
+
 beforeEach(() => {
     Object.defineProperty(window, "innerWidth", { value: 1280, writable: true, configurable: true });
     Object.defineProperty(window, "innerHeight", { value: 720, writable: true, configurable: true });
     Object.defineProperty(window, "devicePixelRatio", { value: 1, configurable: true });
+    installMockCanvas();
 });
 
 afterEach(() => {
     document.body.innerHTML = "";
     vi.restoreAllMocks();
+    vi.useRealTimers();
 });
 
 /** Build a session that has TRACKING state with the given points. */
@@ -35,6 +54,13 @@ function makeTrackingSession(points: Array<{ x: number; y: number }>): GestureSe
     return session;
 }
 
+/** Build a PENDING session (pointerdown, not yet activated). */
+function makePendingSession(): GestureSession {
+    const session = new GestureSession(DEFAULT_TRIGGER);
+    session.addPoint(0, 0, 0);
+    return session;
+}
+
 describe("GestureFeedbackController — RAF 合并", () => {
     it("多次 onUpdate 在同一帧只触发一次绘制", () => {
         const engine = new GestureEngine();
@@ -45,21 +71,16 @@ describe("GestureFeedbackController — RAF 合并", () => {
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]);
         controller.onStateChange(session);
 
-        // Simulate multiple pointermove in the same frame
         controller.onUpdate(session);
         controller.onUpdate(session);
         controller.onUpdate(session);
         controller.onUpdate(session);
 
-        // Before RAF fires, update should not have been called for the moves
-        // (onStateChange calls show() + scheduleFrame, so update happens in RAF)
         const callsBeforeRAF = updateSpy.mock.calls.length;
 
         return new Promise<void>((resolve) => {
             requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
-                    // After two RAFs, update should have been called at most
-                    // once for the coalesced moves (plus possibly the initial).
                     const callsAfterRAF = updateSpy.mock.calls.length;
                     expect(callsAfterRAF - callsBeforeRAF).toBeLessThanOrEqual(1);
                     controller.destroy();
@@ -103,7 +124,6 @@ describe("GestureFeedbackController — RAF 合并", () => {
         return new Promise<void>((resolve) => {
             requestAnimationFrame(() => {
                 requestAnimationFrame(() => {
-                    // After destroy, no more update calls should have happened
                     expect(updateSpy.mock.calls.length).toBe(callsBeforeDestroy);
                     resolve();
                 });
@@ -132,7 +152,6 @@ describe("GestureFeedbackController — 生命周期", () => {
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]);
         controller.onStateChange(session);
-        // Simulate cancel
         session.cancel("escape");
         controller.onCancel(session);
         expect(overlay.hintVisible).toBe(false);
@@ -140,6 +159,7 @@ describe("GestureFeedbackController — 生命周期", () => {
     });
 
     it("onComplete 显示最终结果", () => {
+        vi.useFakeTimers();
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
         const controller = new GestureFeedbackController(engine, overlay);
@@ -153,12 +173,12 @@ describe("GestureFeedbackController — 生命周期", () => {
     });
 
     it("onComplete 包含 pointerup 终点", () => {
+        vi.useFakeTimers();
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
         const showFinalSpy = vi.spyOn(overlay, "showFinalThenHide");
         const controller = new GestureFeedbackController(engine, overlay);
 
-        // Session with points ending at x=80
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 30, y: 0 }]);
         session.addPoint(80, 0, 100);
         session.complete();
@@ -192,12 +212,162 @@ describe("GestureFeedbackController — 普通右键不可见", () => {
         const overlay = new GestureOverlay(TEST_I18N);
         const controller = new GestureFeedbackController(engine, overlay);
 
-        // PENDING session — never activated
-        const session = new GestureSession(DEFAULT_TRIGGER);
-        session.addPoint(0, 0, 0);
-        // onStateChange is only called with TRACKING in the controller,
-        // so no overlay should appear.
+        const session = makePendingSession();
+        controller.onStateChange(session);
         expect(overlay.canvasMounted).toBe(false);
+        controller.destroy();
+    });
+});
+
+// ============================================================ 定时器竞争
+describe("GestureFeedbackController — 定时器竞争", () => {
+    it("手势 A 完成后 300ms 内开始手势 B，B 仍然可见", () => {
+        vi.useFakeTimers();
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const controller = new GestureFeedbackController(engine, overlay);
+
+        // Gesture A: complete
+        const sessionA = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+        controller.onStateChange(sessionA);
+        sessionA.complete();
+        controller.onComplete(sessionA);
+        expect(overlay.hintVisible).toBe(true);
+        expect(overlay.hasPendingHideTimer).toBe(true);
+
+        // Within 300ms, start gesture B (PENDING)
+        vi.advanceTimersByTime(100);
+        const sessionB = makePendingSession();
+        controller.onStateChange(sessionB); // PENDING
+        // A's trail and hint should be immediately cleared
+        expect(overlay.hintVisible).toBe(false);
+        expect(overlay.hasPendingHideTimer).toBe(false);
+
+        // B enters TRACKING
+        sessionB.activate();
+        controller.onStateChange(sessionB);
+        controller.onUpdate(makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]));
+
+        // Advance past A's original 300ms hide delay
+        vi.advanceTimersByTime(300);
+        // B should still be controllable — not hidden by A's stale timer
+        expect(overlay.hasPendingHideTimer).toBe(false);
+
+        controller.destroy();
+    });
+
+    it("手势 A 完成后立即普通右键进入 PENDING，A 的反馈立即消失", () => {
+        vi.useFakeTimers();
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const controller = new GestureFeedbackController(engine, overlay);
+
+        const sessionA = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+        controller.onStateChange(sessionA);
+        sessionA.complete();
+        controller.onComplete(sessionA);
+        expect(overlay.hintVisible).toBe(true);
+
+        // Immediately start a new PENDING (right-click without movement)
+        const sessionB = makePendingSession();
+        controller.onStateChange(sessionB);
+        expect(overlay.hintVisible).toBe(false);
+        expect(overlay.hasPendingHideTimer).toBe(false);
+
+        controller.destroy();
+    });
+
+    it("连续完成三个手势，任何时刻只保留最后一个有效隐藏计时", () => {
+        vi.useFakeTimers();
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const controller = new GestureFeedbackController(engine, overlay);
+
+        for (let i = 0; i < 3; i++) {
+            const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+            controller.onStateChange(session);
+            session.complete();
+            controller.onComplete(session);
+            // Only one hide timer should exist at any time
+            expect(overlay.hasPendingHideTimer).toBe(true);
+            // Advance a bit but not past the delay
+            vi.advanceTimersByTime(100);
+        }
+
+        // Advance past the final delay — should hide exactly once
+        let hideCount = 0;
+        const originalHide = overlay.hide.bind(overlay);
+        vi.spyOn(overlay, "hide").mockImplementation(() => {
+            hideCount++;
+            originalHide();
+        });
+        vi.advanceTimersByTime(300);
+        expect(hideCount).toBe(1);
+
+        controller.destroy();
+    });
+
+    it("cancel 后不存在延迟执行的旧隐藏回调", () => {
+        vi.useFakeTimers();
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const controller = new GestureFeedbackController(engine, overlay);
+
+        const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+        controller.onStateChange(session);
+        session.complete();
+        controller.onComplete(session);
+        expect(overlay.hasPendingHideTimer).toBe(true);
+
+        // Cancel — should clear the timer
+        session.cancel("manual");
+        controller.onCancel(session);
+        expect(overlay.hasPendingHideTimer).toBe(false);
+
+        // Advance past the original delay — no hide should occur
+        vi.advanceTimersByTime(400);
+        expect(overlay.hintVisible).toBe(false);
+
+        controller.destroy();
+    });
+
+    it("destroy 后不存在延迟执行的旧隐藏回调", () => {
+        vi.useFakeTimers();
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const controller = new GestureFeedbackController(engine, overlay);
+
+        const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+        controller.onStateChange(session);
+        session.complete();
+        controller.onComplete(session);
+
+        controller.destroy();
+        // Advance past the delay — no crash, no elements
+        vi.advanceTimersByTime(400);
+        expect(document.querySelectorAll("canvas").length).toBe(0);
+    });
+
+    it("新手势 PENDING 阶段没有可见轨迹和提示", () => {
+        vi.useFakeTimers();
+        const engine = new GestureEngine();
+        const overlay = new GestureOverlay(TEST_I18N);
+        const controller = new GestureFeedbackController(engine, overlay);
+
+        // First gesture completes and shows final result
+        const sessionA = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
+        controller.onStateChange(sessionA);
+        sessionA.complete();
+        controller.onComplete(sessionA);
+        expect(overlay.hintVisible).toBe(true);
+
+        // New gesture starts — PENDING
+        const sessionB = makePendingSession();
+        controller.onStateChange(sessionB);
+        expect(overlay.hintVisible).toBe(false);
+        // No Canvas content should be visible (hint is hidden, trail cleared)
+        // The Canvas element may exist but trail is cleared by hide()
+
         controller.destroy();
     });
 });

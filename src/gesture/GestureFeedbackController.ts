@@ -15,11 +15,21 @@ import { OverlayI18n, OverlayState, OverlayStatus } from "./overlay/types";
  *
  * Lifecycle:
  *
- * - `onStateChange(TRACKING)` → `overlay.show()`
- * - `onUpdate(session)` → save latest snapshot, schedule RAF
- * - RAF callback → run `engine.recognize()`, build `OverlayState`, `overlay.update()`
- * - `onComplete(session)` → flush pending RAF, run final recognition, `overlay.showFinalThenHide()`
- * - `onCancel(session)` → cancel RAF, `overlay.hide()`
+ * - `onStateChange(PENDING)` → cancel stale hide timer, hide old trail,
+ *   cancel pending RAF.  No visible feedback is shown.
+ * - `onStateChange(TRACKING)` → `overlay.show()`, schedule first frame.
+ * - `onUpdate(session)` → save latest snapshot, schedule RAF.
+ * - RAF callback → run `engine.recognize()`, build `OverlayState`,
+ *   `overlay.update()`.
+ * - `onComplete(session)` → flush pending RAF, run final recognition,
+ *   `overlay.showFinalThenHide()`.
+ * - `onCancel(session)` → cancel RAF, `overlay.hide()`.
+ *
+ * **Timer competition**: when a new gesture starts (PENDING) while the
+ * previous gesture's `showFinalThenHide` timer is still pending, the
+ * controller immediately hides the old trail and cancels the timer via
+ * `overlay.hide()`.  This prevents the stale timer from hiding the new
+ * gesture's trail.
  *
  * The controller does **not** own the adapter; the caller (index.ts) is
  * responsible for attaching/detaching it.  The controller does own the
@@ -38,9 +48,27 @@ export class GestureFeedbackController {
 
     // --------------------------------------------------------- adapter bridge
 
-    /** Called when the adapter reports a state change. */
+    /**
+     * Called when the adapter reports a state change.
+     *
+     * PENDING: a new gesture has started (pointerdown).  Cancel any stale
+     * hide timer and clear the old trail so it does not bleed into the new
+     * gesture.  No visible feedback is shown until TRACKING.
+     *
+     * TRACKING: the gesture has exceeded the activation distance.  Show the
+     * overlay and start rendering frames.
+     */
     onStateChange(session: GestureSession): void {
+        if (session.state === GestureState.PENDING) {
+            // New gesture started — cancel stale hide timer and clear old
+            // trail/hint from the previous gesture's showFinalThenHide().
+            this.cancelFrame();
+            this.overlay.hide();
+            this.latestSession = session;
+            return;
+        }
         if (session.state === GestureState.TRACKING) {
+            // overlay.show() defensively cancels any remaining hide timer.
             this.overlay.show();
             this.latestSession = session;
             this.scheduleFrame();

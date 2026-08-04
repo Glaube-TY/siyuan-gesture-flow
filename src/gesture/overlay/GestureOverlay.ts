@@ -9,20 +9,25 @@ const HINT_OFFSET = 14;
 /** Duration the final result stays visible before hiding (ms). */
 const COMPLETE_HIDE_DELAY = 300;
 
+/** Maximum hint width so long command names do not stretch the viewport. */
+const HINT_MAX_WIDTH = 240;
+
 /**
- * CSS custom properties read from the SiYuan root for theming.
+ * CSS custom property names read from the SiYuan root for theming.
  *
- * `--b3-theme-primary` is the accent colour (used for the trail).
- * `--b3-theme-on-background` is the default text colour (hint text).
- * `--b3-theme-background` is the panel background (hint background).
- *
- * Each has a stable fallback so the overlay is readable even when the
- * CSS variables are not present (e.g. in tests or non-SiYuan pages).
+ * The hint element uses `var(name, fallback)` directly in its inline style so
+ * the browser re-resolves the value automatically when the theme changes.
+ * Canvas trail colour is resolved at draw time via `getComputedStyle` because
+ * Canvas has no CSS cascade.
  */
 const THEME_VARS = {
+    /** Canvas trail colour — resolved at draw time. */
     trailColor: ["--b3-theme-primary", "#4285f4"],
+    /** Hint text colour — used via `var()`. */
     hintColor: ["--b3-theme-on-background", "#1f2329"],
+    /** Hint background — used via `var()`. */
     hintBg: ["--b3-theme-surface", "#ffffff"],
+    /** Hint border — used via `var()`. */
     hintBorder: ["--b3-theme-primary-light", "#d0e3ff"],
 } as const;
 
@@ -35,11 +40,14 @@ const THEME_VARS = {
  * destruction are idempotent — repeated `show()`/`destroy()` cycles do not
  * produce duplicate elements.
  *
- * The Canvas covers the entire viewport (`position: fixed; inset: 0`) and
- * never intercepts pointer events.  Internal pixel dimensions scale with
- * `devicePixelRatio` so the trail stays crisp on high-DPI displays; CSS
- * dimensions track `window.innerWidth`/`innerHeight` and a resize listener
- * keeps everything in sync.
+ * **Timer safety**: {@link show} defensively cancels any pending hide timer
+ * so a new gesture starting during the previous gesture's hide-delay window
+ * is never hidden by the stale timer.  At most one hide timer exists at any
+ * time.
+ *
+ * **Theme**: the hint element uses CSS `var()` for colours so the browser
+ * re-resolves them automatically on theme switch.  Canvas trail colour is
+ * read at draw time via `getComputedStyle`.
  */
 export class GestureOverlay {
     private canvas: HTMLCanvasElement | null = null;
@@ -61,11 +69,19 @@ export class GestureOverlay {
     // --------------------------------------------------------------- lifecycle
 
     /**
-     * Ensure the Canvas and hint element exist and are attached to
-     * `document.body`.  Idempotent.
+     * Ensure the Canvas and hint element exist, are attached to
+     * `document.body`, and are ready for a new gesture.
+     *
+     * Defensively cancels any pending hide timer from a previous gesture so
+     * the new gesture is never hidden by a stale callback.  Idempotent.
      */
     show(): void {
         if (this.destroyed) return;
+        // Cancel any stale hide timer from a previous gesture's
+        // showFinalThenHide().  This is the critical defence against the
+        // timer-competition bug where gesture B's trail is hidden by
+        // gesture A's delayed hide.
+        this.cancelHideTimer();
         if (!this.canvas) {
             this.createCanvas();
         }
@@ -123,6 +139,7 @@ export class GestureOverlay {
 
     /**
      * Hide the overlay immediately (trail cleared, hint hidden).
+     * Cancels any pending hide timer.
      */
     hide(): void {
         this.cancelHideTimer();
@@ -137,11 +154,13 @@ export class GestureOverlay {
 
     /**
      * Show the final result, then hide after {@link COMPLETE_HIDE_DELAY} ms.
+     * Cancels any previous hide timer first so at most one timer exists.
      */
     showFinalThenHide(state: OverlayState): void {
         this.update(state);
         this.cancelHideTimer();
         this.hideTimer = setTimeout(() => {
+            this.hideTimer = null;
             this.hide();
         }, COMPLETE_HIDE_DELAY);
     }
@@ -181,12 +200,19 @@ export class GestureOverlay {
         hint.style.fontFamily = "monospace";
         hint.style.fontSize = "13px";
         hint.style.fontWeight = "bold";
-        hint.style.whiteSpace = "nowrap";
+        // pre-line: preserves newlines in textContent (for command label)
+        // while collapsing other whitespace.  This lets `dirText\ncommandLabel`
+        // render as two lines without using innerHTML.
+        hint.style.whiteSpace = "pre-line";
         hint.style.userSelect = "none";
-        // Theme-aware colours
-        hint.style.color = this.readThemeVar(THEME_VARS.hintColor);
-        hint.style.backgroundColor = this.readThemeVar(THEME_VARS.hintBg);
-        hint.style.border = `1px solid ${this.readThemeVar(THEME_VARS.hintBorder)}`;
+        hint.style.maxWidth = `${HINT_MAX_WIDTH}px`;
+        // Theme-aware colours via CSS var() — the browser re-resolves these
+        // automatically when SiYuan switches between light and dark themes.
+        // Using setProperty because `style.color = "var(...)"` is not reliably
+        // accepted by all DOM implementations (including happy-dom).
+        hint.style.setProperty("color", cssVar(THEME_VARS.hintColor));
+        hint.style.setProperty("background-color", cssVar(THEME_VARS.hintBg));
+        hint.style.setProperty("border", `1px solid ${cssVar(THEME_VARS.hintBorder)}`);
         const body = document.body;
         if (body) {
             body.appendChild(hint);
@@ -214,6 +240,13 @@ export class GestureOverlay {
         // Redraw current trail if any
         if (this.current) {
             this.renderTrail(this.current.points);
+            // Reposition hint so it stays within the new viewport bounds.
+            if (this.hint && this.hint.style.display !== "none") {
+                const last = this.current.points[this.current.points.length - 1];
+                if (last) {
+                    this.positionHint(this.hint, last.x, last.y);
+                }
+            }
         }
     }
 
@@ -297,9 +330,9 @@ export class GestureOverlay {
         if (top + h > this.cssHeight) {
             top = y - HINT_OFFSET - h;
         }
-        // Clamp to viewport
-        left = Math.max(0, Math.min(left, this.cssWidth - w));
-        top = Math.max(0, Math.min(top, this.cssHeight - h));
+        // Clamp to viewport (handles tiny windows where hint > viewport)
+        left = Math.max(0, Math.min(left, Math.max(0, this.cssWidth - w)));
+        top = Math.max(0, Math.min(top, Math.max(0, this.cssHeight - h)));
         hint.style.left = `${Math.round(left)}px`;
         hint.style.top = `${Math.round(top)}px`;
     }
@@ -314,6 +347,8 @@ export class GestureOverlay {
     /**
      * Read a SiYuan CSS custom property from the document root, falling back
      * to the provided default if the variable is empty or unavailable.
+     *
+     * Used for the Canvas trail colour which cannot use CSS `var()` directly.
      */
     private readThemeVar(entry: readonly [string, string]): string {
         const [varName, fallback] = entry;
@@ -373,4 +408,26 @@ export class GestureOverlay {
     get canvasPixelHeight(): number {
         return this.canvas?.height ?? 0;
     }
+
+    /** @internal Exposed for tests — whether a hide timer is pending. */
+    get hasPendingHideTimer(): boolean {
+        return this.hideTimer !== null;
+    }
+
+    /** @internal Exposed for tests — the 2D context (for mock verification). */
+    get renderContext(): CanvasRenderingContext2D | null {
+        return this.ctx;
+    }
+}
+
+/**
+ * Build a `var(name, fallback)` CSS value string for inline styles.
+ *
+ * Using `var()` in inline styles lets the browser re-resolve the colour
+ * automatically when the SiYuan theme changes, without needing a
+ * MutationObserver or theme-change listener.
+ */
+function cssVar(entry: readonly [string, string]): string {
+    const [varName, fallback] = entry;
+    return `var(${varName}, ${fallback})`;
 }
