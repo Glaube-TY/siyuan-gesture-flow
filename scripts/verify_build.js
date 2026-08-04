@@ -150,13 +150,16 @@ function walkFiles(dir, base = dir) {
 }
 
 function checkForbidden(name) {
-    if (FORBIDDEN_FILES.includes(name)) {
+    // Check both the full path and the basename so that nested forbidden
+    // files (e.g. `subdir/kernel.js`) are also detected.
+    const base = path.basename(name);
+    if (FORBIDDEN_FILES.includes(name) || FORBIDDEN_FILES.includes(base)) {
         return true;
     }
-    if (FORBIDDEN_PATTERNS.some((pat) => pat.test(name))) {
+    if (FORBIDDEN_PATTERNS.some((pat) => pat.test(name) || pat.test(base))) {
         return true;
     }
-    if (SENSITIVE_PATTERNS.some((pat) => pat.test(name))) {
+    if (SENSITIVE_PATTERNS.some((pat) => pat.test(name) || pat.test(base))) {
         return true;
     }
     return false;
@@ -336,19 +339,27 @@ function verifyZip() {
 
     console.log(`  package.zip contains ${entries.length} entries`);
 
-    // Normalise entries (strip leading ./ if present).
-    const normalized = entries.map((e) => e.replace(/^\.\//, ""));
+    // Build a mapping from original entryName to normalised name (strip
+    // leading ./ if present).  Path/forbidden checks use the normalised
+    // name, but content scanning must use the original entryName because
+    // `zip.getEntry(normalised)` fails to find entries stored as
+    // `./index.js`.
+    /** @type {Array<{original: string, normalized: string}>} */
+    const entryMap = entries.map((e) => ({
+        original: e,
+        normalized: e.replace(/^\.\//, ""),
+    }));
 
-    // Path-traversal check.
-    for (const entry of normalized) {
-        if (isPathTraversal(entry)) {
-            fail(`package.zip/${entry} — path-traversal entry detected`);
+    // Path-traversal check (uses normalised name).
+    for (const { normalized } of entryMap) {
+        if (isPathTraversal(normalized)) {
+            fail(`package.zip/${normalized} — path-traversal entry detected`);
         }
     }
 
     // Required files
     for (const req of REQUIRED_FILES) {
-        if (normalized.includes(req)) {
+        if (entryMap.some((e) => e.normalized === req)) {
             ok(`package.zip/${req}`);
         } else {
             fail(`package.zip/${req} is missing`);
@@ -358,26 +369,28 @@ function verifyZip() {
     // Required globs
     for (const glob of REQUIRED_GLOBS) {
         const regex = globToRegex(glob);
-        if (normalized.some((e) => regex.test(e))) {
+        if (entryMap.some((e) => regex.test(e.normalized))) {
             ok(`package.zip/${glob}`);
         } else {
             fail(`package.zip/${glob} — no matching file found`);
         }
     }
 
-    // Forbidden files
-    for (const entry of normalized) {
-        if (checkForbidden(entry)) {
-            fail(`package.zip/${entry} — forbidden or sensitive file present`);
+    // Forbidden files (uses normalised name so basename check works).
+    for (const { normalized } of entryMap) {
+        if (checkForbidden(normalized)) {
+            fail(`package.zip/${normalized} — forbidden or sensitive file present`);
         }
     }
 
     ok("package.zip forbidden-file scan complete");
 
-    // Content scanning
+    // Content scanning — MUST use the original entryName so that
+    // `zip.getEntry(entryName)` resolves correctly even when the entry
+    // is stored as `./index.js`.
     console.log("  Scanning package.zip text entries for credentials...");
-    for (const entry of normalized) {
-        scanZipEntry(zip, entry);
+    for (const { original } of entryMap) {
+        scanZipEntry(zip, original);
     }
     ok("package.zip content scan complete");
 }

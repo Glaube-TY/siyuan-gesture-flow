@@ -97,7 +97,7 @@ describe("GestureOverlay — 元素创建与幂等性", () => {
         installMockCanvas();
         const overlay = new GestureOverlay(TEST_I18N);
         overlay.show();
-        expect(document.querySelectorAll("canvas").length).toBe(1);
+        expect(document.querySelectorAll("canvas[data-gesture-flow-overlay='trail']").length).toBe(1);
         overlay.destroy();
     });
 
@@ -105,7 +105,7 @@ describe("GestureOverlay — 元素创建与幂等性", () => {
         installMockCanvas();
         const overlay = new GestureOverlay(TEST_I18N);
         overlay.show();
-        const hints = Array.from(document.querySelectorAll("div[aria-hidden='true']")).filter((el) => el.tagName === "DIV");
+        const hints = document.querySelectorAll("div[data-gesture-flow-overlay='hint']");
         expect(hints.length).toBe(1);
         overlay.destroy();
     });
@@ -116,8 +116,8 @@ describe("GestureOverlay — 元素创建与幂等性", () => {
         overlay.show();
         overlay.show();
         overlay.show();
-        expect(document.querySelectorAll("canvas").length).toBe(1);
-        const hints = Array.from(document.querySelectorAll("div[aria-hidden='true']")).filter((el) => el.tagName === "DIV");
+        expect(document.querySelectorAll("canvas[data-gesture-flow-overlay='trail']").length).toBe(1);
+        const hints = document.querySelectorAll("div[data-gesture-flow-overlay='hint']");
         expect(hints.length).toBe(1);
         overlay.destroy();
     });
@@ -127,8 +127,8 @@ describe("GestureOverlay — 元素创建与幂等性", () => {
         const overlay = new GestureOverlay(TEST_I18N);
         overlay.show();
         overlay.destroy();
-        expect(document.querySelectorAll("canvas").length).toBe(0);
-        const hints = Array.from(document.querySelectorAll("div[aria-hidden='true']")).filter((el) => el.tagName === "DIV");
+        expect(document.querySelectorAll("canvas[data-gesture-flow-overlay='trail']").length).toBe(0);
+        const hints = document.querySelectorAll("div[data-gesture-flow-overlay='hint']");
         expect(hints.length).toBe(0);
     });
 
@@ -156,7 +156,7 @@ describe("GestureOverlay — Canvas 属性", () => {
         installMockCanvas();
         const overlay = new GestureOverlay(TEST_I18N);
         overlay.show();
-        const canvas = document.querySelector("canvas")!;
+        const canvas = document.querySelector("canvas[data-gesture-flow-overlay='trail']") as HTMLCanvasElement;
         expect(canvas.style.pointerEvents).toBe("none");
         overlay.destroy();
     });
@@ -165,7 +165,7 @@ describe("GestureOverlay — Canvas 属性", () => {
         installMockCanvas();
         const overlay = new GestureOverlay(TEST_I18N);
         overlay.show();
-        const canvas = document.querySelector("canvas")!;
+        const canvas = document.querySelector("canvas[data-gesture-flow-overlay='trail']") as HTMLCanvasElement;
         expect(canvas.getAttribute("aria-hidden")).toBe("true");
         overlay.destroy();
     });
@@ -174,7 +174,7 @@ describe("GestureOverlay — Canvas 属性", () => {
         installMockCanvas();
         const overlay = new GestureOverlay(TEST_I18N);
         overlay.show();
-        const canvas = document.querySelector("canvas")!;
+        const canvas = document.querySelector("canvas[data-gesture-flow-overlay='trail']") as HTMLCanvasElement;
         expect(canvas.style.position).toBe("fixed");
         overlay.destroy();
     });
@@ -183,7 +183,7 @@ describe("GestureOverlay — Canvas 属性", () => {
         installMockCanvas();
         const overlay = new GestureOverlay(TEST_I18N);
         overlay.show();
-        const canvas = document.querySelector("canvas")!;
+        const canvas = document.querySelector("canvas[data-gesture-flow-overlay='trail']") as HTMLCanvasElement;
         expect(canvas.width).toBe(1280);
         expect(canvas.height).toBe(720);
         overlay.destroy();
@@ -194,7 +194,7 @@ describe("GestureOverlay — Canvas 属性", () => {
         Object.defineProperty(window, "devicePixelRatio", { value: 2, configurable: true });
         const overlay = new GestureOverlay(TEST_I18N);
         overlay.show();
-        const canvas = document.querySelector("canvas")!;
+        const canvas = document.querySelector("canvas[data-gesture-flow-overlay='trail']") as HTMLCanvasElement;
         expect(canvas.width).toBe(2560);
         expect(canvas.height).toBe(1440);
         overlay.destroy();
@@ -452,7 +452,7 @@ describe("GestureOverlay — 轨迹与提示渲染", () => {
             directions: ["R", "D"],
             status: "tracking",
         }));
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         const left = parseInt(hint.style.left, 10);
         const top = parseInt(hint.style.top, 10);
         expect(left).toBeGreaterThanOrEqual(50);
@@ -486,7 +486,7 @@ describe("GestureOverlay — commandLabel 换行", () => {
             status: "tracking",
             commandLabel: "测试命令",
         }));
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         expect(hint.style.whiteSpace).toBe("pre-line");
         overlay.destroy();
     });
@@ -513,7 +513,7 @@ describe("GestureOverlay — commandLabel 换行", () => {
             status: "tracking",
             commandLabel: "<script>alert(1)</script>",
         }));
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         // textContent should contain the raw string, not be executed as HTML
         expect(hint.textContent).toContain("<script>");
         expect(hint.querySelectorAll("script").length).toBe(0);
@@ -536,7 +536,7 @@ describe("GestureOverlay — 提示边缘钳制", () => {
             directions: ["R"],
             status: "tracking",
         }));
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         mockHintRect(hint, HINT_W, HINT_H);
         // Re-position with mocked rect
         overlay.update(makeState({
@@ -558,7 +558,7 @@ describe("GestureOverlay — 提示边缘钳制", () => {
             directions: ["D"],
             status: "tracking",
         }));
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         mockHintRect(hint, HINT_W, HINT_H);
         overlay.update(makeState({
             points: [{ x: 100, y: 710 }],
@@ -579,7 +579,7 @@ describe("GestureOverlay — 提示边缘钳制", () => {
             directions: ["R"],
             status: "tracking",
         }));
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         mockHintRect(hint, HINT_W, HINT_H);
         overlay.update(makeState({
             points: [{ x: 0, y: 0 }],
@@ -604,7 +604,7 @@ describe("GestureOverlay — 提示边缘钳制", () => {
             directions: ["R"],
             status: "tracking",
         }));
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         mockHintRect(hint, HINT_W, HINT_H);
         overlay.update(makeState({
             points: [{ x: 10, y: 10 }],
@@ -633,7 +633,7 @@ describe("GestureOverlay — 主题适配", () => {
         installMockCanvas();
         const overlay = new GestureOverlay(TEST_I18N);
         overlay.show();
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         expect(hint).toBeTruthy();
         expect(hint.style.position).toBe("fixed");
         expect(hint.style.pointerEvents).toBe("none");
@@ -671,7 +671,7 @@ describe("GestureOverlay — resize 后提示位置", () => {
             directions: ["R"],
             status: "tracking",
         }));
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         mockHintRect(hint, 100, 30);
         // Re-position with mocked rect
         overlay.update(makeState({
@@ -777,7 +777,7 @@ describe("GestureOverlay — 不使用 innerHTML", () => {
             directions: ["R", "D"],
             status: "tracking",
         }));
-        const hint = document.querySelector("div[aria-hidden='true']") as HTMLDivElement;
+        const hint = document.querySelector("div[data-gesture-flow-overlay='hint']") as HTMLDivElement;
         expect(hint.textContent).toBe("R → D");
         overlay.destroy();
     });
@@ -794,8 +794,8 @@ describe("GestureOverlay — 插件卸载后无残留", () => {
             status: "tracking",
         }));
         overlay.destroy();
-        expect(document.querySelectorAll("canvas").length).toBe(0);
-        const hints = Array.from(document.querySelectorAll("div[aria-hidden='true']")).filter((el) => el.tagName === "DIV");
+        expect(document.querySelectorAll("canvas[data-gesture-flow-overlay='trail']").length).toBe(0);
+        const hints = document.querySelectorAll("div[data-gesture-flow-overlay='hint']");
         expect(hints.length).toBe(0);
     });
 
@@ -810,7 +810,7 @@ describe("GestureOverlay — 插件卸载后无残留", () => {
         }));
         overlay.destroy();
         vi.advanceTimersByTime(400);
-        expect(document.querySelectorAll("div[aria-hidden='true']").length).toBe(0);
+        expect(document.querySelectorAll("div[data-gesture-flow-overlay='hint']").length).toBe(0);
         vi.useRealTimers();
     });
 });

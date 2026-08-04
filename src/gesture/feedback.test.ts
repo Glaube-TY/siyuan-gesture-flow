@@ -66,7 +66,7 @@ describe("GestureFeedbackController — RAF 合并", () => {
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
         const updateSpy = vi.spyOn(overlay, "update");
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]);
         controller.onStateChange(session);
@@ -93,15 +93,15 @@ describe("GestureFeedbackController — RAF 合并", () => {
     it("onUpdate 不会在一次事件中创建新 DOM", () => {
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]);
         controller.onStateChange(session);
 
-        const canvasCountBefore = document.querySelectorAll("canvas").length;
+        const canvasCountBefore = document.querySelectorAll("canvas[data-gesture-flow-overlay='trail']").length;
         controller.onUpdate(session);
         controller.onUpdate(session);
-        const canvasCountAfter = document.querySelectorAll("canvas").length;
+        const canvasCountAfter = document.querySelectorAll("canvas[data-gesture-flow-overlay='trail']").length;
         expect(canvasCountAfter).toBe(canvasCountBefore);
 
         controller.destroy();
@@ -111,7 +111,7 @@ describe("GestureFeedbackController — RAF 合并", () => {
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
         const updateSpy = vi.spyOn(overlay, "update");
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]);
         controller.onStateChange(session);
@@ -136,7 +136,7 @@ describe("GestureFeedbackController — 生命周期", () => {
     it("onStateChange(TRACKING) 启动 Overlay", () => {
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         expect(overlay.canvasMounted).toBe(false);
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]);
@@ -148,7 +148,7 @@ describe("GestureFeedbackController — 生命周期", () => {
     it("onCancel 立即隐藏", () => {
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]);
         controller.onStateChange(session);
@@ -162,7 +162,7 @@ describe("GestureFeedbackController — 生命周期", () => {
         vi.useFakeTimers();
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
         controller.onStateChange(session);
@@ -177,7 +177,7 @@ describe("GestureFeedbackController — 生命周期", () => {
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
         const showFinalSpy = vi.spyOn(overlay, "showFinalThenHide");
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 30, y: 0 }]);
         session.addPoint(80, 0, 100);
@@ -194,14 +194,14 @@ describe("GestureFeedbackController — 生命周期", () => {
     it("destroy 移除所有元素", () => {
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 50, y: 0 }]);
         controller.onStateChange(session);
         controller.destroy();
 
-        expect(document.querySelectorAll("canvas").length).toBe(0);
-        const hints = Array.from(document.querySelectorAll("div[aria-hidden='true']")).filter((el) => el.tagName === "DIV");
+        expect(document.querySelectorAll("canvas[data-gesture-flow-overlay='trail']").length).toBe(0);
+        const hints = document.querySelectorAll("div[data-gesture-flow-overlay='hint']");
         expect(hints.length).toBe(0);
     });
 });
@@ -210,7 +210,7 @@ describe("GestureFeedbackController — 普通右键不可见", () => {
     it("PENDING 状态不启动 Overlay", () => {
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makePendingSession();
         controller.onStateChange(session);
@@ -225,7 +225,7 @@ describe("GestureFeedbackController — 定时器竞争", () => {
         vi.useFakeTimers();
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         // Gesture A: complete
         const sessionA = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
@@ -260,7 +260,7 @@ describe("GestureFeedbackController — 定时器竞争", () => {
         vi.useFakeTimers();
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const sessionA = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
         controller.onStateChange(sessionA);
@@ -281,7 +281,7 @@ describe("GestureFeedbackController — 定时器竞争", () => {
         vi.useFakeTimers();
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         for (let i = 0; i < 3; i++) {
             const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
@@ -311,7 +311,7 @@ describe("GestureFeedbackController — 定时器竞争", () => {
         vi.useFakeTimers();
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
         controller.onStateChange(session);
@@ -335,7 +335,7 @@ describe("GestureFeedbackController — 定时器竞争", () => {
         vi.useFakeTimers();
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         const session = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);
         controller.onStateChange(session);
@@ -345,14 +345,14 @@ describe("GestureFeedbackController — 定时器竞争", () => {
         controller.destroy();
         // Advance past the delay — no crash, no elements
         vi.advanceTimersByTime(400);
-        expect(document.querySelectorAll("canvas").length).toBe(0);
+        expect(document.querySelectorAll("canvas[data-gesture-flow-overlay='trail']").length).toBe(0);
     });
 
     it("新手势 PENDING 阶段没有可见轨迹和提示", () => {
         vi.useFakeTimers();
         const engine = new GestureEngine();
         const overlay = new GestureOverlay(TEST_I18N);
-        const controller = new GestureFeedbackController(engine, overlay);
+        const controller = new GestureFeedbackController({ engine, overlay });
 
         // First gesture completes and shows final result
         const sessionA = makeTrackingSession([{ x: 0, y: 0 }, { x: 100, y: 0 }]);

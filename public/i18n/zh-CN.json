@@ -3,5 +3,9 @@
     "loadingPlugin": "正在加载手势流",
     "unloadingPlugin": "正在卸载手势流",
     "gestureTooLong": "手势过长",
-    "gestureUnrecognised": "未识别"
+    "gestureUnrecognised": "未识别",
+    "cmdTabsPrevious": "上一个标签页",
+    "cmdTabsNext": "下一个标签页",
+    "cmdScrollTop": "滚动到顶部",
+    "cmdScrollBottom": "滚动到底部"
 }

@@ -3,5 +3,9 @@
     "loadingPlugin": "Loading GestureFlow",
     "unloadingPlugin": "Unloading GestureFlow",
     "gestureTooLong": "Gesture too long",
-    "gestureUnrecognised": "Unrecognised"
+    "gestureUnrecognised": "Unrecognised",
+    "cmdTabsPrevious": "Previous tab",
+    "cmdTabsNext": "Next tab",
+    "cmdScrollTop": "Scroll to top",
+    "cmdScrollBottom": "Scroll to bottom"
 }

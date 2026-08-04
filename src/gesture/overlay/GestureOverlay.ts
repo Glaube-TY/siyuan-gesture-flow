@@ -170,6 +170,7 @@ export class GestureOverlay {
     private createCanvas(): void {
         const canvas = document.createElement("canvas");
         canvas.setAttribute("aria-hidden", "true");
+        canvas.setAttribute("data-gesture-flow-overlay", "trail");
         canvas.style.position = "fixed";
         canvas.style.inset = "0";
         canvas.style.left = "0";
@@ -191,6 +192,7 @@ export class GestureOverlay {
     private createHint(): void {
         const hint = document.createElement("div");
         hint.setAttribute("aria-hidden", "true");
+        hint.setAttribute("data-gesture-flow-overlay", "hint");
         hint.style.position = "fixed";
         hint.style.pointerEvents = "none";
         hint.style.zIndex = "100000";
