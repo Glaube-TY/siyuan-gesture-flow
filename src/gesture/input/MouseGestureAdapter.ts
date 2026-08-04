@@ -96,14 +96,43 @@ export class MouseGestureAdapter extends InputAdapter {
      * would otherwise appear after a completed or cancelled gesture.
      *
      * The window is short ({@link POST_GESTURE_SUPPRESS_MS}) so it does
-     * not affect the next independent right-click.
+     * not affect the next independent right-click.  Unlike the previous
+     * implementation, the window is **not** closed early when a
+     * `contextmenu` is eaten — it stays open until the timer expires, a
+     * new `pointerdown` starts, or the adapter detaches.  This ensures
+     * that a single right-click interaction cannot leak a second menu
+     * through the tail of the suppression window.
      */
     private postGestureSuppress = false;
+
+    /** Generation tag bound to the current suppression window. */
+    private postGestureSuppressGeneration = 0;
 
     private postGestureSuppressTimer: ReturnType<typeof setTimeout> | null = null;
 
     /** Duration of the post-gesture suppression window (ms). */
     private static readonly POST_GESTURE_SUPPRESS_MS = 400;
+
+    /**
+     * Adapter lifecycle generation.  Incremented on `detach` so that any
+     * pending microtask (e.g. contextmenu replay) can detect that the
+     * adapter is no longer in the same lifecycle and abort safely.
+     */
+    private lifecycleGeneration = 0;
+
+    /**
+     * Interaction generation.  Incremented on every new right-click
+     * `pointerdown` so that a pending replay from a previous interaction
+     * can detect that a new interaction has started and abort safely.
+     */
+    private interactionGeneration = 0;
+
+    /**
+     * Token of the currently-allowed contextmenu replay.  Only the replay
+     * microtask holding the latest token is allowed to execute; any
+     * superseded token is silently discarded.
+     */
+    private replayToken = 0;
 
     /**
      * WeakSet of events created by this adapter for replay.  The contextmenu
@@ -165,10 +194,15 @@ export class MouseGestureAdapter extends InputAdapter {
         this.clearTimeout();
         this.releaseCapture();
         // Clear any pending contextmenu state so unload leaves nothing behind.
+        // Increment lifecycle generation so any pending replay microtask
+        // detects the lifecycle change and aborts safely.
         this.clearPostGestureSuppressTimer();
         this.postGestureSuppress = false;
+        this.postGestureSuppressGeneration++;
         this.gestureConfirmed = false;
         this.contextmenuSnapshot = null;
+        this.replayToken++; // invalidate any pending replay
+        this.lifecycleGeneration++;
         this.attached = false;
         this.target = null;
     }
@@ -199,8 +233,13 @@ export class MouseGestureAdapter extends InputAdapter {
         // gesture so it cannot shield the new right-click.
         this.clearPostGestureSuppressTimer();
         this.postGestureSuppress = false;
+        this.postGestureSuppressGeneration++;
         this.gestureConfirmed = false;
         this.contextmenuSnapshot = null;
+        // A new interaction supersedes any pending replay from the previous
+        // one — increment the replay token so the old microtask aborts.
+        this.replayToken++;
+        this.interactionGeneration++;
         this.pointerId = e.pointerId;
         session.addPoint(e.clientX, e.clientY, this.timestamp(e));
         this.capture(e);
@@ -244,6 +283,9 @@ export class MouseGestureAdapter extends InputAdapter {
                 // Any contextmenu for this right-click must be discarded,
                 // regardless of the final direction or command.
                 this.gestureConfirmed = true;
+                // Entering TRACKING invalidates any pending plain-right-click
+                // replay — the interaction is no longer a plain click.
+                this.replayToken++;
                 this.events.onStateChange?.(session);
             }
         }
@@ -288,6 +330,9 @@ export class MouseGestureAdapter extends InputAdapter {
             // the normal right-click menu.  If no contextmenu was intercepted,
             // the natural contextmenu (if any) will pass through untouched.
             const snapshot = this.contextmenuSnapshot;
+            // Clear the snapshot immediately — the replay microtask uses
+            // its own local copy and must not depend on mutable state.
+            this.contextmenuSnapshot = null;
             this.reset();
             if (snapshot) {
                 this.scheduleContextmenuReplay(snapshot);
@@ -334,17 +379,21 @@ export class MouseGestureAdapter extends InputAdapter {
             return;
         }
 
-        // Post-gesture suppression: a confirmed gesture just ended.  Eat the
-        // trailing contextmenu that some platforms dispatch after pointerup.
-        // This is direction- and command-agnostic — it applies to ALL
-        // confirmed gestures (U, D, L, R, compounds, cancelled, etc.).
+        // Post-gesture suppression: a confirmed gesture just ended.  Eat
+        // every trailing contextmenu that some platforms dispatch after
+        // pointerup.  This is direction- and command-agnostic — it applies
+        // to ALL confirmed gestures (U, D, L, R, compounds, cancelled, etc.).
+        //
+        // The suppression window is NOT closed early after eating one
+        // contextmenu: a single right-click interaction may produce more
+        // than one trailing contextmenu on some platforms, and closing
+        // early would let the second one through.  The window only ends
+        // when the timer expires, a new pointerdown starts, or the adapter
+        // detaches.
         if (this.postGestureSuppress) {
             e.preventDefault();
             e.stopPropagation();
             e.stopImmediatePropagation();
-            // Ate the expected trailing menu — clear suppression early.
-            this.clearPostGestureSuppressTimer();
-            this.postGestureSuppress = false;
             return;
         }
 
@@ -518,7 +567,7 @@ export class MouseGestureAdapter extends InputAdapter {
             // PENDING cancel — no gesture was formed.  If we intercepted a
             // contextmenu, replay it so the user gets the normal menu.
             const snapshot = this.contextmenuSnapshot;
-            this.discardContextmenu();
+            this.contextmenuSnapshot = null;
             if (snapshot) {
                 this.scheduleContextmenuReplay(snapshot);
             }
@@ -546,14 +595,25 @@ export class MouseGestureAdapter extends InputAdapter {
      * The window is short ({@link POST_GESTURE_SUPPRESS_MS}) so it does not
      * affect the next independent right-click.  A new `pointerdown` also
      * terminates the suppression immediately.
+     *
+     * The timer callback captures the current
+     * {@link postGestureSuppressGeneration} so that a stale timer (e.g. one
+     * whose cleanup was raced by a new `pointerdown`) cannot clear a newer
+     * gesture's suppression state.
      */
     private enterPostGestureSuppress(): void {
         this.clearPostGestureSuppressTimer();
         this.postGestureSuppress = true;
+        const generation = this.postGestureSuppressGeneration;
         const self = this;
         this.postGestureSuppressTimer = setTimeout(() => {
-            self.postGestureSuppress = false;
-            self.postGestureSuppressTimer = null;
+            // Only clear if this timer is still the current generation —
+            // a new pointerdown or detach has already incremented the
+            // generation and handled cleanup itself.
+            if (self.postGestureSuppressGeneration === generation) {
+                self.postGestureSuppress = false;
+                self.postGestureSuppressTimer = null;
+            }
         }, MouseGestureAdapter.POST_GESTURE_SUPPRESS_MS);
     }
 
@@ -590,6 +650,12 @@ export class MouseGestureAdapter extends InputAdapter {
      * avoiding races with `reset()` cleanup.  The replayed event is marked
      * with a `WeakSet` so the adapter does not re-intercept it.
      *
+     * Because `queueMicrotask` cannot be cancelled, the microtask captures
+     * the current lifecycle generation, interaction generation, and replay
+     * token.  Before dispatching, it re-checks all three: if any has changed
+     * (detach, new pointerdown, TRACKING reached, or a newer replay
+     * superseded this one), the microtask aborts silently.
+     *
      * The replay target is resolved in priority order:
      * 1. The original event target (if still connected to the document).
      * 2. `document.elementFromPoint(clientX, clientY)` (current element at
@@ -597,8 +663,19 @@ export class MouseGestureAdapter extends InputAdapter {
      * 3. `document.body` (last resort).
      */
     private scheduleContextmenuReplay(snapshot: ContextmenuSnapshot): void {
+        const lifecycle = this.lifecycleGeneration;
+        const interaction = this.interactionGeneration;
+        const token = ++this.replayToken;
         const self = this;
         queueMicrotask(() => {
+            // Abort if the adapter detached, a new interaction started,
+            // the session reached TRACKING, or a newer replay superseded
+            // this one.
+            if (!self.attached) return;
+            if (self.lifecycleGeneration !== lifecycle) return;
+            if (self.interactionGeneration !== interaction) return;
+            if (self.replayToken !== token) return;
+            if (self.gestureConfirmed) return;
             self.dispatchContextmenuReplay(snapshot);
         });
     }
