@@ -492,3 +492,227 @@ describe("SettingsPanel — 组件销毁与订阅清理", () => {
         }).not.toThrow();
     });
 });
+
+// ---------------------------------------------------------------------------
+// Dialog height chain + unified background.
+//
+// The dialog-wide rules live in the global src/index.scss (the Svelte
+// scoped style cannot reach SiYuan's b3-dialog DOM).  Happy DOM cannot
+// compute real flex heights, so these tests assert the structural and
+// styling responsibilities: every b3-dialog rule is scoped under
+// .gf-settings-dialog, the height chain (container → body → host →
+// root) is a flex chain, backgrounds are unified on gf-root, and the
+// nav/content own their scroll regions.
+// ---------------------------------------------------------------------------
+
+/** Strip comments, then split a SCSS source into its top-level rule blocks. */
+function topLevelBlocks(source: string): { selector: string; body: string }[] {
+    const clean = source.replace(/\/\*[\s\S]*?\*\//g, "");
+    const blocks: { selector: string; body: string }[] = [];
+    let depth = 0;
+    let current: { selector: string; lines: string[] } | null = null;
+    for (const rawLine of clean.split("\n")) {
+        const line = rawLine.trim();
+        if (!line) continue;
+        const braces = (line.match(/\{/g) ?? []).length - (line.match(/\}/g) ?? []).length;
+        if (depth === 0) {
+            current = { selector: line.replace(/\s*\{\s*$/, ""), lines: [] };
+        } else if (current) {
+            current.lines.push(line);
+        }
+        depth += braces;
+        if (depth === 0 && current) {
+            blocks.push({ selector: current.selector, body: current.lines.join("\n") });
+            current = null;
+        }
+    }
+    return blocks;
+}
+
+/** Extract the body of a single-level nested block like `.foo { ... }`. */
+function nestedBlock(body: string, selector: string): string | null {
+    const idx = body.indexOf(`${selector} {`);
+    if (idx === -1) return null;
+    const open = body.indexOf("{", idx);
+    const close = body.indexOf("}", open);
+    if (open === -1 || close === -1) return null;
+    return body.slice(open + 1, close);
+}
+
+/** Extract the body of a top-level Svelte scoped style rule. */
+function scopedRule(source: string, selector: string): string | null {
+    const match = source.match(new RegExp(`${selector.replace(/\./g, "\\.")}\\s*\\{[^}]+\\}`));
+    return match ? match[0] : null;
+}
+
+describe("SettingsPanel — Dialog 高度链路（全局 index.scss）", () => {
+    let scss: string;
+
+    beforeEach(() => {
+        scss = readFileSync(resolve(__dirname, "../index.scss"), "utf-8");
+    });
+
+    it("index.scss 中所有 b3-dialog 规则都限定在 gf-settings-dialog 作用域内", () => {
+        expect(scss).toContain("gf-settings-dialog");
+        const blocks = topLevelBlocks(scss);
+        for (const block of blocks) {
+            if (block.body.includes("b3-dialog")) {
+                expect(block.selector).toContain("gf-settings-dialog");
+            }
+        }
+    });
+
+    it("b3-dialog__container 被设计为纵向 Flex 容器且不随内容伸缩", () => {
+        const blocks = topLevelBlocks(scss);
+        const scoped = blocks.find((b) => b.selector.includes("gf-settings-dialog"));
+        expect(scoped).toBeTruthy();
+        const container = nestedBlock(scoped!.body, ".b3-dialog__container");
+        expect(container).toContain("display: flex");
+        expect(container).toContain("flex-direction: column");
+        expect(container).toMatch(/flex:\s*0 0 auto/);
+    });
+
+    it("b3-dialog__header 不参与内容区伸缩", () => {
+        const blocks = topLevelBlocks(scss);
+        const scoped = blocks.find((b) => b.selector.includes("gf-settings-dialog"));
+        const header = nestedBlock(scoped!.body, ".b3-dialog__header");
+        expect(header).toMatch(/flex:\s*0 0 auto/);
+    });
+
+    it("b3-dialog__body 被设计为 flex 1、min-height 0 且隐藏溢出", () => {
+        const blocks = topLevelBlocks(scss);
+        const scoped = blocks.find((b) => b.selector.includes("gf-settings-dialog"));
+        const body = nestedBlock(scoped!.body, ".b3-dialog__body");
+        expect(body).toMatch(/flex:\s*1 1 auto/);
+        expect(body).toContain("min-height: 0");
+        expect(body).toContain("min-width: 0");
+        expect(body).toContain("overflow: hidden");
+    });
+
+    it("gf-dialog-host 被设计为 flex 1、height 100% 和 min-height 0", () => {
+        const blocks = topLevelBlocks(scss);
+        const scoped = blocks.find((b) => b.selector.includes("gf-settings-dialog"));
+        const host = nestedBlock(scoped!.body, ".gf-dialog-host");
+        expect(host).toMatch(/flex:\s*1 1 auto/);
+        expect(host).toContain("height: 100%");
+        expect(host).toContain("width: 100%");
+        expect(host).toContain("min-height: 0");
+        expect(host).toContain("min-width: 0");
+        expect(host).toContain("display: flex");
+        expect(host).toContain("overflow: hidden");
+    });
+
+    it("gf-root 在全局样式中被设计为 flex 1 填满宿主", () => {
+        const blocks = topLevelBlocks(scss);
+        const scoped = blocks.find((b) => b.selector.includes("gf-settings-dialog"));
+        const root = nestedBlock(scoped!.body, ".gf-root");
+        expect(root).toMatch(/flex:\s*1 1 auto/);
+        expect(root).toContain("min-height: 0");
+    });
+});
+
+describe("SettingsPanel — 统一背景与滚动职责", () => {
+    let source: string;
+
+    beforeEach(() => {
+        source = readFileSync(resolve(__dirname, "SettingsPanel.svelte"), "utf-8");
+    });
+
+    it("gf-root 具有统一页面背景职责（var(--b3-theme-background)）", () => {
+        const root = scopedRule(source, ".gf-root");
+        expect(root).toBeTruthy();
+        expect(root).toMatch(/background:\s*var\(--b3-theme-background/);
+    });
+
+    it("gf-nav 不再使用与整体不同的独立实色背景（transparent）", () => {
+        const nav = scopedRule(source, ".gf-nav");
+        expect(nav).toBeTruthy();
+        expect(nav).toMatch(/background:\s*transparent/);
+        // The nav must not paint its own opaque background variable.
+        expect(nav).not.toMatch(/background:\s*var\(--b3-theme-background/);
+    });
+
+    it("gf-content 不再使用另一套独立背景（transparent）", () => {
+        const content = scopedRule(source, ".gf-content");
+        expect(content).toBeTruthy();
+        expect(content).toMatch(/background:\s*transparent/);
+    });
+
+    it("gf-nav 具有纵向滚动能力", () => {
+        const nav = scopedRule(source, ".gf-nav");
+        expect(nav).toContain("overflow-y: auto");
+        expect(nav).toContain("min-height: 0");
+    });
+
+    it("gf-content 具有独立纵向滚动能力", () => {
+        const content = scopedRule(source, ".gf-content");
+        expect(content).toContain("overflow-y: auto");
+        expect(content).toContain("min-height: 0");
+    });
+
+    it("窄屏媒体规则仍然存在（导航转顶部横向）", () => {
+        expect(source).toMatch(/@media\s*\(max-width:\s*560px\)/);
+        const mediaSection = source.slice(source.indexOf("@media"));
+        expect(mediaSection).toContain("flex-direction: column");
+        expect(mediaSection).toContain("flex: 0 0 auto");
+        expect(mediaSection).toContain("overflow-x: auto");
+    });
+});
+
+describe("SettingsPanel — 标签切换不重建外壳", () => {
+    let mounted: MountedPanel;
+
+    beforeEach(() => {
+        mounted = mountPanel();
+    });
+
+    afterEach(() => {
+        cleanup(mounted.component);
+    });
+
+    it("切换五个标签后 gf-root / gf-nav / gf-content 外壳不被重新创建", async () => {
+        const root = mounted.host.querySelector(".gf-root");
+        const nav = mounted.host.querySelector(".gf-nav");
+        const content = mounted.host.querySelector(".gf-content");
+        expect(root).toBeTruthy();
+        expect(nav).toBeTruthy();
+        expect(content).toBeTruthy();
+
+        const buttons = mounted.host.querySelectorAll(".gf-nav-btn");
+        expect(buttons.length).toBe(5);
+        const firstNavChild = nav?.firstElementChild;
+
+        for (let i = 0; i < buttons.length; i++) {
+            (buttons[i] as HTMLElement).click();
+            await Promise.resolve();
+            expect(mounted.host.querySelector(".gf-root")).toBe(root);
+            expect(mounted.host.querySelector(".gf-nav")).toBe(nav);
+            expect(mounted.host.querySelector(".gf-content")).toBe(content);
+            // Nav structure is untouched — same button order, same first child.
+            expect(nav?.firstElementChild).toBe(firstNavChild);
+            expect(nav?.querySelectorAll(".gf-nav-btn").length).toBe(5);
+        }
+    });
+
+    it("切换标签只替换右侧内容，左侧导航结构不变", async () => {
+        const nav = mounted.host.querySelector(".gf-nav");
+        const buttons = mounted.host.querySelectorAll(".gf-nav-btn");
+        const labelsBefore = Array.from(buttons).map((b) => (b.textContent ?? "").trim());
+
+        (buttons[4] as HTMLElement).click(); // data tab
+        await Promise.resolve();
+
+        const navAfter = mounted.host.querySelector(".gf-nav");
+        expect(navAfter).toBe(nav);
+        const labelsAfter = Array.from(navAfter!.querySelectorAll(".gf-nav-btn")).map(
+            (b) => (b.textContent ?? "").trim(),
+        );
+        expect(labelsAfter).toEqual(labelsBefore);
+    });
+
+    it("gf-root 仍然包含 gf-nav 和 gf-content 两个区域", () => {
+        const root = mounted.host.querySelector(".gf-root");
+        expect(root?.querySelector(":scope > .gf-nav")).toBeTruthy();
+        expect(root?.querySelector(":scope > .gf-content")).toBeTruthy();
+    });
+});

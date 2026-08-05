@@ -1,0 +1,80 @@
+/*
+ * Global styles — imported by src/index.ts.
+ *
+ * Layout styles for the settings dialog live here (not in the Svelte
+ * component's scoped <style>) because they must reach SiYuan's dialog
+ * DOM (b3-dialog__container / b3-dialog__header / b3-dialog__body),
+ * which is outside the Svelte component and therefore has no Svelte
+ * scoping attribute.
+ *
+ * Every rule below is scoped under `.gf-settings-dialog` — the class
+ * SettingsDialog adds to its own Dialog element — so no other SiYuan
+ * b3-dialog is affected.
+ *
+ * Height chain (fixed, content never re-sizes the dialog):
+ *
+ *   gf-settings-dialog
+ *   └─ .b3-dialog__container   flex column, keeps the Dialog's own
+ *      │                        inline width/height
+ *      ├─ .b3-dialog__header    flex: none — never participates in
+ *      │                        content-area stretching
+ *      └─ .b3-dialog__body      flex: 1 1 auto, min-height: 0,
+ *                               overflow hidden (single scroll region)
+ *         └─ .gf-dialog-host    flex: 1 1 auto, 100% × 100%, flex
+ *            │                  container itself
+ *            └─ .gf-root        flex: 1 1 auto — fills the host
+ *
+ * Background: the panel page (gf-root) uses --b3-theme-background;
+ * gf-nav / gf-content are transparent so left and right share one
+ * background layer, while setting cards keep --b3-theme-surface.
+ * The dialog body is painted with the same background variable so any
+ * region not covered by content still matches the page layer.
+ */
+.gf-settings-dialog {
+    .b3-dialog__container {
+        /* Vertical flex chain from the dialog container down. */
+        display: flex;
+        flex-direction: column;
+        /* Keep the Dialog's own inline width/height — never let the
+           content re-size or shrink the container. */
+        flex: 0 0 auto;
+    }
+
+    .b3-dialog__header {
+        /* Title bar does not participate in content-area stretching
+           and its height stays as SiYuan defines it. */
+        flex: 0 0 auto;
+    }
+
+    .b3-dialog__body {
+        display: flex;
+        flex-direction: column;
+        flex: 1 1 auto;
+        min-height: 0;
+        min-width: 0;
+        /* One scroll region only: gf-content scrolls, the dialog body
+           itself never shows a second scrollbar. */
+        overflow: hidden;
+        /* Same background layer as the panel page, so areas not covered
+           by content match gf-root visually. */
+        background: var(--b3-theme-background);
+    }
+
+    .gf-dialog-host {
+        display: flex;
+        flex: 1 1 auto;
+        width: 100%;
+        height: 100%;
+        min-width: 0;
+        min-height: 0;
+        overflow: hidden;
+    }
+
+    .gf-root {
+        /* Fill the host completely; the component's scoped style still
+           provides display:flex / overflow:hidden / height:100%. */
+        flex: 1 1 auto;
+        min-width: 0;
+        min-height: 0;
+    }
+}

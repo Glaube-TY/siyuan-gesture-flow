@@ -612,6 +612,11 @@
         overflow: hidden;
         font-family: var(--b3-theme-font-family, system-ui, sans-serif);
         color: var(--b3-theme-on-background, #1f2329);
+        /* One shared page background for the whole panel: nav and
+           content are transparent and inherit this layer, so the left
+           and right regions always match (and the dialog body below is
+           painted with the same variable in src/index.scss). */
+        background: var(--b3-theme-background, #fff);
     }
 
     /* ---- Left navigation ---- */
@@ -622,7 +627,13 @@
         gap: 2px;
         padding: 12px 8px;
         border-right: 1px solid var(--b3-border-color, #e9e9ea);
-        background: var(--b3-theme-background, transparent);
+        /* Transparent: the page background comes from gf-root, so the
+           nav can never drift into a different color layer. */
+        background: transparent;
+        /* Stretch to the full page height (flex stretch) and scroll
+           internally when there are more items than fit. */
+        min-height: 0;
+        overflow-y: auto;
     }
     .gf-nav-btn {
         background: transparent;
@@ -635,6 +646,9 @@
         color: var(--b3-theme-on-surface, #626262);
         border-radius: 6px;
         transition: background 0.12s ease, color 0.12s ease;
+        /* Never compress buttons when the nav is short on space — the
+           nav container scrolls instead (overflow-y: auto above). */
+        flex-shrink: 0;
     }
     .gf-nav-btn:hover {
         background: var(--b3-list-hover, rgba(0, 0, 0, 0.04));
@@ -649,11 +663,14 @@
     .gf-content {
         flex: 1 1 auto;
         min-width: 0;
+        min-height: 0;
         overflow-y: auto;
         padding: 16px 20px 32px;
         display: flex;
         flex-direction: column;
         gap: 20px;
+        /* Transparent: shares the gf-root page background. */
+        background: transparent;
     }
 
     /* ---- Bindings ---- */
@@ -710,6 +727,7 @@
             flex-direction: row;
             gap: 4px;
             overflow-x: auto;
+            overflow-y: hidden;
             border-right: none;
             border-bottom: 1px solid var(--b3-border-color, #e9e9ea);
             padding: 8px;

@@ -59,6 +59,13 @@ export class SettingsDialog {
             },
         });
 
+        // Scope the dialog-wide layout styles (height chain, scroll and
+        // background responsibilities live in src/index.scss) to this
+        // dialog only, so no other SiYuan b3-dialog is affected.
+        // siyuan@1.2.3's Dialog options do not expose containerClassName,
+        // so we tag the outermost element after construction instead.
+        this.dialog.element.classList.add("gf-settings-dialog");
+
         // Find the host element inside the Dialog's DOM and mount
         // the Svelte component.
         const host = this.dialog.element.querySelector(".gf-dialog-host");

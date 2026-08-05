@@ -29,7 +29,7 @@ interface MockDialogOpts {
 }
 interface MockDialogInstance {
     opts: MockDialogOpts;
-    element: { querySelector: (sel: string) => HTMLElement | null };
+    element: HTMLElement;
     destroyed: boolean;
     destroy: () => void;
 }
@@ -39,25 +39,41 @@ vi.mock("siyuan", () => {
     return {
         Dialog: class MockDialog {
             opts: MockDialogOpts;
-            element: { querySelector: (sel: string) => HTMLElement | null };
+            element: HTMLElement;
             destroyed = false;
 
             constructor(opts: MockDialogOpts) {
                 this.opts = opts;
-                // Simulate the host div that the real Dialog would
-                // render from the `content` string.
+                // Mimic the real SiYuan Dialog DOM shape that the
+                // global styles in src/index.scss target:
+                //   element
+                //   └─ .b3-dialog
+                //      └─ .b3-dialog__container
+                //         ├─ .b3-dialog__header
+                //         └─ .b3-dialog__body
+                //            └─ .gf-dialog-host (from `content`)
+                this.element = document.createElement("div");
+                const dialog = document.createElement("div");
+                dialog.className = "b3-dialog";
+                const container = document.createElement("div");
+                container.className = "b3-dialog__container";
+                const header = document.createElement("div");
+                header.className = "b3-dialog__header";
+                const body = document.createElement("div");
+                body.className = "b3-dialog__body";
                 const host = document.createElement("div");
                 host.className = "gf-dialog-host";
-                this.element = {
-                    querySelector: (sel: string) => {
-                        if (sel === ".gf-dialog-host") return host;
-                        return host.querySelector(sel);
-                    },
-                };
+                container.appendChild(header);
+                container.appendChild(body);
+                dialog.appendChild(container);
+                this.element.appendChild(dialog);
+                body.appendChild(host);
+                document.body.appendChild(this.element);
                 mockDialogs.push(this as unknown as MockDialogInstance);
             }
             destroy() {
                 this.destroyed = true;
+                this.element.remove();
             }
         },
     };
@@ -82,6 +98,7 @@ describe("SettingsDialog — 生命周期", () => {
     beforeEach(() => {
         mockPanelInstances.length = 0;
         mockDialogs.length = 0;
+        document.body.innerHTML = "";
     });
 
     afterEach(() => {
@@ -137,6 +154,26 @@ describe("SettingsDialog — 生命周期", () => {
         const dlg = new SettingsDialog();
         dlg.open(makeOpts());
         expect(mockDialogs[0].opts.content).toContain("gf-dialog-host");
+    });
+
+    it("Dialog 外层拥有 gf-settings-dialog 专属作用域类", () => {
+        const dlg = new SettingsDialog();
+        dlg.open(makeOpts());
+        // The class is added to the Dialog's outermost element so the
+        // global styles in src/index.scss can scope b3-dialog rules to
+        // this dialog only.
+        expect(mockDialogs[0].element.classList.contains("gf-settings-dialog")).toBe(true);
+    });
+
+    it("关闭 Dialog 后专属元素从文档中全部销毁", () => {
+        const dlg = new SettingsDialog();
+        dlg.open(makeOpts());
+        expect(document.querySelector(".gf-settings-dialog")).toBeTruthy();
+
+        dlg.close();
+
+        expect(document.querySelector(".gf-settings-dialog")).toBeNull();
+        expect(document.querySelector(".gf-dialog-host")).toBeNull();
     });
 
     it("Dialog 不使用 Setting.addItem 或 actionElement 结构", () => {
@@ -228,6 +265,7 @@ describe("SettingsDialog — 不使用 Setting 承载整页", () => {
     beforeEach(() => {
         mockPanelInstances.length = 0;
         mockDialogs.length = 0;
+        document.body.innerHTML = "";
     });
 
     it("Dialog 标题不是插件技术名称 siyuan-gesture-flow", () => {
