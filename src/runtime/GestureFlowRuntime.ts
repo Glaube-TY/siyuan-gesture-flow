@@ -63,12 +63,36 @@ export interface GestureFlowRuntimeOptions {
     /** i18n map used by the command label resolver. */
     i18n: Record<string, string>;
     /**
+     * Override the input-target exclusion predicate passed to the mouse
+     * adapter.  Defaults to {@link defaultGestureIgnoreTarget}: elements
+     * marked with `data-gesture-flow-recorder` (the settings gesture
+     * recorder) are excluded so recording right-clicks never trigger
+     * real gesture commands.
+     */
+    shouldIgnoreTarget?: (target: EventTarget | null) => boolean;
+    /**
      * Optional dev-mode logger.  Defaults to a no-op in production and
      * `console.debug` in dev mode.  Receives concise outcome lines
      * (sessionId, commandId, status) — never full session points, DOM
      * objects, or credentials.
      */
     onLog?: (message: string) => void;
+}
+
+/**
+ * Default input-target exclusion: targets inside an element marked with
+ * `data-gesture-flow-recorder` are ignored by the global gesture
+ * adapter.  The settings gesture recorder uses this marker so recording
+ * with the right button never starts a real gesture or opens SiYuan's
+ * context menu.  The filter is generic (marker-based) — it knows
+ * nothing about directions or commands, and disappears with the
+ * recorder DOM when the settings dialog closes.
+ */
+export function defaultGestureIgnoreTarget(target: EventTarget | null): boolean {
+    return (
+        target instanceof Element &&
+        target.closest("[data-gesture-flow-recorder]") !== null
+    );
 }
 
 /**
@@ -103,6 +127,7 @@ export class GestureFlowRuntime {
     private readonly overlayI18n: OverlayI18n;
     private readonly i18n: Record<string, string>;
     private readonly onLog: (message: string) => void;
+    private readonly shouldIgnoreTarget: (target: EventTarget | null) => boolean;
 
     private state: RuntimeState = "stopped";
     private config: GestureFlowConfig | null = null;
@@ -118,6 +143,7 @@ export class GestureFlowRuntime {
         this.overlayI18n = opts.overlayI18n;
         this.i18n = opts.i18n;
         this.onLog = opts.onLog ?? defaultLog;
+        this.shouldIgnoreTarget = opts.shouldIgnoreTarget ?? defaultGestureIgnoreTarget;
     }
 
     /** Current runtime state. */
@@ -286,6 +312,9 @@ export class GestureFlowRuntime {
                     controller.onCancel(session);
                     this.onLog(`gesture cancelled (${session.cancelReason})`);
                 },
+            },
+            {
+                shouldIgnoreTarget: this.shouldIgnoreTarget,
             },
         );
         this.adapter.attach(this.target);

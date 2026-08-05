@@ -865,3 +865,50 @@ describe("GestureEngine — 取消状态统一语义", () => {
         expect(result.cancelled).toBe(true);
     });
 });
+
+describe("GestureEngine — recognizePoints 纯数据入口一致性", () => {
+    const cases: { name: string; waypoints: [number, number][] }[] = [
+        { name: "单方向 R", waypoints: [[0, 0], [120, 0]] },
+        { name: "单方向 D", waypoints: [[0, 0], [0, 120]] },
+        { name: "复合 R → D", waypoints: [[0, 0], [120, 0], [120, 120]] },
+        { name: "复合 R → D → L", waypoints: [[0, 0], [120, 0], [120, 120], [0, 120]] },
+        { name: "短轨迹", waypoints: [[0, 0], [10, 0]] },
+    ];
+
+    for (const c of cases) {
+        it(`${c.name}：recognizePoints 与 recognize 结果一致`, () => {
+            const engine = new GestureEngine(DEFAULT_RECOGNIZER_CONFIG);
+            const points = buildPath(c.waypoints);
+            const session = makeCompletedSession(c.waypoints);
+
+            const viaSession = engine.recognize(session);
+            const viaPoints = engine.recognizePoints(points);
+
+            expect(viaPoints.valid).toBe(viaSession.valid);
+            expect(viaPoints.invalidReason).toBe(viaSession.invalidReason);
+            expect(viaPoints.directions).toEqual(viaSession.directions);
+            expect(viaPoints.rawDirections).toEqual(viaSession.rawDirections);
+            expect(viaPoints.rawPointCount).toBe(viaSession.rawPointCount);
+            expect(viaPoints.sampledPointCount).toBe(viaSession.sampledPointCount);
+            expect(viaPoints.simplifiedPointCount).toBe(viaSession.simplifiedPointCount);
+            expect(viaPoints.cancelled).toBe(false);
+        });
+    }
+
+    it("8 方向模式下斜向轨迹一致", () => {
+        const engine = new GestureEngine({ ...DEFAULT_RECOGNIZER_CONFIG, directionMode: 8 });
+        const points = buildPath([[0, 0], [120, 120]]); // diagonal
+        const session = makeCompletedSession([[0, 0], [120, 120]]);
+        const viaSession = engine.recognize(session);
+        const viaPoints = engine.recognizePoints(points);
+        expect(viaPoints.valid).toBe(true);
+        expect(viaPoints.directions).toEqual(viaSession.directions);
+    });
+
+    it("recognizePoints 从不报告 cancelled", () => {
+        const engine = new GestureEngine(DEFAULT_RECOGNIZER_CONFIG);
+        const result = engine.recognizePoints(buildPath([[0, 0], [120, 0]]));
+        expect(result.cancelled).toBe(false);
+        expect(result.cancelReason).toBeNull();
+    });
+});

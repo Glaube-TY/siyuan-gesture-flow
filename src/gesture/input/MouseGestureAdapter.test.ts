@@ -2039,3 +2039,110 @@ describe("MouseGestureAdapter — 诊断：普通右键双 contextmenu 假设顺
         expect(visibleMenus.length).toBe(2);
     });
 });
+
+// ---------------------------------------------------------------------------
+// Stage 5B: generic input-target exclusion (gesture recorder isolation).
+// ---------------------------------------------------------------------------
+
+describe("MouseGestureAdapter — 输入目标排除", () => {
+    it("排除目标上的右键 pointerdown 不创建 GestureSession", () => {
+        adapter = new MouseGestureAdapter(TEST_TRIGGER, events, {
+            shouldIgnoreTarget: (t) =>
+                t instanceof Element && t.closest("[data-gesture-flow-recorder]") !== null,
+        });
+        const recorder = document.createElement("div");
+        recorder.setAttribute("data-gesture-flow-recorder", "");
+        target.appendChild(recorder);
+        adapter.attach(target);
+
+        dispatchPointer(recorder, "pointerdown", {
+            button: 2,
+            buttons: RIGHT_BUTTON_MASK,
+            clientX: 0,
+            clientY: 0,
+        });
+        expect(events.onStateChange).not.toHaveBeenCalled();
+        expect(adapter.active).toBe(false);
+    });
+
+    it("排除目标上完整右键拖拽不触发任何全局回调", () => {
+        adapter = new MouseGestureAdapter(TEST_TRIGGER, events, {
+            shouldIgnoreTarget: (t) =>
+                t instanceof Element && t.closest("[data-gesture-flow-recorder]") !== null,
+        });
+        const recorder = document.createElement("div");
+        recorder.setAttribute("data-gesture-flow-recorder", "");
+        target.appendChild(recorder);
+        adapter.attach(target);
+
+        dispatchPointer(recorder, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0 });
+        dispatchPointer(recorder, "pointermove", { buttons: RIGHT_BUTTON_MASK, clientX: 40, clientY: 0 });
+        dispatchPointer(recorder, "pointerup", { button: 2, buttons: 0, clientX: 40, clientY: 0 });
+
+        expect(events.onStateChange).not.toHaveBeenCalled();
+        expect(events.onUpdate).not.toHaveBeenCalled();
+        expect(events.onComplete).not.toHaveBeenCalled();
+        expect(events.onCancel).not.toHaveBeenCalled();
+    });
+
+    it("录制区外的普通手势完全不受影响", () => {
+        adapter = new MouseGestureAdapter(TEST_TRIGGER, events, {
+            shouldIgnoreTarget: (t) =>
+                t instanceof Element && t.closest("[data-gesture-flow-recorder]") !== null,
+        });
+        const recorder = document.createElement("div");
+        recorder.setAttribute("data-gesture-flow-recorder", "");
+        target.appendChild(recorder);
+        adapter.attach(target);
+
+        dispatchPointer(target, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0 });
+        dispatchPointer(target, "pointermove", { buttons: RIGHT_BUTTON_MASK, clientX: 30, clientY: 0 });
+        dispatchPointer(target, "pointerup", { button: 2, buttons: 0, clientX: 30, clientY: 0 });
+
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it("录制区的 contextmenu 不被全局适配器截获", () => {
+        adapter = new MouseGestureAdapter(TEST_TRIGGER, events, {
+            shouldIgnoreTarget: (t) =>
+                t instanceof Element && t.closest("[data-gesture-flow-recorder]") !== null,
+        });
+        const recorder = document.createElement("div");
+        recorder.setAttribute("data-gesture-flow-recorder", "");
+        target.appendChild(recorder);
+        adapter.attach(target);
+
+        const menuEvent = new MouseEvent("contextmenu", { bubbles: true, cancelable: true, button: 2, clientX: 5, clientY: 5 });
+        recorder.dispatchEvent(menuEvent);
+
+        // 未被 preventDefault / stopPropagation → 录制器自己可以处理
+        expect(menuEvent.defaultPrevented).toBe(false);
+    });
+
+    it("移除标记后（录制器销毁）过滤不再生效，手势恢复", () => {
+        adapter = new MouseGestureAdapter(TEST_TRIGGER, events, {
+            shouldIgnoreTarget: (t) =>
+                t instanceof Element && t.closest("[data-gesture-flow-recorder]") !== null,
+        });
+        const recorder = document.createElement("div");
+        recorder.setAttribute("data-gesture-flow-recorder", "");
+        target.appendChild(recorder);
+        adapter.attach(target);
+
+        // 录制器被销毁：标记元素从 DOM 移除
+        recorder.remove();
+
+        dispatchPointer(target, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0 });
+        dispatchPointer(target, "pointermove", { buttons: RIGHT_BUTTON_MASK, clientX: 30, clientY: 0 });
+        dispatchPointer(target, "pointerup", { button: 2, buttons: 0, clientX: 30, clientY: 0 });
+
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+    });
+
+    it("默认无过滤器时行为与旧版一致", () => {
+        adapter = new MouseGestureAdapter(TEST_TRIGGER, events);
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0 });
+        expect(events.onStateChange).toHaveBeenCalledTimes(1);
+    });
+});

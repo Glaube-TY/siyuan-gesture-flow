@@ -1,6 +1,26 @@
 import { GestureCancelReason, GestureState } from "../types";
 import { GestureSession } from "../GestureSession";
-import { InputAdapter } from "./InputAdapter";
+import { GestureTriggerConfig } from "../types";
+import { InputAdapter, GestureAdapterEvents } from "./InputAdapter";
+
+/**
+ * Additional construction options for {@link MouseGestureAdapter}.
+ */
+export interface MouseGestureAdapterOptions {
+    /**
+     * Generic input-target exclusion predicate (stage 5B).
+     *
+     * When the predicate returns true for an event's target, the adapter
+     * completely ignores that interaction: no GestureSession is created
+     * and no `contextmenu` is intercepted (the target handles its own
+     * right-click, e.g. the settings gesture recorder).
+     *
+     * The predicate is a general input filter — it must not hard-code
+     * directions or commands.  The runtime supplies a default that
+     * excludes elements marked with `data-gesture-flow-recorder`.
+     */
+    shouldIgnoreTarget?: (target: EventTarget | null) => boolean;
+}
 
 /**
  * A snapshot of an intercepted `contextmenu` event, retained for potential
@@ -74,6 +94,16 @@ export class MouseGestureAdapter extends InputAdapter {
     private pointerId: number | null = null;
     private timeoutHandle: ReturnType<typeof setTimeout> | null = null;
     private attached = false;
+    private readonly shouldIgnoreTarget: (target: EventTarget | null) => boolean;
+
+    constructor(
+        config: GestureTriggerConfig,
+        events: GestureAdapterEvents,
+        options: MouseGestureAdapterOptions = {},
+    ) {
+        super(config, events);
+        this.shouldIgnoreTarget = options.shouldIgnoreTarget ?? (() => false);
+    }
 
     /**
      * Snapshot of the intercepted `contextmenu` event, or `null` if no
@@ -215,6 +245,12 @@ export class MouseGestureAdapter extends InputAdapter {
         }
         if (e.button !== this.config.button) {
             return; // not the trigger button — do not disturb protection
+        }
+        // Stage 5B: generic input-target exclusion (e.g. the settings
+        // gesture recorder).  No GestureSession is created, no gesture
+        // state machine is entered — the target owns this interaction.
+        if (this.shouldIgnoreTarget(e.target)) {
+            return;
         }
         // A new trigger-button pointerdown with no active session: end the
         // previous interaction's leftover state BEFORE deciding whether this
@@ -393,6 +429,14 @@ export class MouseGestureAdapter extends InputAdapter {
     private handleContextMenu(e: Event): void {
         // Always let our own replayed events through (recursion guard).
         if (MouseGestureAdapter.replayMarkers.has(e)) {
+            return;
+        }
+
+        // Stage 5B: excluded targets (e.g. the gesture recorder) handle
+        // their own right-click — the adapter neither intercepts nor
+        // suppresses their contextmenu.  Checked before the post-gesture
+        // suppression window so an excluded target is never shielded.
+        if (this.shouldIgnoreTarget(e.target)) {
             return;
         }
 

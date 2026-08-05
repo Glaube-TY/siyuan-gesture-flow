@@ -6,6 +6,7 @@ import SettingsPanel from "./SettingsPanel.svelte";
 import { createDefaultConfig } from "@/config/defaults";
 import type { GestureFlowConfig } from "@/config/types";
 import type { ConfigManager, ConfigUpdatePatch } from "@/config/ConfigManager";
+import type { SettingCommandItem } from "./commandCatalog";
 
 /**
  * SettingsPanel DOM structure tests.
@@ -96,7 +97,40 @@ const i18n: Record<string, string> = {
     cmdTabsNext: "下一个标签页",
     cmdScrollTop: "滚动到顶部",
     cmdScrollBottom: "滚动到底部",
+    bindingAdd: "新增绑定",
+    bindingAddTitle: "新增绑定",
+    bindingEditTitle: "编辑绑定",
+    bindingEdit: "编辑",
+    bindingDelete: "删除",
+    bindingDeleteConfirm: "确认删除该绑定？",
+    bindingEmpty: "暂无绑定",
+    bindingSave: "保存",
+    bindingCancel: "取消",
+    bindingSaving: "保存中…",
+    bindingEnabled: "启用",
+    bindingGesture: "手势",
+    bindingCommand: "命令",
+    bindingNoGesture: "尚未录制手势",
+    bindingErrorEmpty: "请先录制手势",
+    bindingErrorTooMany: "手势方向段过多",
+    bindingErrorDiagonal4: "4 方向模式不支持斜向手势",
+    bindingErrorNoCommand: "请选择命令",
+    gestureRecorderHint: "按住右键绘制手势",
+    gestureRecorderRecording: "录制中，松开完成",
+    gestureRecorderTooShort: "轨迹太短",
+    gestureRecorderTooMany: "手势过长",
+    gestureRecorderUnrecognised: "无法识别",
+    gestureRecorderClear: "清除",
+    gestureRecorderEmpty: "尚未录制手势",
 };
+
+/** Read-only command catalog matching the runtime's built-in commands. */
+const COMMAND_CATALOG: SettingCommandItem[] = [
+    { id: "tabs.previous", titleKey: "cmdTabsPrevious", title: "上一个标签页", group: "Tabs" },
+    { id: "tabs.next", titleKey: "cmdTabsNext", title: "下一个标签页", group: "Tabs" },
+    { id: "scroll.top", titleKey: "cmdScrollTop", title: "滚动到顶部", group: "Scrolling" },
+    { id: "scroll.bottom", titleKey: "cmdScrollBottom", title: "滚动到底部", group: "Scrolling" },
+];
 
 interface MountedPanel {
     host: HTMLElement;
@@ -111,7 +145,7 @@ function mountPanel(): MountedPanel {
     const configManager = makeConfigManager(makeConfig());
     const component = new SettingsPanel({
         target: host,
-        props: { configManager, i18n, onStatus: vi.fn() },
+        props: { configManager, i18n, commandCatalog: COMMAND_CATALOG, onStatus: vi.fn() },
     });
     return { host, component, configManager };
 }
@@ -297,7 +331,7 @@ describe("SettingsPanel — 绑定分类", () => {
         cleanup(mounted.component);
     });
 
-    it("绑定列表使用 SettingRow 而非原生 table", async () => {
+    it("绑定列表使用管理项而非原生 table", async () => {
         // Switch to "绑定" tab
         const buttons = mounted.host.querySelectorAll(".gf-nav-btn");
         (buttons[3] as HTMLElement).click();
@@ -306,8 +340,8 @@ describe("SettingsPanel — 绑定分类", () => {
         const table = mounted.host.querySelector("table");
         expect(table).toBeNull();
 
-        const rows = mounted.host.querySelectorAll(".gf-row");
-        expect(rows.length).toBe(4); // four default bindings
+        const items = mounted.host.querySelectorAll(".gf-binding-item");
+        expect(items.length).toBe(4); // four default bindings
     });
 
     it("每个绑定项有方向徽标", async () => {
@@ -315,13 +349,13 @@ describe("SettingsPanel — 绑定分类", () => {
         (buttons[3] as HTMLElement).click();
         await Promise.resolve();
 
-        const badges = mounted.host.querySelectorAll(".gf-badge");
+        const badges = mounted.host.querySelectorAll(".gf-binding-item .gf-badge");
         expect(badges.length).toBe(4); // L, R, U, D
         const badgeTexts = Array.from(badges).map((b) => b.textContent?.trim());
-        expect(badgeTexts).toContain("L");
-        expect(badgeTexts).toContain("R");
-        expect(badgeTexts).toContain("U");
-        expect(badgeTexts).toContain("D");
+        expect(badgeTexts).toContain("←"); // L
+        expect(badgeTexts).toContain("→"); // R
+        expect(badgeTexts).toContain("↑"); // U
+        expect(badgeTexts).toContain("↓"); // D
     });
 
     it("绑定列表所有开关为 b3-switch 滑块", async () => {
@@ -335,7 +369,32 @@ describe("SettingsPanel — 绑定分类", () => {
             expect(s.classList.contains("b3-switch")).toBe(true);
         });
     });
+
+    it("绑定列表顺序与配置数组顺序一致", async () => {
+        const buttons = mounted.host.querySelectorAll(".gf-nav-btn");
+        (buttons[3] as HTMLElement).click();
+        await Promise.resolve();
+
+        const items = mounted.host.querySelectorAll(".gf-binding-item");
+        const cfg = mounted.configManager.getConfig();
+        expect(items.length).toBe(cfg.bindings.length);
+        for (let i = 0; i < items.length; i++) {
+            const badges = items[i].querySelectorAll(".gf-badge");
+            const badgeTexts = Array.from(badges).map((b) => b.textContent?.trim());
+            expect(badgeTexts).toEqual(
+                cfg.bindings[i].directions.map((d) => symbolFor(d)),
+            );
+        }
+    });
 });
+
+/** Direction → display symbol (mirrors directionLabels without importing). */
+function symbolFor(d: string): string {
+    const map: Record<string, string> = {
+        U: "↑", D: "↓", L: "←", R: "→", UL: "↖", UR: "↗", DL: "↙", DR: "↘",
+    };
+    return map[d] ?? d;
+}
 
 describe("SettingsPanel — 数据分类", () => {
     let mounted: MountedPanel;
@@ -714,5 +773,250 @@ describe("SettingsPanel — 标签切换不重建外壳", () => {
         const root = mounted.host.querySelector(".gf-root");
         expect(root?.querySelector(":scope > .gf-nav")).toBeTruthy();
         expect(root?.querySelector(":scope > .gf-content")).toBeTruthy();
+    });
+});
+
+// ---------------------------------------------------------------------------
+// Stage 5B: binding management (add / edit / delete / toggle / recorder).
+// ---------------------------------------------------------------------------
+
+const RECT2 = { left: 10, top: 20, width: 300, height: 140 } as DOMRect;
+
+/** Stub canvas + RAF so the BindingEditor's GestureRecorder can run. */
+function stubRecorderEnvironment(): void {
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({
+        clearRect: vi.fn(), beginPath: vi.fn(), moveTo: vi.fn(), lineTo: vi.fn(),
+        stroke: vi.fn(), setTransform: vi.fn(),
+    } as unknown as CanvasRenderingContext2D);
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(RECT2);
+    vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => setTimeout(() => cb(0), 0) as unknown as number);
+    vi.stubGlobal("cancelAnimationFrame", (id: number) => clearTimeout(id));
+    vi.stubGlobal("ResizeObserver", class {
+        observe() {} unobserve() {} disconnect() {}
+    });
+}
+
+/** Draw a polyline in the recorder area via synthetic pointer events. */
+function drawGestureInRecorder(host: HTMLElement, waypoints: [number, number][]): void {
+    const el = host.querySelector("[data-gesture-flow-recorder]") as HTMLElement;
+    expect(el).toBeTruthy();
+    const p = (type: string, x: number, y: number, extra: Record<string, unknown> = {}) => {
+        el.dispatchEvent(new PointerEvent(type, {
+            bubbles: true, cancelable: true, button: 2, buttons: 2,
+            clientX: RECT2.left + x, clientY: RECT2.top + y, pointerId: 9,
+            pointerType: "mouse", ...extra,
+        }));
+    };
+    p("pointerdown", waypoints[0][0], waypoints[0][1]);
+    for (let i = 0; i < waypoints.length - 1; i++) {
+        const [x1, y1] = waypoints[i];
+        const [x2, y2] = waypoints[i + 1];
+        const steps = Math.max(1, Math.ceil(Math.hypot(x2 - x1, y2 - y1) / 8));
+        for (let s = 1; s <= steps; s++) {
+            const f = s / steps;
+            p("pointermove", x1 + (x2 - x1) * f, y1 + (y2 - y1) * f);
+        }
+    }
+    const last = waypoints[waypoints.length - 1];
+    p("pointerup", last[0], last[1], { buttons: 0 });
+}
+
+function openBindingsTab(mounted: MountedPanel): void {
+    const buttons = mounted.host.querySelectorAll(".gf-nav-btn");
+    (buttons[3] as HTMLElement).click();
+}
+
+describe("SettingsPanel — 绑定管理（stage 5B）", () => {
+    let mounted: MountedPanel;
+
+    beforeEach(() => {
+        stubRecorderEnvironment();
+        mounted = mountPanel();
+        openBindingsTab(mounted);
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+        cleanup(mounted.component);
+    });
+
+    it("新增绑定按钮可见", async () => {
+        await Promise.resolve();
+        const addBtn = mounted.host.querySelector(".gf-binding-add");
+        expect(addBtn).toBeTruthy();
+    });
+
+    it("点击新增按钮打开编辑器", async () => {
+        await Promise.resolve();
+        (mounted.host.querySelector(".gf-binding-add") as HTMLElement).click();
+        await Promise.resolve();
+        const editor = mounted.host.querySelector(".gf-binding-editor");
+        expect(editor).toBeTruthy();
+        expect(editor?.textContent).toContain("新增绑定");
+    });
+
+    it("点击已有绑定编辑按钮打开编辑器并保留原绑定", async () => {
+        await Promise.resolve();
+        const editBtns = mounted.host.querySelectorAll(".gf-binding-edit");
+        expect(editBtns.length).toBe(4);
+        (editBtns[0] as HTMLElement).click();
+        await Promise.resolve();
+        const editor = mounted.host.querySelector(".gf-binding-editor");
+        expect(editor).toBeTruthy();
+        // Editing keeps the original id: the title says 编辑绑定 and the
+        // recorded directions badge shows the original L (←).
+        expect(editor?.textContent).toContain("编辑绑定");
+        const badges = editor?.querySelectorAll(".gf-badge");
+        expect(Array.from(badges ?? []).map((b) => b.textContent?.trim())).toContain("←");
+    });
+
+    it("命令选择框来自命令目录（分组 optgroup）", async () => {
+        await Promise.resolve();
+        (mounted.host.querySelector(".gf-binding-add") as HTMLElement).click();
+        await Promise.resolve();
+        const select = mounted.host.querySelector(".gf-binding-editor select") as HTMLSelectElement;
+        expect(select).toBeTruthy();
+        expect(select.querySelectorAll("option").length).toBe(4);
+        expect(select.querySelectorAll("optgroup").length).toBe(2);
+    });
+
+    it("新增绑定：录制 R→D 并保存成功，列表更新为 5 项", async () => {
+        await Promise.resolve();
+        (mounted.host.querySelector(".gf-binding-add") as HTMLElement).click();
+        await Promise.resolve();
+
+        drawGestureInRecorder(mounted.host, [[0, 0], [120, 0], [120, 120]]);
+        await new Promise((r) => setTimeout(r, 10));
+
+        const saveBtn = mounted.host.querySelector(".gf-binding-editor-save") as HTMLButtonElement;
+        expect(saveBtn).toBeTruthy();
+        saveBtn.click();
+        await new Promise((r) => setTimeout(r, 20));
+
+        // Editor closed, list now has 5 items with a R→D badge pair.
+        expect(mounted.host.querySelector(".gf-binding-editor")).toBeNull();
+        const items = mounted.host.querySelectorAll(".gf-binding-item");
+        expect(items.length).toBe(5);
+        const lastBadges = Array.from(
+            items[items.length - 1].querySelectorAll(".gf-badge"),
+        ).map((b) => b.textContent?.trim());
+        expect(lastBadges).toEqual(["→", "↓"]);
+    });
+
+    it("取消不保存，配置不变", async () => {
+        await Promise.resolve();
+        const updateSpy = vi.spyOn(mounted.configManager, "updateConfig");
+        (mounted.host.querySelector(".gf-binding-add") as HTMLElement).click();
+        await Promise.resolve();
+        drawGestureInRecorder(mounted.host, [[0, 0], [120, 0]]);
+        await new Promise((r) => setTimeout(r, 10));
+
+        const cancelBtn = Array.from(
+            mounted.host.querySelectorAll(".gf-binding-editor button"),
+        ).find((b) => b.textContent?.trim() === "取消") as HTMLButtonElement;
+        cancelBtn.click();
+        await Promise.resolve();
+
+        expect(mounted.host.querySelector(".gf-binding-editor")).toBeNull();
+        expect(updateSpy).not.toHaveBeenCalled();
+        expect(mounted.configManager.getConfig().bindings.length).toBe(4);
+    });
+
+    it("重复手势无法保存：编辑为他人方向时显示错误并保留草稿", async () => {
+        await Promise.resolve();
+        const updateSpy = vi.spyOn(mounted.configManager, "updateConfig");
+        // Edit the default-L binding and re-record it as R (occupied by default-R).
+        (mounted.host.querySelectorAll(".gf-binding-edit")[0] as HTMLElement).click();
+        await Promise.resolve();
+        drawGestureInRecorder(mounted.host, [[0, 0], [120, 0]]);
+        await new Promise((r) => setTimeout(r, 10));
+
+        const saveBtn = mounted.host.querySelector(".gf-binding-editor-save") as HTMLButtonElement;
+        saveBtn.click();
+        await new Promise((r) => setTimeout(r, 20));
+
+        // Editor stays open with an error; nothing persisted.
+        expect(mounted.host.querySelector(".gf-binding-editor")).toBeTruthy();
+        expect(mounted.host.querySelector(".gf-binding-editor-error")).toBeTruthy();
+        expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it("删除绑定需确认，确认后列表更新", async () => {
+        await Promise.resolve();
+        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+        const delBtns = mounted.host.querySelectorAll(".gf-binding-delete");
+        (delBtns[1] as HTMLElement).click(); // default-R
+        await new Promise((r) => setTimeout(r, 20));
+
+        expect(confirmSpy).toHaveBeenCalled();
+        expect(confirmSpy.mock.calls[0][0]).toContain("→"); // direction symbol in confirm
+        const items = mounted.host.querySelectorAll(".gf-binding-item");
+        expect(items.length).toBe(3);
+    });
+
+    it("删除绑定取消确认时列表不变", async () => {
+        await Promise.resolve();
+        vi.spyOn(window, "confirm").mockReturnValue(false);
+        (mounted.host.querySelectorAll(".gf-binding-delete")[0] as HTMLElement).click();
+        await new Promise((r) => setTimeout(r, 20));
+        expect(mounted.host.querySelectorAll(".gf-binding-item").length).toBe(4);
+    });
+
+    it("启停开关更新绑定 enabled", async () => {
+        await Promise.resolve();
+        const switches = mounted.host.querySelectorAll('input[type="checkbox"].b3-switch');
+        const first = switches[0] as HTMLInputElement;
+        expect(first.checked).toBe(true);
+        first.checked = false;
+        first.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 20));
+        expect(mounted.configManager.getConfig().bindings[0].enabled).toBe(false);
+    });
+
+    it("空绑定列表显示空状态", async () => {
+        // Fresh manager with no bindings.
+        document.body.innerHTML = "";
+        const host = document.createElement("div");
+        document.body.appendChild(host);
+        const cm = makeConfigManager({ ...createDefaultConfig(), bindings: [] });
+        const component = new SettingsPanel({
+            target: host,
+            props: { configManager: cm, i18n, commandCatalog: COMMAND_CATALOG, onStatus: vi.fn() },
+        });
+        const navBtns = host.querySelectorAll(".gf-nav-btn");
+        (navBtns[3] as HTMLElement).click();
+        await Promise.resolve();
+        expect(host.querySelector(".gf-binding-empty")).toBeTruthy();
+        expect(host.querySelectorAll(".gf-binding-item").length).toBe(0);
+        component.$destroy();
+    });
+
+    it("8 方向模式下斜向绑定显示斜向徽标", async () => {
+        document.body.innerHTML = "";
+        const host = document.createElement("div");
+        document.body.appendChild(host);
+        const cfg = createDefaultConfig();
+        cfg.recognizer.directionMode = 8;
+        cfg.bindings.push({
+            id: "diag-1",
+            enabled: true,
+            directions: ["UR", "DL"],
+            commandId: "tabs.next",
+            commandParams: {},
+        });
+        const cm = makeConfigManager(cfg);
+        const component = new SettingsPanel({
+            target: host,
+            props: { configManager: cm, i18n, commandCatalog: COMMAND_CATALOG, onStatus: vi.fn() },
+        });
+        const navBtns = host.querySelectorAll(".gf-nav-btn");
+        (navBtns[3] as HTMLElement).click();
+        await Promise.resolve();
+        const badges = Array.from(
+            host.querySelectorAll(".gf-binding-item:last-child .gf-badge"),
+        ).map((b) => b.textContent?.trim());
+        expect(badges).toEqual(["↗", "↙"]);
+        component.$destroy();
     });
 });

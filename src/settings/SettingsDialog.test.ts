@@ -3,16 +3,19 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // Mock the Svelte component — we only care about the Dialog lifecycle,
 // not the rendered DOM (that is covered by SettingsPanel.test.ts).
-const mockPanelInstances: { destroyed: boolean; props: unknown }[] = [];
+const mockPanelInstances: { destroyed: boolean; destroyCount: number; props: unknown }[] = [];
 vi.mock("./SettingsPanel.svelte", () => {
     return {
         default: class MockSettingsPanel {
             constructor(opts: { target: unknown; props: unknown }) {
-                mockPanelInstances.push({ destroyed: false, props: opts.props });
+                mockPanelInstances.push({ destroyed: false, destroyCount: 0, props: opts.props });
             }
             $destroy() {
                 const inst = mockPanelInstances[mockPanelInstances.length - 1];
-                if (inst) inst.destroyed = true;
+                if (inst) {
+                    inst.destroyed = true;
+                    inst.destroyCount++;
+                }
             }
         },
     };
@@ -20,6 +23,9 @@ vi.mock("./SettingsPanel.svelte", () => {
 
 // Mock the siyuan Dialog — record every constructor call so we can
 // assert on title / content / width / height and the destroyCallback.
+// The mock mimics real SiYuan behaviour: `destroy()` removes the DOM
+// and then fires `destroyCallback` (synchronously here, which is the
+// strictest version of the real async callback).
 interface MockDialogOpts {
     title?: string;
     content?: string;
@@ -31,6 +37,8 @@ interface MockDialogInstance {
     opts: MockDialogOpts;
     element: HTMLElement;
     destroyed: boolean;
+    /** How many times `destroy()` was invoked (must be ≤ 1 per dialog). */
+    destroyCalls: number;
     destroy: () => void;
 }
 const mockDialogs: MockDialogInstance[] = [];
@@ -41,6 +49,7 @@ vi.mock("siyuan", () => {
             opts: MockDialogOpts;
             element: HTMLElement;
             destroyed = false;
+            destroyCalls = 0;
 
             constructor(opts: MockDialogOpts) {
                 this.opts = opts;
@@ -72,8 +81,12 @@ vi.mock("siyuan", () => {
                 mockDialogs.push(this as unknown as MockDialogInstance);
             }
             destroy() {
+                this.destroyCalls++;
                 this.destroyed = true;
                 this.element.remove();
+                // Real SiYuan fires destroyCallback after the dialog DOM
+                // is removed.
+                this.opts.destroyCallback?.();
             }
         },
     };
@@ -90,6 +103,7 @@ function makeOpts() {
             updateConfig: async () => ({ status: "saved" as const, message: "" }),
         } as unknown as ConfigManager,
         i18n: { settingsTitle: "手势流设置" },
+        commandCatalog: [],
         onStatus: vi.fn(),
     };
 }
@@ -127,6 +141,7 @@ describe("SettingsDialog — 生命周期", () => {
         dlg.open({
             configManager: makeOpts().configManager,
             i18n: {},
+            commandCatalog: [],
             onStatus: vi.fn(),
         });
         expect(mockDialogs[0].opts.title).toBe("GestureFlow Settings");
@@ -225,6 +240,72 @@ describe("SettingsDialog — 生命周期", () => {
         callback?.();
         expect(dlg.isOpen).toBe(false);
         expect(mockPanelInstances[0].destroyed).toBe(true);
+    });
+
+    it("用户关闭路径（Dialog 已销毁后 destroyCallback）不会再次调用 Dialog.destroy", () => {
+        const dlg = new SettingsDialog();
+        dlg.open(makeOpts());
+        const dialogRef = mockDialogs[0];
+
+        // Simulate SiYuan closing the dialog on its own (X / Esc /
+        // scrim): it calls Dialog.destroy(), which fires destroyCallback.
+        dialogRef.destroy();
+
+        // The plugin must not call destroy() a second time from the
+        // destroyCallback path, and the panel must be destroyed exactly once.
+        expect(dialogRef.destroyCalls).toBe(1);
+        expect(mockPanelInstances[0].destroyCount).toBe(1);
+        expect(dlg.isOpen).toBe(false);
+    });
+
+    it("主动 close 只调用一次 Dialog.destroy 和一次 Panel.$destroy", () => {
+        const dlg = new SettingsDialog();
+        dlg.open(makeOpts());
+        const dialogRef = mockDialogs[0];
+
+        dlg.close();
+
+        expect(dialogRef.destroyCalls).toBe(1);
+        expect(mockPanelInstances[0].destroyCount).toBe(1);
+        expect(dlg.isOpen).toBe(false);
+    });
+
+    it("旧 Dialog 延迟到来的 destroyCallback 不会清理新打开的 Dialog", () => {
+        const dlg = new SettingsDialog();
+        dlg.open(makeOpts());
+        const first = mockDialogs[0];
+
+        // User closes the first dialog (SiYuan destroys it).
+        first.destroy();
+        expect(dlg.isOpen).toBe(false);
+
+        // A new dialog is opened afterwards.
+        dlg.open(makeOpts());
+        expect(mockDialogs).toHaveLength(2);
+        const second = mockDialogs[1];
+        expect(dlg.isOpen).toBe(true);
+
+        // The old dialog's destroyCallback arrives late (delayed async
+        // path in real SiYuan).  It must not touch the new dialog.
+        first.opts.destroyCallback?.();
+        expect(dlg.isOpen).toBe(true);
+        expect(second.destroyCalls).toBe(0);
+        expect(mockPanelInstances[1].destroyCount).toBe(0);
+    });
+
+    it("旧 Dialog 关闭后重新打开是全新实例，且可再次正常关闭", () => {
+        const dlg = new SettingsDialog();
+        dlg.open(makeOpts());
+        mockDialogs[0].destroy();
+        expect(dlg.isOpen).toBe(false);
+
+        dlg.open(makeOpts());
+        expect(mockDialogs).toHaveLength(2);
+        expect(dlg.isOpen).toBe(true);
+
+        dlg.close();
+        expect(mockDialogs[1].destroyCalls).toBe(1);
+        expect(dlg.isOpen).toBe(false);
     });
 
     it("destroy 后再调用 open 不会创建新 Dialog", () => {

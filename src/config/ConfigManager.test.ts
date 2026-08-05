@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { ConfigManager, ConfigPersistenceHost } from "./ConfigManager";
 import { createDefaultConfig } from "./defaults";
 import { GestureFlowConfig } from "./types";
+import type { Direction } from "@/gesture/recognition/DirectionVectorizer";
 
 const AVAILABLE_COMMANDS = new Set([
     "tabs.previous",
@@ -416,5 +417,46 @@ describe("ConfigManager — 绑定深拷贝", () => {
         const result = await mgr.importJson(cfg);
         expect(result.status).toBe("imported");
         expect(mgr.getConfig().bindings[0].enabled).toBe(false);
+    });
+
+    it("保存空 bindings 并重启后保持为空（不复活默认绑定）", async () => {
+        const mock = createMockHost(null);
+        const mgr = createManager(mock.host);
+        await mgr.load();
+
+        // User deletes every binding.
+        const result = await mgr.updateConfig({ bindings: [] });
+        expect(result.status).toBe("saved");
+        expect(mgr.getConfig().bindings).toEqual([]);
+
+        // A fresh manager loading the same storage keeps the empty list.
+        const mgr2 = createManager(mock.host);
+        const reload = await mgr2.load();
+        expect(reload.source).toBe("loaded");
+        expect(mgr2.getConfig().bindings).toEqual([]);
+    });
+
+    it("自定义绑定保存并重启后保留", async () => {
+        const mock = createMockHost(null);
+        const mgr = createManager(mock.host);
+        await mgr.load();
+
+        const custom = [
+            {
+                id: "custom-1",
+                enabled: true,
+                directions: ["R", "D"] as Direction[],
+                commandId: "tabs.next",
+                commandParams: {},
+            },
+        ];
+        const result = await mgr.updateConfig({ bindings: custom });
+        expect(result.status).toBe("saved");
+
+        const mgr2 = createManager(mock.host);
+        await mgr2.load();
+        expect(mgr2.getConfig().bindings).toEqual([
+            expect.objectContaining({ id: "custom-1", directions: ["R", "D"] }),
+        ]);
     });
 });

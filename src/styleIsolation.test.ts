@@ -60,6 +60,8 @@ const SVELTE_FILES = [
     "settings/SettingsPanel.svelte",
     "settings/components/SettingRow.svelte",
     "settings/components/SettingSection.svelte",
+    "settings/components/BindingEditor.svelte",
+    "settings/components/GestureRecorder.svelte",
 ];
 
 describe("样式隔离 — 全局 index.scss", () => {

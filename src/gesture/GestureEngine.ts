@@ -1,5 +1,5 @@
 import { GestureSession } from "./GestureSession";
-import { GestureState, InvalidReason } from "./types";
+import { GesturePoint, GestureState, InvalidReason } from "./types";
 import { PathSampler } from "./recognition/PathSampler";
 import { PathSimplifier } from "./recognition/PathSimplifier";
 import {
@@ -92,11 +92,39 @@ export class GestureEngine {
     }
 
     recognize(session: GestureSession): RecognitionResult {
-        const rawPoints = session.points;
-        const sampled = this.sampler.sample(rawPoints);
-        const simplified = this.simplifier.simplify(sampled);
+        return this.recognizeInternal(
+            session.points,
+            session.state === GestureState.CANCELLED,
+            session.cancelReason,
+        );
+    }
 
-        const isCancelled = session.state === GestureState.CANCELLED;
+    /**
+     * Pure-data entry point (stage 5B): recognise a raw point trail
+     * directly, without constructing a {@link GestureSession}.
+     *
+     * Used by the settings gesture recorder — it runs the exact same
+     * pipeline as {@link recognize} (sampler → simplifier → vectorizer
+     * → matcher) so results are identical for the same points.  No
+     * session state is involved; the result never reports `cancelled`.
+     */
+    recognizePoints(points: readonly GesturePoint[]): RecognitionResult {
+        return this.recognizeInternal(points, false, null);
+    }
+
+    /**
+     * Shared recognition pipeline.  Extracted so the session-based entry
+     * ({@link recognize}) and the pure-data entry ({@link recognizePoints})
+     * cannot diverge — there is exactly one implementation of the
+     * algorithm.
+     */
+    private recognizeInternal(
+        rawPoints: readonly GesturePoint[],
+        isCancelled: boolean,
+        cancelReason: GestureSession["cancelReason"],
+    ): RecognitionResult {
+        const sampled = this.sampler.sample(rawPoints as GesturePoint[]);
+        const simplified = this.simplifier.simplify(sampled);
 
         // --- Run the full pipeline regardless of cancellation state so that
         //     debugging data (rawDirections, segments, point counts) is always
@@ -138,7 +166,7 @@ export class GestureEngine {
                 sampledPointCount: sampled.length,
                 simplifiedPointCount: simplified.length,
                 cancelled: true,
-                cancelReason: session.cancelReason,
+                cancelReason,
             };
         }
 

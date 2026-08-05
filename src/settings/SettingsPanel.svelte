@@ -2,20 +2,36 @@
     import { onMount, onDestroy } from "svelte";
     import type { ConfigManager, ConfigUpdatePatch } from "@/config/ConfigManager";
     import type { GestureFlowConfig } from "@/config/types";
+    import type { ConfigBinding } from "@/config/types";
     import type { SuppressionKey } from "@/gesture/types";
+    import type { Direction } from "@/gesture/recognition/DirectionVectorizer";
     import { parseNumber, DebouncedPatchScheduler } from "./settingsHelpers";
     import SettingSection from "./components/SettingSection.svelte";
     import SettingRow from "./components/SettingRow.svelte";
+    import BindingEditor from "./components/BindingEditor.svelte";
+    import type { SettingCommandItem } from "./commandCatalog";
+    import { catalogCommandIds } from "./commandCatalog";
+    import { directionSymbol } from "./directionLabels";
+    import {
+        addBinding,
+        updateBinding,
+        removeBinding,
+        toggleBinding,
+    } from "@/config/bindingOperations";
 
     /**
      * Props passed in from the host plugin.
      *
      * The panel never touches the runtime or the DOM overlay directly —
      * it only reads/writes the config via {@link ConfigManager} and
-     * reports status back to the host via {@link onStatus}.
+     * reports status back to the host via {@link onStatus}.  Stage 5B
+     * adds the read-only {@link commandCatalog} so the bindings UI can
+     * list the commands registered in the runtime without touching the
+     * CommandRegistry or any execute functions.
      */
     export let configManager: ConfigManager;
     export let i18n: Record<string, string>;
+    export let commandCatalog: SettingCommandItem[] = [];
     export let onStatus: (message: string, isError: boolean) => void = () => {};
 
     let config: GestureFlowConfig = configManager.getConfig();
@@ -245,26 +261,7 @@
         scheduleSave();
     }
 
-    // --------------------------------------------------------------- bindings tab
-
-    function setBindingEnabled(id: string, enabled: boolean): void {
-        const bindings = config.bindings.map((b) =>
-            b.id === id ? { ...b, enabled } : b,
-        );
-        pendingPatch = { ...pendingPatch, bindings };
-        config = { ...config, bindings };
-        scheduleSave();
-    }
-
-    function commandLabel(commandId: string): string {
-        const map: Record<string, string> = {
-            "tabs.previous": i18n.cmdTabsPrevious ?? "tabs.previous",
-            "tabs.next": i18n.cmdTabsNext ?? "tabs.next",
-            "scroll.top": i18n.cmdScrollTop ?? "scroll.top",
-            "scroll.bottom": i18n.cmdScrollBottom ?? "scroll.bottom",
-        };
-        return map[commandId] ?? commandId;
-    }
+    // --------------------------------------------------------------- bindings tab (stage 5B: see editor/handlers below)
 
     // --------------------------------------------------------------- data tab
 
@@ -324,6 +321,94 @@
         { key: "bindings", label: () => i18n.settingsTabBindings ?? "Bindings" },
         { key: "data", label: () => i18n.settingsTabData ?? "Data" },
     ] as const;
+
+    // ------------------------------------------------------- bindings (5B)
+
+    /** Editor state: null = list view, otherwise a new or existing binding. */
+    let editing: { mode: "new" } | { mode: "edit"; binding: ConfigBinding } | null = null;
+
+    function commandTitle(id: string): string {
+        return commandCatalog.find((c) => c.id === id)?.title ?? id;
+    }
+
+    /** Direction symbols joined for confirmation dialogs. */
+    function directionsLabel(directions: readonly Direction[]): string {
+        return directions.map(directionSymbol).join(" → ");
+    }
+
+    function bindingValidationOptions() {
+        return {
+            maximumSegments: config.recognizer.maximumSegments,
+            directionMode: config.recognizer.directionMode,
+            availableCommandIds: catalogCommandIds(commandCatalog),
+        };
+    }
+
+    /**
+     * Save a draft from the BindingEditor through the ConfigManager
+     * pipeline.  Returns an error message on failure (draft is kept),
+     * or null on success (editor is closed by the caller).
+     */
+    async function editorSave(draft: {
+        enabled: boolean;
+        directions: Direction[];
+        commandId: string;
+    }): Promise<string | null> {
+        const result =
+            editing?.mode === "edit"
+                ? updateBinding(config, editing.binding.id, draft, bindingValidationOptions())
+                : addBinding(config, draft, bindingValidationOptions());
+        if (!result.ok) {
+            return result.message;
+        }
+        const save = await configManager.updateConfig({ bindings: result.bindings });
+        if (save.status === "error") {
+            return save.message;
+        }
+        editing = null; // success — close the editor, list updates via subscribe
+        return null;
+    }
+
+    function openNewBinding(): void {
+        editing = { mode: "new" };
+    }
+
+    function openEditBinding(binding: ConfigBinding): void {
+        editing = { mode: "edit", binding };
+    }
+
+    function closeEditor(): void {
+        editing = null;
+    }
+
+    async function handleToggleBinding(binding: ConfigBinding, enabled: boolean): Promise<void> {
+        const result = toggleBinding(config, binding.id, enabled);
+        if (!result.ok) {
+            onStatus(result.message, true);
+            return;
+        }
+        const save = await configManager.updateConfig({ bindings: result.bindings });
+        if (save.status === "error") {
+            onStatus(save.message, true);
+        }
+    }
+
+    async function handleDeleteBinding(binding: ConfigBinding): Promise<void> {
+        const label = `${directionsLabel(binding.directions)} — ${commandTitle(binding.commandId)}`;
+        const ok = window.confirm(
+            `${i18n.bindingDeleteConfirm ?? "Delete this binding?"}\n${label}`,
+        );
+        if (!ok) return;
+        const result = removeBinding(config, binding.id);
+        if (!result.ok) {
+            onStatus(result.message, true);
+            return;
+        }
+        const save = await configManager.updateConfig({ bindings: result.bindings });
+        if (save.status === "error") {
+            onStatus(save.message, true);
+        }
+    }
 </script>
 
 <div class="gf-root">
@@ -543,24 +628,79 @@
         {#if activeTab === "bindings"}
             <SettingSection title={i18n.settingsTabBindings ?? "Bindings"}>
                 <p class="gf-bindings-info">{i18n.settingsBindingsDesc ?? ""}</p>
-                {#each config.bindings as binding, i (binding.id)}
-                    <SettingRow last={i === config.bindings.length - 1}>
-                        <svelte:fragment slot="info">
-                            <div class="gf-binding-left">
-                                {#each binding.directions as dir}
-                                    <span class="gf-badge">{dir}</span>
-                                {/each}
-                            </div>
-                            <span class="gf-binding-cmd">{commandLabel(binding.commandId)}</span>
-                        </svelte:fragment>
-                        <input
-                            type="checkbox"
-                            class="b3-switch"
-                            checked={binding.enabled}
-                            on:change={(e) => setBindingEnabled(binding.id, e.currentTarget.checked)}
-                        />
-                    </SettingRow>
-                {/each}
+                {#if editing}
+                    <BindingEditor
+                        binding={editing.mode === "edit" ? editing.binding : null}
+                        {commandCatalog}
+                        recognizer={{
+                            maximumSegments: config.recognizer.maximumSegments,
+                            directionMode: config.recognizer.directionMode,
+                        }}
+                        {i18n}
+                        handleSave={editorSave}
+                        on:cancel={closeEditor}
+                    />
+                {:else}
+                    <div class="gf-binding-toolbar">
+                        <button
+                            type="button"
+                            class="b3-button b3-button--primary gf-binding-add"
+                            on:click={openNewBinding}
+                        >
+                            {i18n.bindingAdd ?? "Add binding"}
+                        </button>
+                    </div>
+                    {#if config.bindings.length === 0}
+                        <p class="gf-binding-empty">
+                            {i18n.bindingEmpty ?? "No bindings — add one to get started."}
+                        </p>
+                    {:else}
+                        <div class="gf-binding-list">
+                            {#each config.bindings as binding (binding.id)}
+                                <div class="gf-binding-item">
+                                    <div class="gf-binding-left">
+                                        <div class="gf-binding-dirs">
+                                            {#each binding.directions as dir (dir)}
+                                                <span class="gf-badge">{directionSymbol(dir)}</span>
+                                            {/each}
+                                        </div>
+                                        <span class="gf-binding-cmd">
+                                            {commandTitle(binding.commandId)}
+                                            {#if !binding.enabled}
+                                                <span class="gf-binding-disabled">
+                                                    ({i18n.settingsBindingDisabled ?? "disabled"})
+                                                </span>
+                                            {/if}
+                                        </span>
+                                    </div>
+                                    <div class="gf-binding-controls">
+                                        <input
+                                            type="checkbox"
+                                            class="b3-switch"
+                                            checked={binding.enabled}
+                                            on:change={(e) =>
+                                                handleToggleBinding(binding, e.currentTarget.checked)}
+                                        />
+                                        <button
+                                            type="button"
+                                            class="b3-button b3-button--text gf-binding-edit"
+                                            on:click={() => openEditBinding(binding)}
+                                        >
+                                            {i18n.bindingEdit ?? "Edit"}
+                                        </button>
+                                        <button
+                                            type="button"
+                                            class="b3-button b3-button--text gf-binding-delete"
+                                            on:click={() => handleDeleteBinding(binding)}
+                                        >
+                                            {i18n.bindingDelete ?? "Delete"}
+                                        </button>
+                                    </div>
+                                </div>
+                            {/each}
+                        </div>
+                    {/if}
+                {/if}
             </SettingSection>
         {/if}
 
@@ -684,8 +824,9 @@
     }
     .gf-binding-left {
         display: flex;
-        gap: 4px;
-        margin-bottom: 2px;
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
     }
     .gf-badge {
         display: inline-flex;
@@ -701,10 +842,61 @@
         background: var(--b3-theme-primary, #4285f4);
         border-radius: 4px;
     }
+    .gf-binding-dirs {
+        display: flex;
+        gap: 4px;
+        flex-wrap: wrap;
+    }
+    .gf-binding-toolbar {
+        display: flex;
+        justify-content: flex-end;
+        margin-bottom: 8px;
+    }
+    .gf-binding-empty {
+        font-size: 13px;
+        line-height: 1.6;
+        color: var(--b3-theme-on-surface-light, #9aa0a6);
+        padding: 16px 0;
+        margin: 0;
+        text-align: center;
+    }
+    .gf-binding-list {
+        display: flex;
+        flex-direction: column;
+    }
+    .gf-binding-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        padding: 10px 0;
+        border-bottom: 1px solid var(--b3-border-color, #e9e9ea);
+    }
+    .gf-binding-item:last-child {
+        border-bottom: none;
+    }
     .gf-binding-cmd {
         font-size: 14px;
         font-weight: 500;
         color: var(--b3-theme-on-surface, #1f2329);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .gf-binding-disabled {
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--b3-theme-on-surface-light, #9aa0a6);
+    }
+    .gf-binding-controls {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        flex: 0 0 auto;
+    }
+    .gf-binding-add {
+        font-size: 13px;
+        padding: 2px 12px;
     }
 
     /* ---- Hidden file input ---- */
@@ -737,3 +929,5 @@
         }
     }
 </style>
+
+

@@ -257,14 +257,52 @@ describe("validateConfig — 绑定校验", () => {
         expect(result.status).toBe("invalid");
     });
 
-    it("bindings 为空数组时规范化为默认绑定", () => {
+    it("bindings 明确为空数组时保持为空（合法，不复活默认绑定）", () => {
         const cfg = createDefaultConfig();
         const result = validateConfig(
             { ...cfg, bindings: [] },
             { availableCommandIds: AVAILABLE_COMMANDS },
         );
+        expect(result.status).toBe("valid");
+        expect(result.config.bindings).toEqual([]);
+    });
+
+    it("缺少 bindings 字段时才使用默认绑定", () => {
+        const cfg = createDefaultConfig();
+        const { bindings: _omit, ...withoutBindings } = cfg;
+        void _omit;
+        const result = validateConfig(
+            withoutBindings as typeof cfg,
+            { availableCommandIds: AVAILABLE_COMMANDS },
+        );
         expect(result.status).toBe("normalized");
         expect(result.config.bindings.length).toBe(4);
+        expect(result.config.bindings[0].id).toBe("default-L");
+    });
+
+    it("4 方向模式下含斜向的绑定被明确拒绝", () => {
+        const cfg = createDefaultConfig();
+        const bindings = [
+            { id: "diag", enabled: true, directions: ["UR" as const], commandId: "tabs.next", commandParams: {} },
+        ];
+        const result = validateConfig(
+            { ...cfg, recognizer: { ...cfg.recognizer, directionMode: 4 }, bindings },
+            { availableCommandIds: AVAILABLE_COMMANDS },
+        );
+        expect(result.status).toBe("invalid");
+    });
+
+    it("8 方向模式下斜向绑定合法", () => {
+        const cfg = createDefaultConfig();
+        const bindings = [
+            { id: "diag", enabled: true, directions: ["UR" as const, "DL" as const], commandId: "tabs.next", commandParams: {} },
+        ];
+        const result = validateConfig(
+            { ...cfg, recognizer: { ...cfg.recognizer, directionMode: 8 }, bindings },
+            { availableCommandIds: AVAILABLE_COMMANDS },
+        );
+        expect(result.status).toBe("valid");
+        expect(result.config.bindings[0].directions).toEqual(["UR", "DL"]);
     });
 });
 

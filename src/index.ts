@@ -7,6 +7,8 @@ import { GestureFlowRuntime } from "@/runtime/GestureFlowRuntime";
 import { CommandRegistry } from "@/commands/CommandRegistry";
 import { SiyuanActionBridge } from "@/commands/SiyuanActionBridge";
 import { registerBuiltinCommands } from "@/commands/registerBuiltinCommands";
+import { buildCommandCatalog } from "@/settings/commandCatalog";
+import type { SettingCommandItem } from "@/settings/commandCatalog";
 import { OverlayI18n } from "@/gesture/overlay/types";
 
 /** Whether the plugin is running in development mode (concise debug logs). */
@@ -34,6 +36,18 @@ export default class GestureFlowPlugin extends Plugin {
     private unsubscribeConfig: (() => void) | null = null;
     private settingsDialog: SettingsDialog | null = null;
 
+    /**
+     * Source of the settings command catalog (stage 5B).
+     *
+     * The runtime rebuilds its own CommandRegistry on every start; the
+     * built-in command set is static in this stage, so this registry —
+     * populated once at load with the exact same
+     * `registerBuiltinCommands` call — is used to build the read-only
+     * catalog the settings UI displays.  Only metadata (id / i18n key /
+     * group) crosses into the settings layer, never execute functions.
+     */
+    private commandCatalogSource: CommandRegistry | null = null;
+
     onload(): void {
         if (IS_DEV) {
             console.log(`[${this.name}] loading (frontend: ${getFrontend()}, backend: ${getBackend()})`);
@@ -59,6 +73,8 @@ export default class GestureFlowPlugin extends Plugin {
         const probeRegistry = new CommandRegistry();
         const probeBridge = new SiyuanActionBridge();
         registerBuiltinCommands(probeRegistry, probeBridge);
+        // Keep the registry alive as the settings command catalog source.
+        this.commandCatalogSource = probeRegistry;
         const commandIds = new Set(probeRegistry.list().map((c) => c.id));
 
         const configManager = new ConfigManager({
@@ -135,9 +151,17 @@ export default class GestureFlowPlugin extends Plugin {
         if (!this.settingsDialog) {
             this.settingsDialog = new SettingsDialog();
         }
+        // Build the read-only command catalog from the live registry and
+        // resolve i18n titles here — the settings layer only ever sees
+        // plain metadata.
+        let commandCatalog: SettingCommandItem[] = [];
+        if (this.commandCatalogSource) {
+            commandCatalog = buildCommandCatalog(this.commandCatalogSource, this.i18n ?? {});
+        }
         this.settingsDialog.open({
             configManager: this.configManager,
             i18n: this.i18n ?? {},
+            commandCatalog,
             onStatus: (message: string, isError: boolean) => {
                 showMessage(message, 2000, isError ? "error" : "info");
             },

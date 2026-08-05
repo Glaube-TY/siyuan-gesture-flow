@@ -43,6 +43,9 @@ const ALL_DIRECTIONS: readonly Direction[] = [
     "DR",
 ];
 
+/** Diagonals — only allowed in 8-direction mode. */
+const DIAGONALS: readonly Direction[] = ["UL", "UR", "DL", "DR"];
+
 /**
  * Validate and normalise an unknown payload into a {@link GestureFlowConfig}.
  *
@@ -130,6 +133,7 @@ export function validateConfig(
         notes,
         errors,
         options.availableCommandIds,
+        recognizerResult.directionMode,
     );
 
     if (errors.length > 0) {
@@ -451,6 +455,7 @@ function validateBindings(
     notes: string[],
     errors: string[],
     availableCommandIds?: Set<string>,
+    directionMode: DirectionMode = 4,
 ): ConfigBinding[] {
     if (input === undefined || input === null) {
         notes.push("missing bindings — using defaults");
@@ -461,8 +466,11 @@ function validateBindings(
         return defaults.map(cloneBindingShallow);
     }
     if (input.length === 0) {
-        notes.push("bindings empty — using defaults");
-        return defaults.map(cloneBindingShallow);
+        // Stage 5B: an explicitly empty array is a VALID user choice —
+        // the user deleted every binding.  It must NOT be replaced with
+        // the default bindings.  (Only a *missing* `bindings` field
+        // falls back to defaults, handled above.)
+        return [];
     }
 
     const seenIds = new Set<string>();
@@ -529,6 +537,16 @@ function validateBindings(
         if (dirError) continue;
         if (directions.length === 0) {
             errors.push(`bindings[${i}].directions must not be empty`);
+            continue;
+        }
+        // Stage 5B: 4-direction mode must not silently carry diagonal
+        // bindings — reject loudly so the UI can tell the user to edit
+        // or disable them.  The runtime never sees an inconsistent
+        // config, so it cannot crash on it.
+        if (directionMode === 4 && directions.some((d) => DIAGONALS.includes(d))) {
+            errors.push(
+                `bindings[${i}].directions contains diagonals not allowed in 4-direction mode: ${directions.join("-")}`,
+            );
             continue;
         }
         // No duplicate consecutive? The spec says "方向序列不重复" — meaning
