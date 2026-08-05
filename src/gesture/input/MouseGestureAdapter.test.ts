@@ -205,6 +205,10 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
         clientY?: number;
         target?: EventTarget;
         cancelable?: boolean;
+        altKey?: boolean;
+        ctrlKey?: boolean;
+        shiftKey?: boolean;
+        metaKey?: boolean;
     } = {}): MouseEvent {
         const event = new MouseEvent("contextmenu", {
             bubbles: true,
@@ -212,6 +216,10 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
             clientX: opts.clientX ?? 0,
             clientY: opts.clientY ?? 0,
             button: 2,
+            altKey: opts.altKey ?? false,
+            ctrlKey: opts.ctrlKey ?? false,
+            shiftKey: opts.shiftKey ?? false,
+            metaKey: opts.metaKey ?? false,
         });
         (opts.target ?? window).dispatchEvent(event);
         return event;
@@ -342,27 +350,71 @@ describe("MouseGestureAdapter — contextmenu 协调（先截获、后决定）"
 
     // ---------------------------------------------------------- Scenario D
     it("场景 D：移动未超过阈值但已截获 contextmenu → pointerup 后恢复一次", async () => {
+        // Track click events to ensure no left-click is ever dispatched.
+        const clickEvents: MouseEvent[] = [];
+        target.addEventListener("click", (e) => clickEvents.push(e as MouseEvent));
+
+        // Track all contextmenu events that reach the target without
+        // being preventDefault'd by the adapter (i.e. the replay).
+        const receivedReplay: MouseEvent[] = [];
+        target.addEventListener("contextmenu", (e) => {
+            const me = e as MouseEvent;
+            if (!me.defaultPrevented) {
+                receivedReplay.push(me);
+            }
+        });
+
         adapter.attach(target);
         dispatchPointer(target, "pointerdown", {
-            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0,
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 30, clientY: 40,
         });
         // Small movement below threshold.
         dispatchPointer(target, "pointermove", {
-            buttons: RIGHT_BUTTON_MASK, clientX: 5, clientY: 0,
+            buttons: RIGHT_BUTTON_MASK, clientX: 35, clientY: 40,
         });
-        // contextmenu intercepted during PENDING.
-        const ctxEvent = dispatchContextmenu({ target });
+        // contextmenu intercepted during PENDING — carry modifier keys so
+        // we can verify they are preserved on the replay.
+        const ctxEvent = dispatchContextmenu({
+            target,
+            clientX: 30,
+            clientY: 40,
+            ctrlKey: true,
+            shiftKey: true,
+        });
         expect(ctxEvent.defaultPrevented).toBe(true);
 
         // pointerup — PENDING release, should schedule replay.
         dispatchPointer(target, "pointerup", {
-            button: 2, buttons: 0, clientX: 6, clientY: 0,
+            button: 2, buttons: 0, clientX: 36, clientY: 40,
         });
 
-        // Wait for replay.
+        // Wait for the microtask replay.
         await flushMicrotasks();
-        // The replay should have been dispatched (verified by no additional
-        // interception).
+
+        // Exactly one replay contextmenu should have reached the target.
+        expect(receivedReplay.length).toBe(1);
+        const replay = receivedReplay[0];
+        expect(replay.defaultPrevented).toBe(false);
+        expect(replay.button).toBe(2);
+        expect(replay.clientX).toBe(30);
+        expect(replay.clientY).toBe(40);
+        // Modifier keys must match the original intercepted event.
+        expect(replay.ctrlKey).toBe(true);
+        expect(replay.shiftKey).toBe(true);
+        expect(replay.altKey).toBe(false);
+        expect(replay.metaKey).toBe(false);
+        // No click events should have been dispatched.
+        expect(clickEvents.length).toBe(0);
+        // No recursive replay (still exactly one event).
+        expect(receivedReplay.length).toBe(1);
+
+        // No residual snapshot: a bare pointerup with no preceding
+        // pointerdown must not trigger a second replay from a stale snapshot.
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 36, clientY: 40,
+        });
+        await flushMicrotasks();
+        expect(receivedReplay.length).toBe(1);
     });
 
     // ---------------------------------------------------------- Scenario E
@@ -1389,6 +1441,280 @@ describe("MouseGestureAdapter — Alt 抑制与 pointerType", () => {
     });
 });
 
+// ============================================== stale suppression release
+/**
+ * Regression tests for the bug where a new trigger-button pointerdown that
+ * bypasses the gesture system (Alt held, non-mouse pointerType) failed to
+ * clear the stale post-gesture suppression from a previous gesture, causing
+ * the bypassed right-click's contextmenu to be incorrectly blocked.
+ *
+ * The fix: when a new trigger-button pointerdown arrives with no active
+ * session, clean up the previous interaction's leftover state BEFORE
+ * checking pointerType / suppressionKey.
+ */
+describe("MouseGestureAdapter — 旧保护期在新右键输入前释放", () => {
+    function dispatchContextmenu(opts: {
+        clientX?: number;
+        clientY?: number;
+        target?: EventTarget;
+    } = {}): MouseEvent {
+        const event = new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: opts.clientX ?? 0,
+            clientY: opts.clientY ?? 0,
+            button: 2,
+        });
+        (opts.target ?? window).dispatchEvent(event);
+        return event;
+    }
+
+    /**
+     * Run a confirmed gesture along the given waypoints so the adapter
+     * enters the 400ms post-gesture suppression window.
+     */
+    function runConfirmedGesture(waypoints: { x: number; y: number }[]): void {
+        const start = { x: 100, y: 100 };
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            clientX: start.x, clientY: start.y,
+        });
+        for (const wp of waypoints) {
+            dispatchPointer(target, "pointermove", {
+                buttons: RIGHT_BUTTON_MASK, clientX: wp.x, clientY: wp.y,
+            });
+        }
+        const last = waypoints[waypoints.length - 1] ?? start;
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: last.x, clientY: last.y,
+        });
+    }
+
+    beforeEach(() => {
+        vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+        vi.useRealTimers();
+    });
+
+    // ------------------------------------------ Alt + right-click after gesture
+    it("完成 U 手势后，400ms 内 Alt + 右键，contextmenu 正常通过", () => {
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 100, y: 70 }]);
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        // Within the 400ms window: Alt + right-click.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            altKey: true, clientX: 100, clientY: 100,
+        });
+        // No time advance — still within the 400ms window.
+        const ctx = dispatchContextmenu({ target, clientX: 100, clientY: 100 });
+        expect(ctx.defaultPrevented).toBe(false);
+    });
+
+    it("完成 D 手势后，400ms 内 Alt + 右键，contextmenu 正常通过", () => {
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 100, y: 130 }]);
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            altKey: true, clientX: 100, clientY: 100,
+        });
+        const ctx = dispatchContextmenu({ target, clientX: 100, clientY: 100 });
+        expect(ctx.defaultPrevented).toBe(false);
+    });
+
+    it("完成 L 手势后，400ms 内 Alt + 右键，contextmenu 正常通过", () => {
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 70, y: 100 }]);
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            altKey: true, clientX: 100, clientY: 100,
+        });
+        const ctx = dispatchContextmenu({ target, clientX: 100, clientY: 100 });
+        expect(ctx.defaultPrevented).toBe(false);
+    });
+
+    it("完成 R 手势后，400ms 内 Alt + 右键，contextmenu 正常通过", () => {
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 130, y: 100 }]);
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            altKey: true, clientX: 100, clientY: 100,
+        });
+        const ctx = dispatchContextmenu({ target, clientX: 100, clientY: 100 });
+        expect(ctx.defaultPrevented).toBe(false);
+    });
+
+    // ------------------------------------------ Alt + right-click side effects
+    it("Alt + 右键不创建 GestureSession（无 onStateChange）", () => {
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 130, y: 100 }]);
+        const stateChangeBefore = events.onStateChange.mock.calls.length;
+
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            altKey: true, clientX: 100, clientY: 100,
+        });
+        // No new onStateChange call (the gesture's PENDING onStateChange
+        // already happened during runConfirmedGesture).
+        expect(events.onStateChange.mock.calls.length).toBe(stateChangeBefore);
+    });
+
+    it("Alt + 右键不触发 onStateChange / onUpdate / onComplete / onCancel", () => {
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 130, y: 100 }]);
+        const state = {
+            onStateChange: events.onStateChange.mock.calls.length,
+            onUpdate: events.onUpdate.mock.calls.length,
+            onComplete: events.onComplete.mock.calls.length,
+            onCancel: events.onCancel.mock.calls.length,
+        };
+
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            altKey: true, clientX: 100, clientY: 100,
+        });
+        // Also dispatch a pointerup and pointermove to be sure none of them
+        // trigger callbacks.
+        dispatchPointer(target, "pointermove", {
+            buttons: 0, clientX: 110, clientY: 100,
+        });
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 110, clientY: 100,
+        });
+
+        expect(events.onStateChange.mock.calls.length).toBe(state.onStateChange);
+        expect(events.onUpdate.mock.calls.length).toBe(state.onUpdate);
+        expect(events.onComplete.mock.calls.length).toBe(state.onComplete);
+        expect(events.onCancel.mock.calls.length).toBe(state.onCancel);
+    });
+
+    it("Alt + 右键不会安排合成菜单重放", async () => {
+        // Track every non-prevented contextmenu that reaches the target.
+        const received: MouseEvent[] = [];
+        target.addEventListener("contextmenu", (e) => {
+            const me = e as MouseEvent;
+            if (!me.defaultPrevented) received.push(me);
+        });
+
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 130, y: 100 }]);
+
+        // Alt + right-click — clears suppression, no session created.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            altKey: true, clientX: 100, clientY: 100,
+        });
+        // Dispatch one natural contextmenu — it passes through.
+        dispatchContextmenu({ target, clientX: 100, clientY: 100 });
+
+        // Flush microtasks — no synthetic replay should have been scheduled.
+        await Promise.resolve();
+
+        // Exactly one event (the natural one) — no replay.
+        expect(received.length).toBe(1);
+    });
+
+    // ------------------------------------------ non-mouse pointerType after gesture
+    it("完成手势后立即使用 pointerType pen 的右键输入，不创建会话且菜单正常通过", () => {
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 130, y: 100 }]);
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        const stateChangeBefore = events.onStateChange.mock.calls.length;
+        // pen pointerdown with trigger button — clears suppression, no session.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            pointerType: "pen", clientX: 100, clientY: 100,
+        });
+        expect(events.onStateChange.mock.calls.length).toBe(stateChangeBefore);
+
+        // contextmenu must pass through (no stale suppression).
+        const ctx = dispatchContextmenu({ target, clientX: 100, clientY: 100 });
+        expect(ctx.defaultPrevented).toBe(false);
+    });
+
+    it("完成手势后立即使用 pointerType touch，不创建会话且不被旧保护期错误拦截", () => {
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 130, y: 100 }]);
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+
+        const stateChangeBefore = events.onStateChange.mock.calls.length;
+        // touch pointerdown with trigger button — clears suppression, no session.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            pointerType: "touch", clientX: 100, clientY: 100,
+        });
+        expect(events.onStateChange.mock.calls.length).toBe(stateChangeBefore);
+
+        // contextmenu must pass through (no stale suppression).
+        const ctx = dispatchContextmenu({ target, clientX: 100, clientY: 100 });
+        expect(ctx.defaultPrevented).toBe(false);
+    });
+
+    // ------------------------------------------ normal mouse right-click still works
+    it("普通 mouse 右键仍能开始新的 PENDING 会话", () => {
+        adapter.attach(target);
+        runConfirmedGesture([{ x: 130, y: 100 }]);
+        // The confirmed gesture produced PENDING + TRACKING onStateChange.
+        const stateChangeBefore = events.onStateChange.mock.calls.length;
+
+        // Normal mouse right-click (no Alt, pointerType mouse).
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            clientX: 100, clientY: 100,
+        });
+        // PENDING session created → exactly one more onStateChange call.
+        expect(events.onStateChange.mock.calls.length).toBe(stateChangeBefore + 1);
+    });
+
+    // ------------------------------------------ active gesture not disturbed
+    it("已有 TRACKING 会话时额外 Alt pointerdown 不会清理当前手势状态", () => {
+        adapter.attach(target);
+        // Start a gesture and reach TRACKING.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            clientX: 100, clientY: 100,
+        });
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 130, clientY: 100,
+        });
+        expect(events.onStateChange).toHaveBeenCalledTimes(2); // PENDING + TRACKING
+        const onUpdateAfterTracking = events.onUpdate.mock.calls.length;
+
+        // An extra Alt + right-click pointerdown arrives while TRACKING.
+        // The adapter must keep ignoring it and must NOT clean the current
+        // session's state.
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK,
+            altKey: true, clientX: 200, clientY: 200,
+        });
+        // No new onStateChange (still TRACKING, no new session).
+        expect(events.onStateChange).toHaveBeenCalledTimes(2);
+
+        // The original gesture must still be alive — a pointermove for the
+        // original pointer continues to produce onUpdate.
+        dispatchPointer(target, "pointermove", {
+            buttons: RIGHT_BUTTON_MASK, clientX: 160, clientY: 100,
+        });
+        expect(events.onUpdate.mock.calls.length).toBe(onUpdateAfterTracking + 1);
+
+        // pointerup completes the original gesture.
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 160, clientY: 100,
+        });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+    });
+});
+
 describe("MouseGestureAdapter — pointerId 与按钮状态", () => {
     it("错误 pointerId 的 pointermove 不影响当前会话", () => {
         adapter.attach(target);
@@ -1628,5 +1954,88 @@ describe("MouseGestureAdapter — pointerup 终点记录", () => {
             clientY: 0,
         });
         expect(events.onComplete).not.toHaveBeenCalled();
+    });
+});
+
+// ============================================== diagnostic: double contextmenu
+/**
+ * Diagnostic test for a hypothetical platform edge case:
+ *
+ *   pointerdown → contextmenu (before pointerup, intercepted)
+ *                → pointerup (PENDING release, replay scheduled)
+ *                → natural contextmenu (after pointerup)
+ *
+ * On Windows / Electron a single right-click typically fires only ONE
+ * contextmenu event, either before or after pointerup — not both.  This
+ * test simulates the hypothetical "both" ordering to document what the
+ * current adapter would do if it ever occurred, so we can compare against
+ * real SiYuan behaviour during manual testing.
+ *
+ * NO de-duplication state machine is added based on this hypothetical
+ * scenario alone.  If real SiYuan manual testing confirms that a single
+ * right-click produces two contextmenu events (one before pointerup and
+ * one after), a targeted fix should be designed around the real event
+ * ordering at that point.
+ */
+describe("MouseGestureAdapter — 诊断：普通右键双 contextmenu 假设顺序", () => {
+    function dispatchContextmenu(opts: {
+        clientX?: number;
+        clientY?: number;
+        target?: EventTarget;
+    } = {}): MouseEvent {
+        const event = new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: true,
+            clientX: opts.clientX ?? 0,
+            clientY: opts.clientY ?? 0,
+            button: 2,
+        });
+        (opts.target ?? window).dispatchEvent(event);
+        return event;
+    }
+
+    it("模拟 pointerup 前后各一个 contextmenu — 记录当前行为", async () => {
+        // Record every contextmenu that reaches the target without being
+        // prevented by the adapter (i.e. visible to SiYuan).
+        const visibleMenus: MouseEvent[] = [];
+        target.addEventListener("contextmenu", (e) => {
+            const me = e as MouseEvent;
+            if (!me.defaultPrevented) visibleMenus.push(me);
+        });
+
+        adapter.attach(target);
+        dispatchPointer(target, "pointerdown", {
+            button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 50, clientY: 50,
+        });
+
+        // 1. contextmenu fires BEFORE pointerup (intercepted during PENDING).
+        const ctx1 = dispatchContextmenu({ target, clientX: 50, clientY: 50 });
+        expect(ctx1.defaultPrevented).toBe(true); // intercepted
+
+        // 2. pointerup — PENDING release, replay scheduled via microtask.
+        dispatchPointer(target, "pointerup", {
+            button: 2, buttons: 0, clientX: 52, clientY: 50,
+        });
+
+        // 3. Flush microtasks — the replay fires now (one visible menu).
+        await Promise.resolve();
+        expect(visibleMenus.length).toBe(1);
+        expect(visibleMenus[0].defaultPrevented).toBe(false);
+
+        // 4. Hypothetical: platform ALSO dispatches a natural contextmenu
+        //    after pointerup.  Since the session has ended (PENDING release
+        //    does not enter post-gesture suppression) and postGestureSuppress
+        //    is false, this natural contextmenu passes through untouched.
+        const ctx2 = dispatchContextmenu({ target, clientX: 50, clientY: 50 });
+        expect(ctx2.defaultPrevented).toBe(false);
+
+        // Document the current behaviour: in this hypothetical ordering the
+        // target would see TWO visible contextmenu events (the replay plus
+        // the natural one).  This is recorded here so we can compare against
+        // real SiYuan manual testing.  If real testing confirms that a single
+        // right-click never produces this "both" ordering, no fix is needed.
+        // If real testing reproduces double menus, a de-duplication fix
+        // should be designed around the confirmed event ordering.
+        expect(visibleMenus.length).toBe(2);
     });
 });

@@ -211,35 +211,52 @@ export class MouseGestureAdapter extends InputAdapter {
 
     private handlePointerDown(e: PointerEvent): void {
         if (this.active) {
-            return; // a gesture is already in progress
+            return; // a gesture is already in progress — keep ignoring
         }
         if (e.button !== this.config.button) {
-            return; // not the trigger button
+            return; // not the trigger button — do not disturb protection
         }
-        // Stage 1: only handle mouse input.  Pen (including side keys) and
-        // touch are not treated as mouse gestures.
-        if (e.pointerType !== "mouse") {
-            return;
-        }
-        if (this.isSuppressed(e)) {
-            // Suppression key held: do not start a gesture, let right-click work.
-            return;
-        }
-
-        const session = new GestureSession(this.config);
-        this.session = session;
-        // Reset menu coordination state for a new interaction.  This also
-        // terminates any stale post-gesture suppression from a previous
-        // gesture so it cannot shield the new right-click.
+        // A new trigger-button pointerdown with no active session: end the
+        // previous interaction's leftover state BEFORE deciding whether this
+        // pointerdown should bypass the gesture system (Alt held, non-mouse
+        // pointerType).  Otherwise a stale post-gesture suppression window
+        // from a previous gesture would shield the bypassed right-click's
+        // contextmenu, causing the menu to be incorrectly blocked.
+        //
+        // This cleanup is safe because there is no PENDING/TRACKING session:
+        //   - postGestureSuppressTimer: cancelled so its callback cannot fire.
+        //   - postGestureSuppress: cleared so the next contextmenu passes.
+        //   - postGestureSuppressGeneration: bumped so the cancelled timer's
+        //     callback (if already queued) cannot reset newer state.
+        //   - contextmenuSnapshot: cleared so no stale replay can fire.
+        //   - replayToken: bumped so any pending replay microtask aborts.
+        //   - interactionGeneration: bumped so pending replays detect the
+        //     new interaction.
+        //   - gestureConfirmed: cleared so a subsequent plain right-click in
+        //     this interaction can replay its contextmenu.
         this.clearPostGestureSuppressTimer();
         this.postGestureSuppress = false;
         this.postGestureSuppressGeneration++;
         this.gestureConfirmed = false;
         this.contextmenuSnapshot = null;
-        // A new interaction supersedes any pending replay from the previous
-        // one — increment the replay token so the old microtask aborts.
         this.replayToken++;
         this.interactionGeneration++;
+
+        // Stage 1: only handle mouse input.  Pen (including side keys) and
+        // touch are not treated as mouse gestures.  The cleanup above
+        // already released any stale suppression, so the contextmenu will
+        // pass through to SiYuan untouched.
+        if (e.pointerType !== "mouse") {
+            return;
+        }
+        if (this.isSuppressed(e)) {
+            // Suppression key held: do not start a gesture, let right-click
+            // work.  The cleanup above already released any stale suppression.
+            return;
+        }
+
+        const session = new GestureSession(this.config);
+        this.session = session;
         this.pointerId = e.pointerId;
         session.addPoint(e.clientX, e.clientY, this.timestamp(e));
         this.capture(e);
