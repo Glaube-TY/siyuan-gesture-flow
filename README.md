@@ -52,13 +52,33 @@ GestureFlow is under active development. The following is **done**:
 - **Command dispatcher** — `GestureCommandDispatcher` validates session state,
   recognition result, and binding existence before executing the bound command
   exactly once per session.
+- **Versioned configuration** — a strictly-typed config model with version
+  field, deep-cloned defaults, unified validation/normalisation, and a
+  migration framework (currently version 1).  `ConfigManager` owns the
+  in-memory snapshot, serialises all persistence via `Plugin.loadData` /
+  `Plugin.saveData`, and notifies subscribers with independent deep copies.
+  Imports go through the same migration + validation pipeline as the initial
+  load; invalid payloads fall back to defaults.
+- **Settings page** — a Svelte-based settings dialog mounted via the official
+  SiYuan `Setting` class.  Tabs for General (enable, suppression key,
+  activation distance, timeout), Recognition (direction mode, sampling,
+  simplification, segment limits), Display (trail/hint toggles, line width),
+  Bindings (enable/disable the four default bindings), and Data (export,
+  import, reset).  All user-facing strings come from i18n; rapid edits are
+  debounced and merged so the runtime is not restarted on every keystroke.
+- **Runtime manager** — `GestureFlowRuntime` encapsulates the full lifecycle
+  of Adapter, Engine, Overlay, commands, and bindings.  `restart` fully stops
+  the old runtime (detach adapter, destroy overlay, clear timers and replay
+  tokens) before starting with the new config.  `enabled = false` skips
+  mounting any input listener or overlay.
 
 The following is **not yet implemented**:
 
-- Settings page
-- Configuration persistence
+- Custom gesture recorder and full binding editor (editing directions, adding
+  new bindings, drag-and-drop reordering, custom command params)
 - Destructive actions (close tab, delete doc, new doc, locate in doc tree)
 - Touchpad / touch input support
+- Scroll-wheel gestures, Rocker gestures, super drag
 
 ## Architecture
 
@@ -71,6 +91,12 @@ src/
     SiyuanActionBridge.ts       All SiYuan API/DOM access (tabs, scroll)
     registerBuiltinCommands.ts  Default tab/scroll commands
     types.ts                    Command / context / result types
+  config/
+    types.ts                    Versioned config schema (strict types)
+    defaults.ts                 Default config + deep-clone utilities
+    validate.ts                 Validation + normalisation (range clamping, type checks)
+    migrations.ts               Version detection + migration framework
+    ConfigManager.ts            Persistence owner (load/save/import/export/reset/subscribe)
   gesture/
     input/
       InputAdapter.ts           Abstract base adapter
@@ -82,7 +108,7 @@ src/
       DirectionMatcher.ts       Adjacent-duplicate merging
       recognition.test.ts       Pipeline tests
     overlay/
-      GestureOverlay.ts         Canvas trail + hint element
+      GestureOverlay.ts         Canvas trail + hint element (config-driven)
       overlay.test.ts           Overlay tests
       types.ts                  Overlay-specific types
     bindings/
@@ -93,7 +119,12 @@ src/
     GestureSession.ts           Per-gesture state + point accumulation
     GestureFeedbackController.ts  RAF coalescing + live recognition + async callback
     types.ts                    Shared types and enums
-  index.ts                      Plugin entry — wiring, dev logging, unload cleanup
+  runtime/
+    GestureFlowRuntime.ts       Lifecycle manager — start/stop/restart all components
+  settings/
+    SettingsPanel.svelte        Svelte settings dialog (tabs: general/recognition/display/bindings/data)
+    settingsHelpers.ts          Pure helpers (parseNumber, DebouncedPatchScheduler)
+  index.ts                      Plugin entry — config manager, runtime, settings, unload
 ```
 
 ## Development

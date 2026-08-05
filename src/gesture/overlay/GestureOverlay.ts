@@ -1,7 +1,8 @@
 import { OverlayI18n, OverlayState } from "./types";
+import { OverlayConfig } from "@/config/types";
 
-/** Trail line width in CSS pixels (will become a setting later). */
-const TRAIL_LINE_WIDTH = 3;
+/** Default trail line width in CSS pixels (used when config omits lineWidth). */
+const DEFAULT_TRAIL_LINE_WIDTH = 3;
 
 /** Offset of the hint from the pointer position (CSS px). */
 const HINT_OFFSET = 14;
@@ -61,9 +62,40 @@ export class GestureOverlay {
     private current: OverlayState | null = null;
     private readonly i18n: OverlayI18n;
     private destroyed = false;
+    /**
+     * Current overlay configuration.  Mutable via {@link updateConfig} so
+     * the runtime can apply setting changes without recreating the
+     * overlay.  All fields are primitives, so a shallow copy is enough
+     * to isolate the overlay from external mutations.
+     */
+    private config: OverlayConfig;
 
-    constructor(i18n: OverlayI18n) {
+    constructor(i18n: OverlayI18n, config?: OverlayConfig) {
         this.i18n = i18n;
+        this.config = config
+            ? { ...config }
+            : { showTrail: true, showHint: true, lineWidth: DEFAULT_TRAIL_LINE_WIDTH };
+    }
+
+    /**
+     * Replace the overlay configuration.  Applied immediately — the next
+     * render uses the new values.  Does not recreate the Canvas or hint
+     * elements; if `showTrail`/`showHint` were off and are now on, the
+     * elements will be created lazily on the next {@link show}/{@link update}.
+     *
+     * If `showTrail` is turned off while a trail is currently drawn, the
+     * Canvas is cleared immediately so the old trail does not linger.
+     * If `showHint` is turned off while the hint is visible, the hint is
+     * hidden immediately.
+     */
+    updateConfig(config: OverlayConfig): void {
+        this.config = { ...config };
+        if (!this.config.showTrail && this.ctx && this.canvas) {
+            this.ctx.clearRect(0, 0, this.cssWidth, this.cssHeight);
+        }
+        if (!this.config.showHint && this.hint) {
+            this.hint.style.display = "none";
+        }
     }
 
     // --------------------------------------------------------------- lifecycle
@@ -74,6 +106,12 @@ export class GestureOverlay {
      *
      * Defensively cancels any pending hide timer from a previous gesture so
      * the new gesture is never hidden by a stale callback.  Idempotent.
+     *
+     * When `showTrail` is false the Canvas is still created (so that a
+     * later `updateConfig({ showTrail: true })` can draw without extra
+     * plumbing) but kept hidden via `display: none`.  When `showHint` is
+     * false the hint element is created but kept hidden the same way.
+     * Recognition is never affected by these flags — only rendering.
      */
     show(): void {
         if (this.destroyed) return;
@@ -94,7 +132,7 @@ export class GestureOverlay {
         }
         this.handleResize();
         if (this.canvas) {
-            this.canvas.style.display = "block";
+            this.canvas.style.display = this.config.showTrail ? "block" : "none";
         }
     }
 
@@ -125,6 +163,12 @@ export class GestureOverlay {
 
     /**
      * Update the overlay with a new state snapshot and redraw.
+     *
+     * Honours the {@link OverlayConfig.showTrail} and {@link OverlayConfig.showHint}
+     * flags: when `showTrail` is false the Canvas is cleared and hidden;
+     * when `showHint` is false the hint element is hidden.  Recognition
+     * and command dispatch are never affected — they happen in the
+     * feedback controller and dispatcher, not here.
      */
     update(state: OverlayState): void {
         if (this.destroyed) return;
@@ -133,8 +177,26 @@ export class GestureOverlay {
             // Elements not yet created — create them now.
             this.show();
         }
-        this.renderTrail(state.points);
-        this.updateHint(state);
+        if (this.config.showTrail) {
+            this.renderTrail(state.points);
+        } else {
+            // Trail disabled — clear any previous drawing and hide the
+            // canvas so it never intercepts hit-testing (although it is
+            // already pointer-events:none, hiding is cleaner).
+            if (this.ctx && this.canvas) {
+                this.ctx.clearRect(0, 0, this.cssWidth, this.cssHeight);
+            }
+            if (this.canvas) {
+                this.canvas.style.display = "none";
+            }
+        }
+        if (this.config.showHint) {
+            this.updateHint(state);
+        } else {
+            if (this.hint) {
+                this.hint.style.display = "none";
+            }
+        }
     }
 
     /**
@@ -258,7 +320,7 @@ export class GestureOverlay {
         ctx.clearRect(0, 0, this.cssWidth, this.cssHeight);
         if (points.length < 2) return;
         ctx.save();
-        ctx.lineWidth = TRAIL_LINE_WIDTH;
+        ctx.lineWidth = this.config.lineWidth;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
         ctx.strokeStyle = this.readThemeVar(THEME_VARS.trailColor);

@@ -41,13 +41,25 @@ GestureFlow 正在开发中。以下功能**已完成**：
   `parentElement` 定位官方滚动控件。
 - **命令派发器** — `GestureCommandDispatcher` 在执行前验证会话状态、识别结果
   和绑定存在性，确保每个会话最多执行一次命令。
+- **版本化配置** — 严格类型的配置模型，包含版本字段、深拷贝默认值、统一校验/
+  规范化和迁移框架（当前版本 1）。`ConfigManager` 持有内存快照，通过
+  `Plugin.loadData` / `Plugin.saveData` 串行持久化，向订阅者推送独立深拷贝。
+  导入走与首次加载相同的迁移 + 校验管线；无效数据回退默认配置。
+- **设置页面** — 基于思源官方 `Setting` 类挂载的 Svelte 设置对话框。包含
+  常规（启用、临时禁用键、激活距离、超时）、识别（方向模式、采样、简化、段限制）、
+  显示（轨迹/提示开关、线宽）、绑定（启停四个默认绑定）、数据（导出、导入、恢复默认）
+  五个标签页。所有用户文本来自 i18n；快速连续编辑经防抖合并，不会每个按键重启运行时。
+- **运行时管理器** — `GestureFlowRuntime` 封装 Adapter、Engine、Overlay、命令和
+  绑定的完整生命周期。`restart` 先完整停止旧运行时（detach adapter、销毁 overlay、
+  清除计时器和重放 token），再用新配置启动。`enabled = false` 时不挂载任何输入
+  监听器或 Overlay。
 
 以下功能**尚未实现**：
 
-- 设置页面
-- 配置持久化
+- 自定义手势录制器与完整绑定编辑器（修改方向、新增绑定、拖拽排序、自定义命令参数）
 - 破坏性动作（关闭标签页、删除文档、新建文档、定位文档树）
 - 触控板 / 触摸输入
+- 滚轮手势、Rocker 手势、超级拖拽
 
 ## 架构
 
@@ -60,6 +72,12 @@ src/
     SiyuanActionBridge.ts       所有思源 API/DOM 访问（标签页、滚动）
     registerBuiltinCommands.ts  默认标签页/滚动命令
     types.ts                    命令 / 上下文 / 结果类型
+  config/
+    types.ts                    版本化配置 schema（严格类型）
+    defaults.ts                 默认配置 + 深拷贝工具
+    validate.ts                 校验 + 规范化（范围钳制、类型检查）
+    migrations.ts               版本检测 + 迁移框架
+    ConfigManager.ts            持久化所有者（load/save/import/export/reset/subscribe）
   gesture/
     input/
       InputAdapter.ts           抽象输入适配器基类
@@ -71,7 +89,7 @@ src/
       DirectionMatcher.ts       相邻同方向合并
       recognition.test.ts       管线测试
     overlay/
-      GestureOverlay.ts         Canvas 轨迹 + 提示元素
+      GestureOverlay.ts         Canvas 轨迹 + 提示元素（配置驱动）
       overlay.test.ts           Overlay 测试
       types.ts                  Overlay 专用类型
     bindings/
@@ -82,7 +100,12 @@ src/
     GestureSession.ts           单次手势状态 + 点累积
     GestureFeedbackController.ts  RAF 合并 + 实时识别 + 异步回调
     types.ts                    共享类型和枚举
-  index.ts                      插件入口 — 装配、开发日志、卸载清理
+  runtime/
+    GestureFlowRuntime.ts       生命周期管理器 — start/stop/restart 全部组件
+  settings/
+    SettingsPanel.svelte        Svelte 设置对话框（标签页：常规/识别/显示/绑定/数据）
+    settingsHelpers.ts          纯辅助函数（parseNumber、DebouncedPatchScheduler）
+  index.ts                      插件入口 — 配置管理器、运行时、设置、卸载
 ```
 
 ## 开发

@@ -1,5 +1,146 @@
 # Changelog
 
+## Stage 5A — Versioned configuration, persistence, settings page, and runtime reload
+
+### Versioned configuration model
+
+- Added `src/config/types.ts` — strictly-typed config schema with `version`,
+  `enabled`, `trigger` (button, activationDistance, suppressionKey, timeoutMs),
+  `recognizer` (sampleDistance, simplifyTolerance, minimumSegmentLength,
+  turnAngleThreshold, maximumSegments, directionMode), `overlay` (showTrail,
+  showHint, lineWidth), and `bindings` array.  Uses explicit union types for
+  `suppressionKey` (`Alt | Control | Shift | Meta | null`) and `directionMode`
+  (`4 | 8`); no `any`, `as never`, or `ts-ignore`.
+- Added `src/config/defaults.ts` — `createDefaultConfig()` returns a fresh
+  independent deep copy on every call; `deepCloneConfig()` recursively clones
+  bindings, directions, and commandParams so external mutation cannot pollute
+  subsequent instances.  Default values match the pre-5A hard-coded behaviour:
+  button 2, activationDistance 16, suppressionKey Alt, timeoutMs 2000,
+  sampleDistance 4, simplifyTolerance 2.8, minimumSegmentLength 18,
+  turnAngleThreshold 42, maximumSegments 6, directionMode 4, showTrail true,
+  showHint true, lineWidth 3, bindings L/R/U/D.
+- Added `src/config/validate.ts` — unified validation + normalisation entry.
+  Validates version (supported integer), enabled (boolean), button (only 2
+  in v1), activationDistance (4–100), suppressionKey (Alt/Control/Shift/Meta/null),
+  timeoutMs (0–10000), sampleDistance (>0), simplifyTolerance (≥0),
+  minimumSegmentLength (>0), turnAngleThreshold (1–89), maximumSegments
+  (positive integer), directionMode (4 or 8), lineWidth (1–20), bindings
+  (array, non-empty unique ids, non-empty legal non-repeating direction
+  sequences, commandId present in the injected available-command set,
+  commandParams plain object, enabled boolean).  Missing fields are filled
+  from defaults; out-of-range numbers are clamped; type errors / duplicate
+  bindings / unknown directions / unknown commands are rejected.  Result is
+  `valid` | `normalized` | `invalid` with the default config as fallback.
+  No new runtime validation dependency.
+- Added `src/config/migrations.ts` — version detection (`detectVersion`),
+  migration framework (`registerMigration`), and `migrateAndValidate` that
+  runs detect → migrate → normalise → validate in sequence.  Unknown future
+  versions are refused (no forced downgrade).  Migration functions are pure;
+  they never call `saveData`.  Currently version 1 with no real migrations,
+  but the upgrade path is in place.
+
+### ConfigManager and persistence
+
+- Added `src/config/ConfigManager.ts` — the single owner of the in-memory
+  config snapshot.  Uses the verified SiYuan `Plugin.loadData` / `saveData` /
+  `removeData` API (verified via `node_modules/siyuan/siyuan.d.ts`).
+  `loadData` returns `null` when the storage file does not exist — this is
+  treated as "first run" and falls back to defaults without error.
+  - Storage name: stable constant `gesture-flow-config`.
+  - `load()` is idempotent (returns the same promise on repeated calls).
+  - `getConfig()` returns an independent deep copy — external code cannot
+    mutate the internal state.
+  - `replaceConfig()` / `updateConfig()` validate the candidate before
+    persisting; on validation failure the previous config is preserved.
+  - `reset()` restores defaults and persists.
+  - `exportJson()` / `importJson()` — imports go through the same migration
+    + validation pipeline as the initial load; invalid imports do not
+    overwrite the current config.  Exports contain no tokens, workspace
+    paths, DOM objects, events, or sessions.
+  - `subscribe()` / `destroy()` — subscribers receive independent snapshots;
+    `destroy()` tears down subscriptions and rejects pending saves.
+  - Save serialisation: a single `saveChain` promise ensures last-write-wins
+    with no concurrent `saveData` calls.  On persistence failure the
+    in-memory state is rolled back to stay consistent with the last
+    successfully saved data.
+
+### Runtime manager
+
+- Added `src/runtime/GestureFlowRuntime.ts` — encapsulates the full lifecycle
+  of CommandRegistry, SiyuanActionBridge, built-in commands,
+  GestureBindingRegistry, CommandExecutor, GestureCommandDispatcher,
+  GestureEngine, GestureOverlay, GestureFeedbackController, and
+  MouseGestureAdapter.
+  - `start(config)` is idempotent; `stop()` is idempotent.
+  - `restart(newConfig)` fully stops the old runtime first (adapter.detach,
+    controller.destroy, overlay.destroy, clear timers and replay tokens),
+    then starts with the new config.  At most one Adapter and one Overlay
+    exist at any time.
+  - `enabled = false` skips mounting input listeners and Overlay; the
+    runtime enters a `disabled` state and can be re-enabled via `restart`.
+  - Restart failure rolls back to the previous working config.
+  - `index.ts` now only constructs ConfigManager, Runtime, and settings UI —
+    no manual component wiring.
+
+### Config-driven modules
+
+- `MouseGestureAdapter` accepts `trigger` config (button,
+  activationDistance, suppressionKey, timeoutMs).
+- `GestureEngine` accepts `recognizer` config (sampleDistance,
+  simplifyTolerance, minimumSegmentLength, turnAngleThreshold,
+  maximumSegments, directionMode).
+- `GestureOverlay` accepts `overlay` config (showTrail, showHint, lineWidth)
+  via constructor and `updateConfig()`.  `showTrail = false` suppresses
+  Canvas drawing but recognition continues.  `showHint = false` suppresses
+  the hint element but recognition continues.  Both off — commands still
+  execute.
+
+### Settings page
+
+- Added `src/settings/SettingsPanel.svelte` — Svelte settings dialog mounted
+  via the official SiYuan `Setting` class with a custom HTMLElement.
+  - Tabs: General (enable, suppression key, activation distance, timeout),
+    Recognition (direction mode, sample distance, simplify tolerance,
+    minimum segment length, turn angle threshold, maximum segments),
+    Display (show trail, show hint, line width), Bindings (enable/disable
+    the four default bindings — no editing directions or adding bindings),
+    Data (export, import, reset).
+  - All user-facing strings come from i18n (`en.json` / `zh-CN.json`); no
+    hardcoded Chinese in TypeScript or Svelte logic.
+  - Numeric inputs use string buffers with explicit min/max/step; values are
+    parsed and clamped on blur or debounce flush.  Invalid values show an
+    inline error and are not saved.
+  - Rapid edits are debounced (400 ms) and merged via
+    `DebouncedPatchScheduler` so the runtime is not restarted on every
+    keystroke.  Component destroy flushes pending patches and clears the
+    timer + subscription.
+  - Import validates before applying; invalid import does not overwrite the
+    current config.  Reset requires confirmation.
+- Added `src/settings/settingsHelpers.ts` — pure helpers extracted from the
+  Svelte component for unit testing: `parseNumber` (input validation +
+  clamping) and `DebouncedPatchScheduler` (debounce + patch merging).
+
+### Input layer preservation
+
+- The existing right-click contextmenu state machine is unchanged.  Runtime
+  `restart` calls `adapter.detach()` so old protection timers and replay
+  microtasks fail safely via the detach generation mechanism.  No double
+  listeners, no double Canvas, no residual contextmenu protection.
+
+### Testing
+
+- Config tests: defaults deep-clone (7), validation valid/missing/out-of-range/
+  type-error/duplicate-bindings/unknown-command (28), migration framework (13),
+  ConfigManager load/save/update/reset/import/export/subscribe/destroy/
+  serial-save/deep-copy (29).
+- Runtime tests: state machine, enabled toggle, restart (stop-then-start,
+  rapid restart), config changes, binding enable/disable, stop-then-restart (19).
+- Settings helper tests: parseNumber valid/invalid/clamp, DebouncedPatchScheduler
+  basic/merge/destroy/flush (30).
+- Overlay tests extended for config-driven behaviour (showTrail, showHint,
+  lineWidth, updateConfig) (54).
+- Total: 495 tests passing across 17 test files.
+
 ## Stage 4 stabilization — contextmenu coordination and document scrolling fix
 
 ### contextmenu coordination ("capture first, replay later")

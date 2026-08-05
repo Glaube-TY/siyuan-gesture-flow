@@ -1,21 +1,13 @@
-import { Plugin, getFrontend, getBackend } from "siyuan";
+import { Plugin, Setting, getFrontend, getBackend, showMessage } from "siyuan";
 import "./index.scss";
-import { MouseGestureAdapter } from "@/gesture/input/MouseGestureAdapter";
-import { DEFAULT_TRIGGER } from "@/gesture/types";
-import { GestureEngine } from "@/gesture/GestureEngine";
-import { GestureFeedbackController } from "@/gesture/GestureFeedbackController";
-import { GestureOverlay } from "@/gesture/overlay/GestureOverlay";
-import { OverlayI18n } from "@/gesture/overlay/types";
+import SettingsPanel from "@/settings/SettingsPanel.svelte";
+import { ConfigManager, CONFIG_STORAGE_NAME } from "@/config/ConfigManager";
+import type { ConfigPersistenceHost } from "@/config/ConfigManager";
+import { GestureFlowRuntime } from "@/runtime/GestureFlowRuntime";
 import { CommandRegistry } from "@/commands/CommandRegistry";
-import { CommandExecutor } from "@/commands/CommandExecutor";
 import { SiyuanActionBridge } from "@/commands/SiyuanActionBridge";
-import { GestureCommandDispatcher } from "@/commands/GestureCommandDispatcher";
 import { registerBuiltinCommands } from "@/commands/registerBuiltinCommands";
-import { GestureBindingRegistry } from "@/gesture/bindings/GestureBindingRegistry";
-import { DEFAULT_BINDINGS } from "@/gesture/bindings/defaultBindings";
-import { createCommandLabelResolver } from "@/gesture/bindings/CommandLabelResolver";
-import { GestureSession } from "@/gesture/GestureSession";
-import { RecognitionResult } from "@/gesture/GestureEngine";
+import { OverlayI18n } from "@/gesture/overlay/types";
 
 /** Whether the plugin is running in development mode (concise debug logs). */
 const IS_DEV = process.env.DEV_MODE === "true" || process.env.NODE_ENV === "development";
@@ -23,25 +15,24 @@ const IS_DEV = process.env.DEV_MODE === "true" || process.env.NODE_ENV === "deve
 /**
  * GestureFlow plugin entry.
  *
- * Stage 4 wires the command registry, gesture bindings, and the
- * SiyuanActionBridge to the existing feedback controller.  When a
- * gesture completes, the bound command is executed exactly once via
- * the {@link GestureCommandDispatcher}.
- *
+ * Stage 5A replaces the hard-coded wiring with a config-driven runtime.
  * Responsibilities kept in this file:
- * - Instance creation and wiring.
- * - Adapter → controller callback connection.
- * - Concise development-only logging (sessionId, commandId, status).
- * - Unload cleanup.
+ * - Construct the {@link ConfigManager} and load the persisted config.
+ * - Construct the {@link GestureFlowRuntime} and start it with the
+ *   loaded config.
+ * - Subscribe to config changes and restart the runtime when needed.
+ * - Provide the settings UI via {@link openSetting}.
+ * - Unload cleanup: stop the runtime, destroy the config manager, and
+ *   tear down the settings panel.
  *
  * All dispatch decisions live in {@link GestureCommandDispatcher}; this
  * file does not inspect session state or recognition results directly.
  */
 export default class GestureFlowPlugin extends Plugin {
-    private adapter: MouseGestureAdapter | null = null;
-    private controller: GestureFeedbackController | null = null;
-    private dispatcher: GestureCommandDispatcher | null = null;
-    private commandExecutor: CommandExecutor | null = null;
+    private configManager: ConfigManager | null = null;
+    private runtime: GestureFlowRuntime | null = null;
+    private unsubscribeConfig: (() => void) | null = null;
+    private settingsPanel: SettingsPanel | null = null;
 
     onload(): void {
         if (IS_DEV) {
@@ -52,111 +43,135 @@ export default class GestureFlowPlugin extends Plugin {
             return; // non-DOM environment, nothing to attach
         }
 
-        // --- Command system ---
-        const bridge = new SiyuanActionBridge();
+        // --- Config manager ---
+        // The plugin instance itself is the persistence host — it exposes
+        // loadData / saveData / removeData via the SiYuan Plugin API.
+        const host: ConfigPersistenceHost = {
+            loadData: (name: string) => this.loadData(name),
+            saveData: (name: string, content: unknown) => this.saveData(name, content),
+            removeData: (name: string) => this.removeData(name),
+        };
 
-        const commandRegistry = new CommandRegistry();
-        registerBuiltinCommands(commandRegistry, bridge);
+        // The available command id set is computed on demand so the
+        // validator always sees the current registry.  We construct a
+        // throwaway registry here just to enumerate the built-in command
+        // ids; the runtime creates its own registry during start.
+        const probeRegistry = new CommandRegistry();
+        const probeBridge = new SiyuanActionBridge();
+        registerBuiltinCommands(probeRegistry, probeBridge);
+        const commandIds = new Set(probeRegistry.list().map((c) => c.id));
 
-        const commandExecutor = new CommandExecutor(commandRegistry);
-        this.commandExecutor = commandExecutor;
+        const configManager = new ConfigManager({
+            host,
+            storageName: CONFIG_STORAGE_NAME,
+            availableCommandIds: () => {
+                // The runtime's registry is rebuilt on every start, so
+                // the command set is stable for stage 5A.  Future stages
+                // that add commands at runtime should expose the live
+                // registry here.
+                return commandIds;
+            },
+        });
+        this.configManager = configManager;
 
-        // --- Gesture bindings ---
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
-        bindingRegistry.registerMany(DEFAULT_BINDINGS);
-
-        // --- Dispatcher (owns the dispatch decision tree) ---
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, commandExecutor);
-        this.dispatcher = dispatcher;
-
-        // --- Feedback controller ---
-        const engine = new GestureEngine();
-
+        // --- Runtime ---
         const overlayI18n: OverlayI18n = {
             gestureTooLong: this.i18n?.gestureTooLong ?? "Gesture too long",
             gestureUnrecognised: this.i18n?.gestureUnrecognised ?? "Unrecognised",
         };
 
-        const overlay = new GestureOverlay(overlayI18n);
-        const commandLabelResolver = createCommandLabelResolver(
-            bindingRegistry,
-            this.i18n ?? {},
-        );
-
-        const controller = new GestureFeedbackController({
-            engine,
-            overlay,
-            commandLabelResolver,
-            onGestureComplete: (session, result) => {
-                // Fire-and-forget — the dispatcher's promise never rejects
-                // (the executor converts all errors into `failed` results).
-                // Awaited only to log the outcome in dev mode.
-                void this.handleGestureComplete(session, result);
-            },
-        });
-        this.controller = controller;
-
-        // --- Input adapter ---
-        this.adapter = new MouseGestureAdapter(DEFAULT_TRIGGER, {
-            onStateChange: (session) => {
+        const runtime = new GestureFlowRuntime({
+            target: document,
+            overlayI18n,
+            i18n: this.i18n ?? {},
+            onLog: (message) => {
                 if (IS_DEV) {
-                    console.debug(`[${this.name}] state -> ${session.state}`);
-                }
-                controller.onStateChange(session);
-            },
-            onUpdate: (session) => {
-                controller.onUpdate(session);
-            },
-            onComplete: (session) => {
-                controller.onComplete(session);
-            },
-            onCancel: (session) => {
-                controller.onCancel(session);
-                if (IS_DEV) {
-                    console.debug(`[${this.name}] gesture cancelled (${session.cancelReason})`);
+                    console.debug(`[${this.name}] ${message}`);
                 }
             },
         });
-        this.adapter.attach(document);
+        this.runtime = runtime;
+
+        // --- Load config and start runtime ---
+        // We start the runtime after the config loads so the first start
+        // uses the persisted values (or defaults on first run).
+        void configManager.load().then((result) => {
+            if (IS_DEV) {
+                console.log(`[${this.name}] config loaded (source: ${result.source})`);
+            }
+            runtime.start(result.config);
+
+            // Subscribe to config changes so the runtime restarts when
+            // the settings UI saves a new config.  The subscription is
+            // established after the first start so the initial load does
+            // not trigger a redundant restart.
+            this.unsubscribeConfig = configManager.subscribe((next) => {
+                const restartResult = runtime.restart(next);
+                if (restartResult.status === "rolled-back" && IS_DEV) {
+                    console.warn(
+                        `[${this.name}] ${this.i18n?.settingsRollback ?? "Restart failed; previous configuration restored"}: ${restartResult.error}`,
+                    );
+                }
+            });
+        });
     }
 
     /**
-     * Handle a completed gesture by dispatching the bound command.
+     * Open the settings dialog.
      *
-     * Delegates all decision logic to {@link GestureCommandDispatcher}.
-     * This method only logs a concise outcome line in dev mode — it
-     * never prints session points, DOM, or full result objects.
+     * Uses the official SiYuan `Setting` class with a custom HTMLElement
+     * that mounts the Svelte {@link SettingsPanel} component.  The
+     * `destroyCallback` tears down the Svelte component when the dialog
+     * closes so no listeners leak.
      */
-    private async handleGestureComplete(
-        session: GestureSession,
-        result: RecognitionResult,
-    ): Promise<void> {
-        const dispatcher = this.dispatcher;
-        if (!dispatcher) return;
-
-        const dispatchResult = await dispatcher.dispatch(session, result);
-
-        if (IS_DEV) {
-            if (dispatchResult.status === "executed") {
-                console.debug(
-                    `[${this.name}] session ${session.id} → ${dispatchResult.commandId} → ${dispatchResult.result.status}`,
-                );
-            } else {
-                console.debug(
-                    `[${this.name}] session ${session.id} skipped: ${dispatchResult.reason}`,
-                );
-            }
+    openSetting(): void {
+        if (!this.configManager) {
+            showMessage("GestureFlow not ready");
+            return;
         }
+        const configManager = this.configManager;
+        const i18n = this.i18n ?? {};
+
+        const container = document.createElement("div");
+        const panel = new SettingsPanel({
+            target: container,
+            props: {
+                configManager,
+                i18n,
+                onStatus: (message: string, isError: boolean) => {
+                    showMessage(message, 2000, isError ? "error" : "info");
+                },
+            },
+        });
+        this.settingsPanel = panel;
+
+        const setting = new Setting({
+            height: "auto",
+            destroyCallback: () => {
+                panel.$destroy();
+                this.settingsPanel = null;
+            },
+        });
+        setting.addItem({
+            title: "",
+            actionElement: container,
+        });
+        setting.open(this.name);
     }
 
     onunload(): void {
-        this.adapter?.detach();
-        this.adapter = null;
-        this.controller?.destroy();
-        this.controller = null;
-        this.dispatcher = null;
-        this.commandExecutor?.reset();
-        this.commandExecutor = null;
+        if (this.unsubscribeConfig) {
+            this.unsubscribeConfig();
+            this.unsubscribeConfig = null;
+        }
+        this.runtime?.stop();
+        this.runtime = null;
+        if (this.settingsPanel) {
+            this.settingsPanel.$destroy();
+            this.settingsPanel = null;
+        }
+        this.configManager?.destroy();
+        this.configManager = null;
         if (IS_DEV) {
             console.log(`[${this.name}] unloading`);
         }
