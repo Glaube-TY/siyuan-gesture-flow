@@ -4,6 +4,8 @@
     import type { GestureFlowConfig } from "@/config/types";
     import type { SuppressionKey } from "@/gesture/types";
     import { parseNumber, DebouncedPatchScheduler } from "./settingsHelpers";
+    import SettingSection from "./components/SettingSection.svelte";
+    import SettingRow from "./components/SettingRow.svelte";
 
     /**
      * Props passed in from the host plugin.
@@ -25,6 +27,9 @@
 
     /** Pending patch built up from user input.  Flushed by the scheduler. */
     let pendingPatch: ConfigUpdatePatch = {};
+
+    /** Hidden file input for the import button. */
+    let fileInput: HTMLInputElement | null = null;
 
     /**
      * Local string buffers for numeric inputs.  Svelte's two-way binding
@@ -252,9 +257,6 @@
     }
 
     function commandLabel(commandId: string): string {
-        // Map command ids to i18n keys.  Future stages can read this
-        // from the CommandRegistry; for stage 5A the four built-in
-        // commands are known.
         const map: Record<string, string> = {
             "tabs.previous": i18n.cmdTabsPrevious ?? "tabs.previous",
             "tabs.next": i18n.cmdTabsNext ?? "tabs.next",
@@ -277,6 +279,10 @@
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
+    }
+
+    function triggerImport(): void {
+        fileInput?.click();
     }
 
     async function handleImport(event: Event): Promise<void> {
@@ -310,402 +316,406 @@
             onStatus(result.message, true);
         }
     }
+
+    const navItems = [
+        { key: "general", label: () => i18n.settingsTabGeneral ?? "General" },
+        { key: "recognition", label: () => i18n.settingsTabRecognition ?? "Recognition" },
+        { key: "display", label: () => i18n.settingsTabDisplay ?? "Display" },
+        { key: "bindings", label: () => i18n.settingsTabBindings ?? "Bindings" },
+        { key: "data", label: () => i18n.settingsTabData ?? "Data" },
+    ] as const;
 </script>
 
-<div class="gesture-flow-settings">
-    <h2>{i18n.settingsTitle ?? "GestureFlow Settings"}</h2>
+<div class="gf-root">
+    <nav class="gf-nav">
+        {#each navItems as item}
+            <button
+                class="gf-nav-btn"
+                class:active={activeTab === item.key}
+                on:click={() => (activeTab = item.key)}
+            >
+                {item.label()}
+            </button>
+        {/each}
+    </nav>
 
-    <div class="gf-tabs">
-        <button class:active={activeTab === "general"} on:click={() => (activeTab = "general")}>
-            {i18n.settingsTabGeneral ?? "General"}
-        </button>
-        <button class:active={activeTab === "recognition"} on:click={() => (activeTab = "recognition")}>
-            {i18n.settingsTabRecognition ?? "Recognition"}
-        </button>
-        <button class:active={activeTab === "display"} on:click={() => (activeTab = "display")}>
-            {i18n.settingsTabDisplay ?? "Display"}
-        </button>
-        <button class:active={activeTab === "bindings"} on:click={() => (activeTab = "bindings")}>
-            {i18n.settingsTabBindings ?? "Bindings"}
-        </button>
-        <button class:active={activeTab === "data"} on:click={() => (activeTab = "data")}>
-            {i18n.settingsTabData ?? "Data"}
-        </button>
-    </div>
-
-    {#if activeTab === "general"}
-        <section class="gf-section">
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsEnabled ?? "Enable gestures"}</span>
-                    <span class="gf-desc">{i18n.settingsEnabledDesc ?? ""}</span>
-                </div>
-                <input
-                    type="checkbox"
-                    checked={config.enabled}
-                    on:change={(e) => setEnabled(e.currentTarget.checked)}
-                />
-            </label>
-
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsSuppressionKey ?? "Temporary disable key"}</span>
-                    <span class="gf-desc">{i18n.settingsSuppressionKeyDesc ?? ""}</span>
-                </div>
-                <select
-                    value={config.trigger.suppressionKey ?? ""}
-                    on:change={onSuppressionKeyChange}
+    <main class="gf-content">
+        {#if activeTab === "general"}
+            <SettingSection title={i18n.settingsSectionBasic ?? "Basic"}>
+                <SettingRow
+                    title={i18n.settingsEnabled ?? "Enable gestures"}
+                    description={i18n.settingsEnabledDesc ?? ""}
+                    last
                 >
-                    <option value="">{i18n.settingsSuppressionKeyNone ?? "None"}</option>
-                    <option value="Alt">Alt</option>
-                    <option value="Control">Control</option>
-                    <option value="Shift">Shift</option>
-                    <option value="Meta">Meta</option>
-                </select>
-            </label>
+                    <input
+                        type="checkbox"
+                        class="b3-switch"
+                        checked={config.enabled}
+                        on:change={(e) => setEnabled(e.currentTarget.checked)}
+                    />
+                </SettingRow>
+            </SettingSection>
 
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsActivationDistance ?? "Activation distance"}</span>
-                    <span class="gf-desc">{i18n.settingsActivationDistanceDesc ?? ""}</span>
-                </div>
-                <input
-                    type="number"
-                    min="4"
-                    max="100"
-                    step="1"
-                    bind:value={activationDistanceStr}
-                    on:blur={commitActivationDistance}
-                />
-            </label>
-
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsTimeoutMs ?? "Gesture timeout"}</span>
-                    <span class="gf-desc">{i18n.settingsTimeoutMsDesc ?? ""}</span>
-                </div>
-                <input
-                    type="number"
-                    min="0"
-                    max="10000"
-                    step="100"
-                    bind:value={timeoutMsStr}
-                    on:blur={commitTimeoutMs}
-                />
-            </label>
-        </section>
-    {/if}
-
-    {#if activeTab === "recognition"}
-        <section class="gf-section">
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsDirectionMode ?? "Direction mode"}</span>
-                    <span class="gf-desc">{i18n.settingsDirectionModeDesc ?? ""}</span>
-                </div>
-                <select
-                    value={config.recognizer.directionMode}
-                    on:change={onDirectionModeChange}
+            <SettingSection title={i18n.settingsSectionTrigger ?? "Trigger"}>
+                <SettingRow
+                    title={i18n.settingsSuppressionKey ?? "Temporary disable key"}
+                    description={i18n.settingsSuppressionKeyDesc ?? ""}
                 >
-                    <option value={4}>{i18n.settingsDirectionMode4 ?? "4 directions"}</option>
-                    <option value={8}>{i18n.settingsDirectionMode8 ?? "8 directions"}</option>
-                </select>
-            </label>
+                    <select
+                        class="b3-select"
+                        value={config.trigger.suppressionKey ?? ""}
+                        on:change={onSuppressionKeyChange}
+                    >
+                        <option value="">{i18n.settingsSuppressionKeyNone ?? "None"}</option>
+                        <option value="Alt">Alt</option>
+                        <option value="Control">Control</option>
+                        <option value="Shift">Shift</option>
+                        <option value="Meta">Meta</option>
+                    </select>
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsActivationDistance ?? "Activation distance"}
+                    description={i18n.settingsActivationDistanceDesc ?? ""}
+                >
+                    <input
+                        type="number"
+                        class="b3-text-field"
+                        min="4"
+                        max="100"
+                        step="1"
+                        bind:value={activationDistanceStr}
+                        on:blur={commitActivationDistance}
+                    />
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsTimeoutMs ?? "Gesture timeout"}
+                    description={i18n.settingsTimeoutMsDesc ?? ""}
+                    last
+                >
+                    <input
+                        type="number"
+                        class="b3-text-field"
+                        min="0"
+                        max="10000"
+                        step="100"
+                        bind:value={timeoutMsStr}
+                        on:blur={commitTimeoutMs}
+                    />
+                </SettingRow>
+            </SettingSection>
+        {/if}
 
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsSampleDistance ?? "Sample distance"}</span>
-                    <span class="gf-desc">{i18n.settingsSampleDistanceDesc ?? ""}</span>
-                </div>
-                <input
-                    type="number"
-                    min="1"
-                    max="100"
-                    step="0.5"
-                    bind:value={sampleDistanceStr}
-                    on:blur={commitSampleDistance}
-                />
-            </label>
+        {#if activeTab === "recognition"}
+            <SettingSection title={i18n.settingsSectionDirection ?? "Direction"}>
+                <SettingRow
+                    title={i18n.settingsDirectionMode ?? "Direction mode"}
+                    description={i18n.settingsDirectionModeDesc ?? ""}
+                >
+                    <select
+                        class="b3-select"
+                        value={config.recognizer.directionMode}
+                        on:change={onDirectionModeChange}
+                    >
+                        <option value={4}>{i18n.settingsDirectionMode4 ?? "4 directions"}</option>
+                        <option value={8}>{i18n.settingsDirectionMode8 ?? "8 directions"}</option>
+                    </select>
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsMaximumSegments ?? "Maximum segments"}
+                    description={i18n.settingsMaximumSegmentsDesc ?? ""}
+                    last
+                >
+                    <input
+                        type="number"
+                        class="b3-text-field"
+                        min="1"
+                        max="20"
+                        step="1"
+                        bind:value={maximumSegmentsStr}
+                        on:blur={commitMaximumSegments}
+                    />
+                </SettingRow>
+            </SettingSection>
 
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsSimplifyTolerance ?? "Simplify tolerance"}</span>
-                    <span class="gf-desc">{i18n.settingsSimplifyToleranceDesc ?? ""}</span>
-                </div>
-                <input
-                    type="number"
-                    min="0"
-                    max="50"
-                    step="0.1"
-                    bind:value={simplifyToleranceStr}
-                    on:blur={commitSimplifyTolerance}
-                />
-            </label>
+            <SettingSection title={i18n.settingsSectionPath ?? "Path processing"}>
+                <SettingRow
+                    title={i18n.settingsSampleDistance ?? "Sample distance"}
+                    description={i18n.settingsSampleDistanceDesc ?? ""}
+                >
+                    <input
+                        type="number"
+                        class="b3-text-field"
+                        min="1"
+                        max="100"
+                        step="0.5"
+                        bind:value={sampleDistanceStr}
+                        on:blur={commitSampleDistance}
+                    />
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsSimplifyTolerance ?? "Simplify tolerance"}
+                    description={i18n.settingsSimplifyToleranceDesc ?? ""}
+                >
+                    <input
+                        type="number"
+                        class="b3-text-field"
+                        min="0"
+                        max="50"
+                        step="0.1"
+                        bind:value={simplifyToleranceStr}
+                        on:blur={commitSimplifyTolerance}
+                    />
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsMinimumSegmentLength ?? "Minimum segment length"}
+                    description={i18n.settingsMinimumSegmentLengthDesc ?? ""}
+                >
+                    <input
+                        type="number"
+                        class="b3-text-field"
+                        min="1"
+                        max="500"
+                        step="0.5"
+                        bind:value={minimumSegmentLengthStr}
+                        on:blur={commitMinimumSegmentLength}
+                    />
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsTurnAngleThreshold ?? "Turn angle threshold"}
+                    description={i18n.settingsTurnAngleThresholdDesc ?? ""}
+                    last
+                >
+                    <input
+                        type="number"
+                        class="b3-text-field"
+                        min="1"
+                        max="89"
+                        step="1"
+                        bind:value={turnAngleThresholdStr}
+                        on:blur={commitTurnAngleThreshold}
+                    />
+                </SettingRow>
+            </SettingSection>
+        {/if}
 
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsMinimumSegmentLength ?? "Minimum segment length"}</span>
-                    <span class="gf-desc">{i18n.settingsMinimumSegmentLengthDesc ?? ""}</span>
-                </div>
-                <input
-                    type="number"
-                    min="1"
-                    max="500"
-                    step="0.5"
-                    bind:value={minimumSegmentLengthStr}
-                    on:blur={commitMinimumSegmentLength}
-                />
-            </label>
+        {#if activeTab === "display"}
+            <SettingSection title={i18n.settingsTabDisplay ?? "Display"}>
+                <SettingRow
+                    title={i18n.settingsShowTrail ?? "Show trail"}
+                    description={i18n.settingsShowTrailDesc ?? ""}
+                >
+                    <input
+                        type="checkbox"
+                        class="b3-switch"
+                        checked={config.overlay.showTrail}
+                        on:change={(e) => setShowTrail(e.currentTarget.checked)}
+                    />
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsShowHint ?? "Show hint"}
+                    description={i18n.settingsShowHintDesc ?? ""}
+                >
+                    <input
+                        type="checkbox"
+                        class="b3-switch"
+                        checked={config.overlay.showHint}
+                        on:change={(e) => setShowHint(e.currentTarget.checked)}
+                    />
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsLineWidth ?? "Line width"}
+                    description={i18n.settingsLineWidthDesc ?? ""}
+                    last
+                >
+                    <input
+                        type="number"
+                        class="b3-text-field"
+                        min="1"
+                        max="20"
+                        step="0.5"
+                        bind:value={lineWidthStr}
+                        on:blur={commitLineWidth}
+                    />
+                </SettingRow>
+            </SettingSection>
+        {/if}
 
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsTurnAngleThreshold ?? "Turn angle threshold"}</span>
-                    <span class="gf-desc">{i18n.settingsTurnAngleThresholdDesc ?? ""}</span>
-                </div>
-                <input
-                    type="number"
-                    min="1"
-                    max="89"
-                    step="1"
-                    bind:value={turnAngleThresholdStr}
-                    on:blur={commitTurnAngleThreshold}
-                />
-            </label>
+        {#if activeTab === "bindings"}
+            <SettingSection title={i18n.settingsTabBindings ?? "Bindings"}>
+                <p class="gf-bindings-info">{i18n.settingsBindingsDesc ?? ""}</p>
+                {#each config.bindings as binding, i (binding.id)}
+                    <SettingRow last={i === config.bindings.length - 1}>
+                        <svelte:fragment slot="info">
+                            <div class="gf-binding-left">
+                                {#each binding.directions as dir}
+                                    <span class="gf-badge">{dir}</span>
+                                {/each}
+                            </div>
+                            <span class="gf-binding-cmd">{commandLabel(binding.commandId)}</span>
+                        </svelte:fragment>
+                        <input
+                            type="checkbox"
+                            class="b3-switch"
+                            checked={binding.enabled}
+                            on:change={(e) => setBindingEnabled(binding.id, e.currentTarget.checked)}
+                        />
+                    </SettingRow>
+                {/each}
+            </SettingSection>
+        {/if}
 
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsMaximumSegments ?? "Maximum segments"}</span>
-                    <span class="gf-desc">{i18n.settingsMaximumSegmentsDesc ?? ""}</span>
-                </div>
-                <input
-                    type="number"
-                    min="1"
-                    max="20"
-                    step="1"
-                    bind:value={maximumSegmentsStr}
-                    on:blur={commitMaximumSegments}
-                />
-            </label>
-        </section>
-    {/if}
-
-    {#if activeTab === "display"}
-        <section class="gf-section">
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsShowTrail ?? "Show trail"}</span>
-                    <span class="gf-desc">{i18n.settingsShowTrailDesc ?? ""}</span>
-                </div>
-                <input
-                    type="checkbox"
-                    checked={config.overlay.showTrail}
-                    on:change={(e) => setShowTrail(e.currentTarget.checked)}
-                />
-            </label>
-
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsShowHint ?? "Show hint"}</span>
-                    <span class="gf-desc">{i18n.settingsShowHintDesc ?? ""}</span>
-                </div>
-                <input
-                    type="checkbox"
-                    checked={config.overlay.showHint}
-                    on:change={(e) => setShowHint(e.currentTarget.checked)}
-                />
-            </label>
-
-            <label class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsLineWidth ?? "Line width"}</span>
-                    <span class="gf-desc">{i18n.settingsLineWidthDesc ?? ""}</span>
-                </div>
-                <input
-                    type="number"
-                    min="1"
-                    max="20"
-                    step="0.5"
-                    bind:value={lineWidthStr}
-                    on:blur={commitLineWidth}
-                />
-            </label>
-        </section>
-    {/if}
-
-    {#if activeTab === "bindings"}
-        <section class="gf-section">
-            <p class="gf-info">{i18n.settingsBindingsDesc ?? ""}</p>
-            <table class="gf-bindings">
-                <thead>
-                    <tr>
-                        <th>{i18n.settingsBindingDirections ?? "Directions"}</th>
-                        <th>{i18n.settingsBindingCommand ?? "Command"}</th>
-                        <th>{i18n.settingsBindingEnabled ?? "Enabled"}</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {#each config.bindings as binding (binding.id)}
-                        <tr>
-                            <td class="gf-mono">{binding.directions.join(" → ")}</td>
-                            <td>{commandLabel(binding.commandId)}</td>
-                            <td>
-                                <input
-                                    type="checkbox"
-                                    checked={binding.enabled}
-                                    on:change={(e) => setBindingEnabled(binding.id, e.currentTarget.checked)}
-                                />
-                                <span class="gf-state">
-                                    {binding.enabled
-                                        ? (i18n.settingsBindingEnabled ?? "Enabled")
-                                        : (i18n.settingsBindingDisabled ?? "Disabled")}
-                                </span>
-                            </td>
-                        </tr>
-                    {/each}
-                </tbody>
-            </table>
-        </section>
-    {/if}
-
-    {#if activeTab === "data"}
-        <section class="gf-section">
-            <div class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsExport ?? "Export configuration"}</span>
-                    <span class="gf-desc">{i18n.settingsExportDesc ?? ""}</span>
-                </div>
-                <button on:click={handleExport}>{i18n.settingsExport ?? "Export"}</button>
-            </div>
-
-            <div class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsImport ?? "Import configuration"}</span>
-                    <span class="gf-desc">{i18n.settingsImportDesc ?? ""}</span>
-                </div>
-                <input type="file" accept="application/json,.json" on:change={handleImport} />
-            </div>
-
-            <div class="gf-row">
-                <div class="gf-label">
-                    <span class="gf-title">{i18n.settingsReset ?? "Restore defaults"}</span>
-                    <span class="gf-desc">{i18n.settingsResetDesc ?? ""}</span>
-                </div>
-                <button class="gf-danger" on:click={handleReset}>{i18n.settingsReset ?? "Reset"}</button>
-            </div>
-        </section>
-    {/if}
+        {#if activeTab === "data"}
+            <SettingSection title={i18n.settingsTabData ?? "Data"}>
+                <SettingRow
+                    title={i18n.settingsExport ?? "Export configuration"}
+                    description={i18n.settingsExportDesc ?? ""}
+                >
+                    <button class="b3-button b3-button--text" on:click={handleExport}>
+                        {i18n.settingsExport ?? "Export"}
+                    </button>
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsImport ?? "Import configuration"}
+                    description={i18n.settingsImportDesc ?? ""}
+                >
+                    <button class="b3-button b3-button--text" on:click={triggerImport}>
+                        {i18n.settingsImport ?? "Import"}
+                    </button>
+                    <input
+                        bind:this={fileInput}
+                        type="file"
+                        accept="application/json,.json"
+                        on:change={handleImport}
+                        class="gf-file-hidden"
+                    />
+                </SettingRow>
+                <SettingRow
+                    title={i18n.settingsReset ?? "Restore defaults"}
+                    description={i18n.settingsResetDesc ?? ""}
+                    last
+                >
+                    <button class="b3-button b3-button--cancel" on:click={handleReset}>
+                        {i18n.settingsReset ?? "Reset"}
+                    </button>
+                </SettingRow>
+            </SettingSection>
+        {/if}
+    </main>
 </div>
 
 <style>
-    .gesture-flow-settings {
+    .gf-root {
+        display: flex;
+        height: 100%;
+        min-height: 0;
+        min-width: 0;
+        overflow: hidden;
         font-family: var(--b3-theme-font-family, system-ui, sans-serif);
         color: var(--b3-theme-on-background, #1f2329);
-        padding: 8px 0;
     }
-    h2 {
-        margin: 0 0 12px;
-        font-size: 18px;
-        font-weight: 600;
-    }
-    .gf-tabs {
-        display: flex;
-        gap: 4px;
-        border-bottom: 1px solid var(--b3-theme-background-light, #e9e9ea);
-        margin-bottom: 16px;
-    }
-    .gf-tabs button {
-        background: transparent;
-        border: none;
-        padding: 8px 14px;
-        cursor: pointer;
-        font-size: 13px;
-        color: var(--b3-theme-on-surface, #626262);
-        border-bottom: 2px solid transparent;
-    }
-    .gf-tabs button.active {
-        color: var(--b3-theme-primary, #4285f4);
-        border-bottom-color: var(--b3-theme-primary, #4285f4);
-        font-weight: 600;
-    }
-    .gf-section {
-        display: flex;
-        flex-direction: column;
-        gap: 14px;
-    }
-    .gf-row {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-    }
-    .gf-label {
+
+    /* ---- Left navigation ---- */
+    .gf-nav {
+        flex: 0 0 148px;
         display: flex;
         flex-direction: column;
         gap: 2px;
-        flex: 1;
+        padding: 12px 8px;
+        border-right: 1px solid var(--b3-border-color, #e9e9ea);
+        background: var(--b3-theme-background, transparent);
     }
-    .gf-title {
+    .gf-nav-btn {
+        background: transparent;
+        border: none;
+        padding: 8px 12px;
+        cursor: pointer;
         font-size: 13px;
-        font-weight: 500;
+        text-align: left;
+        white-space: nowrap;
+        color: var(--b3-theme-on-surface, #626262);
+        border-radius: 6px;
+        transition: background 0.12s ease, color 0.12s ease;
     }
-    .gf-desc {
-        font-size: 12px;
-        color: var(--b3-theme-on-surface-light, #9aa0a6);
+    .gf-nav-btn:hover {
+        background: var(--b3-list-hover, rgba(0, 0, 0, 0.04));
     }
-    .gf-row input[type="number"],
-    .gf-row select {
-        width: 140px;
-        padding: 4px 8px;
-        font-size: 13px;
-        border: 1px solid var(--b3-theme-background-light, #e0e0e0);
-        border-radius: 4px;
-        background: var(--b3-theme-surface, #fff);
-        color: var(--b3-theme-on-surface, #1f2329);
-    }
-    .gf-row input[type="checkbox"] {
-        width: 16px;
-        height: 16px;
-    }
-    .gf-row button {
-        padding: 6px 14px;
-        font-size: 13px;
-        border: 1px solid var(--b3-theme-primary, #4285f4);
+    .gf-nav-btn.active {
         background: var(--b3-theme-primary, #4285f4);
         color: var(--b3-theme-on-primary, #fff);
-        border-radius: 4px;
-        cursor: pointer;
+        font-weight: 500;
     }
-    .gf-row button.gf-danger {
-        background: var(--b3-card-error, #d23f31);
-        border-color: var(--b3-card-error, #d23f31);
+
+    /* ---- Right content ---- */
+    .gf-content {
+        flex: 1 1 auto;
+        min-width: 0;
+        overflow-y: auto;
+        padding: 16px 20px 32px;
+        display: flex;
+        flex-direction: column;
+        gap: 20px;
     }
-    .gf-info {
+
+    /* ---- Bindings ---- */
+    .gf-bindings-info {
         font-size: 12px;
+        line-height: 1.5;
         color: var(--b3-theme-on-surface-light, #9aa0a6);
-        margin: 0 0 8px;
+        margin: 0 0 4px;
+        word-break: normal;
+        overflow-wrap: break-word;
     }
-    .gf-bindings {
-        width: 100%;
-        border-collapse: collapse;
-        font-size: 13px;
+    .gf-binding-left {
+        display: flex;
+        gap: 4px;
+        margin-bottom: 2px;
     }
-    .gf-bindings th,
-    .gf-bindings td {
-        text-align: left;
-        padding: 8px 10px;
-        border-bottom: 1px solid var(--b3-theme-background-light, #e9e9ea);
-    }
-    .gf-bindings th {
-        font-weight: 600;
-        color: var(--b3-theme-on-surface, #626262);
-    }
-    .gf-mono {
+    .gf-badge {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-width: 22px;
+        height: 22px;
+        padding: 0 6px;
         font-family: var(--b3-font-family-code, monospace);
-        font-weight: 600;
-    }
-    .gf-state {
-        margin-left: 8px;
         font-size: 12px;
-        color: var(--b3-theme-on-surface-light, #9aa0a6);
+        font-weight: 600;
+        color: var(--b3-theme-on-primary, #fff);
+        background: var(--b3-theme-primary, #4285f4);
+        border-radius: 4px;
+    }
+    .gf-binding-cmd {
+        font-size: 14px;
+        font-weight: 500;
+        color: var(--b3-theme-on-surface, #1f2329);
+    }
+
+    /* ---- Hidden file input ---- */
+    .gf-file-hidden {
+        position: absolute;
+        width: 0;
+        height: 0;
+        opacity: 0;
+        overflow: hidden;
+        pointer-events: none;
+    }
+
+    /* ---- Narrow screens: collapse nav to top horizontal ---- */
+    @media (max-width: 560px) {
+        .gf-root {
+            flex-direction: column;
+        }
+        .gf-nav {
+            flex: 0 0 auto;
+            flex-direction: row;
+            gap: 4px;
+            overflow-x: auto;
+            border-right: none;
+            border-bottom: 1px solid var(--b3-border-color, #e9e9ea);
+            padding: 8px;
+        }
+        .gf-nav-btn {
+            white-space: nowrap;
+        }
     }
 </style>

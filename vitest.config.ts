@@ -1,5 +1,6 @@
 import { defineConfig } from "vitest/config";
 import { resolve } from "path";
+import { svelte } from "@sveltejs/vite-plugin-svelte";
 
 export default defineConfig({
     resolve: {
@@ -12,6 +13,7 @@ export default defineConfig({
             siyuan: resolve(__dirname, "test/siyuan-mock.ts"),
         },
     },
+    plugins: [svelte()],
     test: {
         environment: "node",
         include: ["src/**/*.test.ts"],

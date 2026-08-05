@@ -1,6 +1,6 @@
-import { Plugin, Setting, getFrontend, getBackend, showMessage } from "siyuan";
+import { Plugin, getFrontend, getBackend, showMessage } from "siyuan";
 import "./index.scss";
-import SettingsPanel from "@/settings/SettingsPanel.svelte";
+import { SettingsDialog } from "@/settings/SettingsDialog";
 import { ConfigManager, CONFIG_STORAGE_NAME } from "@/config/ConfigManager";
 import type { ConfigPersistenceHost } from "@/config/ConfigManager";
 import { GestureFlowRuntime } from "@/runtime/GestureFlowRuntime";
@@ -32,7 +32,7 @@ export default class GestureFlowPlugin extends Plugin {
     private configManager: ConfigManager | null = null;
     private runtime: GestureFlowRuntime | null = null;
     private unsubscribeConfig: (() => void) | null = null;
-    private settingsPanel: SettingsPanel | null = null;
+    private settingsDialog: SettingsDialog | null = null;
 
     onload(): void {
         if (IS_DEV) {
@@ -119,44 +119,29 @@ export default class GestureFlowPlugin extends Plugin {
     /**
      * Open the settings dialog.
      *
-     * Uses the official SiYuan `Setting` class with a custom HTMLElement
-     * that mounts the Svelte {@link SettingsPanel} component.  The
-     * `destroyCallback` tears down the Svelte component when the dialog
-     * closes so no listeners leak.
+     * Uses the SiYuan `Dialog` API (not `Setting`) so the settings UI
+     * gets the full dialog content width.  The previous approach used
+     * `Setting.addItem({ actionElement })` which placed the entire panel
+     * into a ~200 px right-side control column.
+     *
+     * The {@link SettingsDialog} guards against duplicate opens and
+     * handles Svelte component lifecycle.
      */
     openSetting(): void {
         if (!this.configManager) {
             showMessage("GestureFlow not ready");
             return;
         }
-        const configManager = this.configManager;
-        const i18n = this.i18n ?? {};
-
-        const container = document.createElement("div");
-        const panel = new SettingsPanel({
-            target: container,
-            props: {
-                configManager,
-                i18n,
-                onStatus: (message: string, isError: boolean) => {
-                    showMessage(message, 2000, isError ? "error" : "info");
-                },
+        if (!this.settingsDialog) {
+            this.settingsDialog = new SettingsDialog();
+        }
+        this.settingsDialog.open({
+            configManager: this.configManager,
+            i18n: this.i18n ?? {},
+            onStatus: (message: string, isError: boolean) => {
+                showMessage(message, 2000, isError ? "error" : "info");
             },
         });
-        this.settingsPanel = panel;
-
-        const setting = new Setting({
-            height: "auto",
-            destroyCallback: () => {
-                panel.$destroy();
-                this.settingsPanel = null;
-            },
-        });
-        setting.addItem({
-            title: "",
-            actionElement: container,
-        });
-        setting.open(this.name);
     }
 
     onunload(): void {
@@ -166,10 +151,8 @@ export default class GestureFlowPlugin extends Plugin {
         }
         this.runtime?.stop();
         this.runtime = null;
-        if (this.settingsPanel) {
-            this.settingsPanel.$destroy();
-            this.settingsPanel = null;
-        }
+        this.settingsDialog?.destroy();
+        this.settingsDialog = null;
         this.configManager?.destroy();
         this.configManager = null;
         if (IS_DEV) {
