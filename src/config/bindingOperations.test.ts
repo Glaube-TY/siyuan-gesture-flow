@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
 import { createDefaultConfig } from "./defaults";
 import { GestureFlowConfig, ConfigBinding } from "./types";
 import {
@@ -12,6 +12,7 @@ import {
     validateBindingDraft,
     directionsKey,
     BindingDraft,
+    findIncompatibleBindings,
 } from "./bindingOperations";
 
 function makeConfig(bindings: ConfigBinding[] = createDefaultConfig().bindings): GestureFlowConfig {
@@ -232,3 +233,97 @@ describe("bindingOperations — directionsKey", () => {
     });
 });
 
+
+describe("bindingOperations — 4 方向兼容（stage 5B 稳定化）", () => {
+    it("4 方向模式下禁用的斜向草稿允许保存", () => {
+        const config = makeConfig();
+        const r = validateBindingDraft(
+            { ...draftRD, enabled: false, directions: ["UR"] },
+            { bindings: config.bindings, maximumSegments: 6, directionMode: 4, availableCommandIds: opts.availableCommandIds },
+        );
+        expect(r.ok).toBe(true);
+    });
+
+    it("4 方向模式下启用的斜向草稿被拒绝", () => {
+        const config = makeConfig();
+        const r = validateBindingDraft(
+            { ...draftRD, enabled: true, directions: ["UR"] },
+            { bindings: config.bindings, maximumSegments: 6, directionMode: 4, availableCommandIds: opts.availableCommandIds },
+        );
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error).toBe("direction-not-allowed");
+    });
+
+    it("toggleBinding 在 4 方向模式下拒绝启用斜向绑定", () => {
+        const config = makeConfig();
+        config.bindings.push({
+            id: "diag", enabled: false, directions: ["UR"], commandId: "tabs.next", commandParams: {},
+        });
+        const r = toggleBinding(config, "diag", true, 4);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error).toBe("direction-not-allowed");
+        // 原配置未被修改
+        expect(config.bindings.find((b) => b.id === "diag")?.enabled).toBe(false);
+    });
+
+    it("toggleBinding 在 4 方向模式下允许禁用斜向绑定", () => {
+        const config = makeConfig();
+        config.bindings.push({
+            id: "diag", enabled: true, directions: ["UR"], commandId: "tabs.next", commandParams: {},
+        });
+        const r = toggleBinding(config, "diag", false, 4);
+        expect(r.ok).toBe(true);
+        if (r.ok) expect(r.bindings.find((b) => b.id === "diag")?.enabled).toBe(false);
+    });
+
+    it("8 方向模式下 toggleBinding 允许启用斜向", () => {
+        const config = makeConfig();
+        config.bindings.push({
+            id: "diag", enabled: false, directions: ["UR"], commandId: "tabs.next", commandParams: {},
+        });
+        const r = toggleBinding(config, "diag", true, 8);
+        expect(r.ok).toBe(true);
+    });
+
+    it("findIncompatibleBindings 只报告 4 方向模式启用中的斜向绑定", () => {
+        const config = makeConfig();
+        config.bindings = [
+            { id: "a", enabled: true, directions: ["L"], commandId: "tabs.next", commandParams: {} },
+            { id: "diag-on", enabled: true, directions: ["UR"], commandId: "tabs.next", commandParams: {} },
+            { id: "diag-off", enabled: false, directions: ["DL"], commandId: "tabs.next", commandParams: {} },
+        ];
+        const incompatible = findIncompatibleBindings(config.bindings, 4);
+        expect(incompatible.map((b) => b.id)).toEqual(["diag-on"]);
+        expect(findIncompatibleBindings(config.bindings, 8)).toEqual([]);
+    });
+});
+
+describe("bindingOperations — 新增绑定 ID 唯一性（stage 5B 稳定化）", () => {
+    afterEach(() => {
+        vi.restoreAllMocks();
+    });
+
+    it("randomUUID 首次返回冲突 ID、第二次返回新 ID 时新增成功", () => {
+        const config = makeConfig();
+        // generateBindingId prefers crypto.randomUUID — drive collisions
+        // through the real code path (black-box).
+        const spy = vi.spyOn(globalThis.crypto, "randomUUID")
+            .mockReturnValueOnce("default-L" as never) // collision with existing
+            .mockReturnValueOnce("fresh-id" as never);
+        const r = addBinding(config, draftRD, opts);
+        expect(spy).toHaveBeenCalledTimes(2);
+        expect(r.ok).toBe(true);
+        if (r.ok) expect(r.bindings[r.bindings.length - 1].id).toBe("fresh-id");
+    });
+
+    it("连续返回冲突 ID 达到上限后返回 duplicate-id，原配置不变", () => {
+        const config = makeConfig();
+        const spy = vi.spyOn(globalThis.crypto, "randomUUID").mockReturnValue("default-L" as never);
+        const before = JSON.stringify(config);
+        const r = addBinding(config, draftRD, opts);
+        expect(spy.mock.calls.length).toBeGreaterThanOrEqual(10);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error).toBe("duplicate-id");
+        expect(JSON.stringify(config)).toBe(before);
+    });
+});

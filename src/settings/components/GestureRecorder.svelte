@@ -14,6 +14,17 @@
      * (`recognizePoints` — pure data, no session), and the resulting
      * direction sequence is dispatched to the parent binding editor.
      *
+     * Config parity with the runtime (stage 5B stabilization):
+     * - The engine is created by the parent from the FULL current
+     *   recognizer config, so recording matches the real runtime.
+     * - `trigger.activationDistance` gates a valid recording: the trail
+     *   is only accepted once the pointer has moved at least that far
+     *   from the press point (same squared-distance check as
+     *   MouseGestureAdapter).  Releasing before activation shows the
+     *   "trail too short" message and never dispatches an update.
+     * - `trigger.timeoutMs` cancels an in-progress recording when > 0;
+     *   0 disables the timeout.
+     *
      * Isolation from the global gesture runtime:
      * - The container carries `data-gesture-flow-recorder`; the global
      *   MouseGestureAdapter (via the runtime's default ignore filter)
@@ -21,7 +32,8 @@
      *   gesture, never runs a command, and never opens SiYuan's context
      *   menu.
      * - The recorder itself prevents the native context menu inside the
-     *   recording area.
+     *   recording area, and Escape while recording only cancels the
+     *   recording (it never reaches the dialog's close handler).
      *
      * Nothing is persisted here — the parent editor only saves through
      * the ConfigManager on explicit user action.
@@ -29,6 +41,8 @@
 
     export let engine: GestureEngine;
     export let i18n: Record<string, string>;
+    /** Trigger config the recorder must honour (activation + timeout). */
+    export let trigger: { activationDistance: number; timeoutMs: number };
     /** Current direction sequence (controlled by the parent editor). */
     export let directions: Direction[] = [];
 
@@ -46,10 +60,15 @@
     let errorMessage = "";
     let points: GesturePoint[] = [];
     let pointerId: number | null = null;
+    /** Whether the trail has passed the activation distance. */
+    let activated = false;
     let rafId: number | null = null;
     let resizeObserver: ResizeObserver | null = null;
     let cssW = 0;
     let cssH = 0;
+    let timeoutHandle: ReturnType<typeof setTimeout> | null = null;
+    /** Bumped on every start so a stale timeout cannot cancel a new recording. */
+    let timeoutGeneration = 0;
 
     // ------------------------------------------------------------- listeners
 
@@ -66,6 +85,7 @@
             return;
         }
         addPoint(e);
+        checkActivation();
         scheduleDraw();
     };
     const onPointerUp = (e: PointerEvent) => {
@@ -74,6 +94,7 @@
         const last = points[points.length - 1];
         if (!last || last.x !== e.clientX - rectLeft() || last.y !== e.clientY - rectTop()) {
             addPoint(e);
+            checkActivation();
         }
         finishRecording();
     };
@@ -83,6 +104,8 @@
     };
     const onLostPointerCapture = (e: PointerEvent) => {
         if (!recording || e.pointerId !== pointerId) return;
+        // Capture already lost — just cancel; endRecording's release
+        // attempt is a safe no-op and does not recurse.
         cancelRecording();
     };
     const onContextMenu = (e: Event) => {
@@ -94,6 +117,11 @@
     };
     const onKeyDown = (e: KeyboardEvent) => {
         if (recording && e.key === "Escape") {
+            // Cancel the recording only — never let Escape reach the
+            // dialog's close handler while recording.
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
             cancelRecording();
         }
     };
@@ -118,6 +146,7 @@
         status = "recording";
         errorMessage = "";
         points = [];
+        activated = false;
         pointerId = e.pointerId;
         addPoint(e);
         try {
@@ -125,6 +154,7 @@
         } catch {
             /* capture optional */
         }
+        startTimeout();
         scheduleDraw();
     }
 
@@ -136,14 +166,91 @@
         });
     }
 
-    function finishRecording(): void {
+    /**
+     * Activation-distance gate, identical semantics to the global
+     * MouseGestureAdapter: squared distance from the press point.
+     */
+    function checkActivation(): void {
+        if (activated || points.length === 0) return;
+        const origin = points[0];
+        const last = points[points.length - 1];
+        const dx = last.x - origin.x;
+        const dy = last.y - origin.y;
+        const threshold = trigger.activationDistance;
+        if (dx * dx + dy * dy >= threshold * threshold) {
+            activated = true;
+        }
+    }
+
+    // ------------------------------------------------------- timeout (5B)
+
+    function startTimeout(): void {
+        clearTimeoutHandle();
+        const ms = trigger.timeoutMs;
+        if (ms <= 0) return;
+        const generation = ++timeoutGeneration;
+        timeoutHandle = setTimeout(() => {
+            if (timeoutGeneration === generation && recording) {
+                cancelRecording();
+            }
+        }, ms);
+    }
+
+    function clearTimeoutHandle(): void {
+        if (timeoutHandle !== null) {
+            clearTimeout(timeoutHandle);
+            timeoutHandle = null;
+        }
+    }
+
+    // -------------------------------------------------------- unified end
+
+    /**
+     * Single teardown for every recording end path (finish, cancel,
+     * pointercancel, lost capture, blur, visibility, timeout, clear,
+     * destroy).  Order matters:
+     * 1. save the current pointerId BEFORE clearing it;
+     * 2. release pointer capture for that id (guarded, non-fatal);
+     * 3. clear pointerId / recording / timeout / RAF.
+     * Whether the trail is kept or dropped is decided by the caller.
+     */
+    function endRecording(): void {
         const id = pointerId;
-        recording = false;
         pointerId = null;
-        try {
-            canvas.releasePointerCapture(id as number);
-        } catch {
-            /* already released */
+        recording = false;
+        clearTimeoutHandle();
+        if (rafId !== null) {
+            cancelAnimationFrame(rafId);
+            rafId = null;
+        }
+        if (id !== null && canvas && typeof canvas.releasePointerCapture === "function") {
+            try {
+                canvas.releasePointerCapture(id);
+            } catch {
+                /* pointer capture already released */
+            }
+        }
+    }
+
+    /** Cancel path: drop the trail and reset the UI. */
+    function cancelRecording(): void {
+        endRecording();
+        points = [];
+        status = "idle";
+        errorMessage = "";
+        draw(); // clear the trail
+    }
+
+    /** Finish path: keep the trail, recognise it (or show an error). */
+    function finishRecording(): void {
+        endRecording();
+
+        // Activation gate: without enough movement the runtime would
+        // treat this as a plain right-click, so the recorder must too.
+        if (!activated) {
+            status = "error";
+            errorMessage = i18n.gestureRecorderTooShort ?? "Trail too short";
+            return;
         }
 
         const result = engine.recognizePoints(points);
@@ -165,19 +272,10 @@
         }
     }
 
-    function cancelRecording(): void {
-        recording = false;
-        pointerId = null;
-        points = [];
-        status = "idle";
-        errorMessage = "";
-        draw(); // clear the trail
-    }
-
     function clearGesture(): void {
+        endRecording(); // releases any capture even if not recording
         points = [];
-        recording = false;
-        pointerId = null;
+        activated = false;
         status = "idle";
         errorMessage = "";
         dispatch("clear", {});
@@ -260,13 +358,10 @@
             resizeObserver.disconnect();
             resizeObserver = null;
         }
-        if (rafId !== null) {
-            cancelAnimationFrame(rafId);
-            rafId = null;
-        }
-        recording = false;
-        pointerId = null;
+        // Release any in-progress capture before the DOM is removed.
+        endRecording();
         points = [];
+        activated = false;
     });
 </script>
 
@@ -380,6 +475,3 @@
         color: var(--b3-theme-on-surface-light, #9aa0a6);
     }
 </style>
-
-
-

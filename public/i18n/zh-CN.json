@@ -90,5 +90,14 @@
   "bindingEditTitle": "编辑绑定",
   "bindingErrorDiagonal4": "4 方向模式不支持斜向手势",
   "bindingSave": "保存",
-  "bindingEdit": "编辑"
+  "bindingEdit": "编辑",
+  "directionModeSwitchHint": "请先编辑或禁用相关绑定",
+  "bindingErrorNotFound": "绑定不存在",
+  "directionModeSwitchBlocked": "存在启用中的斜向绑定，无法切换到 4 方向模式",
+  "cmdGroupTabs": "标签页",
+  "bindingErrorDuplicateId": "无法生成唯一绑定 ID，请重试",
+  "bindingErrorDiagonal4Enable": "4 方向模式下不能启用斜向绑定",
+  "bindingErrorDuplicate": "已有绑定使用相同手势",
+  "bindingErrorInvalidParams": "命令参数无效",
+  "cmdGroupScrolling": "滚动"
 }

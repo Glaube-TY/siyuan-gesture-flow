@@ -39,7 +39,14 @@ interface MockDialogInstance {
     destroyed: boolean;
     /** How many times `destroy()` was invoked (must be ≤ 1 per dialog). */
     destroyCalls: number;
+    /**
+     * When true, `destroy()` removes the DOM but does NOT fire
+     * `destroyCallback` synchronously — simulates SiYuan's real delayed
+     * callback (tests fire it manually later).
+     */
+    deferDestroyCallback: boolean;
     destroy: () => void;
+    fireDestroyCallback: () => void;
 }
 const mockDialogs: MockDialogInstance[] = [];
 
@@ -50,6 +57,7 @@ vi.mock("siyuan", () => {
             element: HTMLElement;
             destroyed = false;
             destroyCalls = 0;
+            deferDestroyCallback = false;
 
             constructor(opts: MockDialogOpts) {
                 this.opts = opts;
@@ -84,8 +92,13 @@ vi.mock("siyuan", () => {
                 this.destroyCalls++;
                 this.destroyed = true;
                 this.element.remove();
-                // Real SiYuan fires destroyCallback after the dialog DOM
-                // is removed.
+                if (!this.deferDestroyCallback) {
+                    this.opts.destroyCallback?.();
+                }
+            }
+            fireDestroyCallback() {
+                // Manually fire the (deferred) destroyCallback, mimicking
+                // SiYuan's delayed callback after the DOM is removed.
                 this.opts.destroyCallback?.();
             }
         },
@@ -306,6 +319,58 @@ describe("SettingsDialog — 生命周期", () => {
         dlg.close();
         expect(mockDialogs[1].destroyCalls).toBe(1);
         expect(dlg.isOpen).toBe(false);
+    });
+
+    it("延迟销毁：用户关闭后 destroyCallback 未到，插件卸载不二次 destroy", () => {
+        const dlg = new SettingsDialog();
+        dlg.open(makeOpts());
+        const first = mockDialogs[0];
+        first.deferDestroyCallback = true;
+
+        // SiYuan destroys the dialog (DOM removed) but the delayed
+        // destroyCallback has not arrived yet.
+        first.destroy();
+        expect(first.destroyCalls).toBe(1);
+
+        // Plugin unloads in that window.
+        dlg.destroy();
+
+        // The real Dialog.destroy must not be called a second time.
+        expect(first.destroyCalls).toBe(1);
+        // The panel is destroyed exactly once (via close's teardown).
+        expect(mockPanelInstances[0].destroyCount).toBe(1);
+
+        // The late callback arrives afterwards — it must not break state.
+        first.fireDestroyCallback();
+        expect(dlg.isOpen).toBe(false);
+    });
+
+    it("延迟销毁：旧回调到达后新建 Dialog 不受旧回调影响", () => {
+        const dlg = new SettingsDialog();
+        dlg.open(makeOpts());
+        const first = mockDialogs[0];
+        first.deferDestroyCallback = true;
+
+        first.destroy(); // user close, callback pending
+        dlg.destroy();   // unload in the window
+        expect(first.destroyCalls).toBe(1);
+
+        // Late callback from the old dialog.
+        first.fireDestroyCallback();
+        expect(dlg.isOpen).toBe(false);
+
+        // A brand-new dialog opens fine and the old callback cannot
+        // touch it (instance-bound guard).
+        const dlg2 = new SettingsDialog();
+        dlg2.open(makeOpts());
+        expect(mockDialogs).toHaveLength(2);
+        expect(dlg2.isOpen).toBe(true);
+
+        first.fireDestroyCallback(); // stale callback again
+        expect(dlg2.isOpen).toBe(true);
+        expect(mockDialogs[1].destroyCalls).toBe(0);
+        dlg2.close();
+        expect(mockDialogs[1].destroyCalls).toBe(1);
     });
 
     it("destroy 后再调用 open 不会创建新 Dialog", () => {

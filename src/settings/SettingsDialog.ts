@@ -154,7 +154,10 @@ export class SettingsDialog {
         if (p) {
             p.$destroy();
         }
-        if (d) {
+        // If the dialog's element is no longer connected, SiYuan has
+        // already removed/destroyed it (user close path where the
+        // destroyCallback has not arrived yet) — never destroy twice.
+        if (d && (!d.element || d.element.isConnected)) {
             d.destroy();
         }
     }

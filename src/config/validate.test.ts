@@ -304,6 +304,32 @@ describe("validateConfig — 绑定校验", () => {
         expect(result.status).toBe("valid");
         expect(result.config.bindings[0].directions).toEqual(["UR", "DL"]);
     });
+
+    it("4 方向模式下禁用的斜向绑定允许保留（valid）", () => {
+        const cfg = createDefaultConfig();
+        const bindings = [
+            { id: "diag-off", enabled: false, directions: ["UR" as const], commandId: "tabs.next", commandParams: {} },
+        ];
+        const result = validateConfig(
+            { ...cfg, recognizer: { ...cfg.recognizer, directionMode: 4 }, bindings },
+            { availableCommandIds: AVAILABLE_COMMANDS },
+        );
+        expect(result.status).toBe("valid");
+        expect(result.config.bindings[0].enabled).toBe(false);
+        expect(result.config.bindings[0].directions).toEqual(["UR"]);
+    });
+
+    it("4 方向模式下启用的斜向绑定仍被拒绝", () => {
+        const cfg = createDefaultConfig();
+        const bindings = [
+            { id: "diag-on", enabled: true, directions: ["UR" as const], commandId: "tabs.next", commandParams: {} },
+        ];
+        const result = validateConfig(
+            { ...cfg, recognizer: { ...cfg.recognizer, directionMode: 4 }, bindings },
+            { availableCommandIds: AVAILABLE_COMMANDS },
+        );
+        expect(result.status).toBe("invalid");
+    });
 });
 
 describe("validateConfig — 不可变性", () => {

@@ -8,6 +8,24 @@ import type { GestureFlowConfig } from "@/config/types";
 import type { ConfigManager, ConfigUpdatePatch } from "@/config/ConfigManager";
 import type { SettingCommandItem } from "./commandCatalog";
 
+/** Records siyuan `confirm` invocations so tests can drive confirm/cancel. */
+const confirmCalls: { text: string; confirmCb: (() => void) | null; cancelCb: (() => void) | null }[] = [];
+
+vi.mock("siyuan", () => ({
+    confirm: (
+        _title: string,
+        text: string,
+        confirmCallback?: () => void,
+        cancelCallback?: () => void,
+    ) => {
+        confirmCalls.push({
+            text,
+            confirmCb: confirmCallback ?? null,
+            cancelCb: cancelCallback ?? null,
+        });
+    },
+}));
+
 /**
  * SettingsPanel DOM structure tests.
  *
@@ -126,10 +144,10 @@ const i18n: Record<string, string> = {
 
 /** Read-only command catalog matching the runtime's built-in commands. */
 const COMMAND_CATALOG: SettingCommandItem[] = [
-    { id: "tabs.previous", titleKey: "cmdTabsPrevious", title: "上一个标签页", group: "Tabs" },
-    { id: "tabs.next", titleKey: "cmdTabsNext", title: "下一个标签页", group: "Tabs" },
-    { id: "scroll.top", titleKey: "cmdScrollTop", title: "滚动到顶部", group: "Scrolling" },
-    { id: "scroll.bottom", titleKey: "cmdScrollBottom", title: "滚动到底部", group: "Scrolling" },
+    { id: "tabs.previous", titleKey: "cmdTabsPrevious", title: "上一个标签页", group: "Tabs", groupTitle: "标签页" },
+    { id: "tabs.next", titleKey: "cmdTabsNext", title: "下一个标签页", group: "Tabs", groupTitle: "标签页" },
+    { id: "scroll.top", titleKey: "cmdScrollTop", title: "滚动到顶部", group: "Scrolling", groupTitle: "滚动" },
+    { id: "scroll.bottom", titleKey: "cmdScrollBottom", title: "滚动到底部", group: "Scrolling", groupTitle: "滚动" },
 ];
 
 interface MountedPanel {
@@ -831,6 +849,7 @@ describe("SettingsPanel — 绑定管理（stage 5B）", () => {
 
     beforeEach(() => {
         stubRecorderEnvironment();
+        confirmCalls.length = 0;
         mounted = mountPanel();
         openBindingsTab(mounted);
     });
@@ -944,23 +963,31 @@ describe("SettingsPanel — 绑定管理（stage 5B）", () => {
 
     it("删除绑定需确认，确认后列表更新", async () => {
         await Promise.resolve();
-        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
-        const delBtns = mounted.host.querySelectorAll(".gf-binding-delete");
-        (delBtns[1] as HTMLElement).click(); // default-R
+        (mounted.host.querySelectorAll(".gf-binding-delete")[1] as HTMLElement).click(); // default-R
+        await Promise.resolve();
+
+        // SiYuan confirm was shown with direction + command details.
+        expect(confirmCalls.length).toBe(1);
+        expect(confirmCalls[0].text).toContain("→"); // direction symbol in text
+        expect(confirmCalls[0].text).toContain("下一个标签页"); // command title
+
+        // User confirms → delete happens.
+        confirmCalls[0].confirmCb?.();
         await new Promise((r) => setTimeout(r, 20));
 
-        expect(confirmSpy).toHaveBeenCalled();
-        expect(confirmSpy.mock.calls[0][0]).toContain("→"); // direction symbol in confirm
         const items = mounted.host.querySelectorAll(".gf-binding-item");
         expect(items.length).toBe(3);
     });
 
     it("删除绑定取消确认时列表不变", async () => {
         await Promise.resolve();
-        vi.spyOn(window, "confirm").mockReturnValue(false);
         (mounted.host.querySelectorAll(".gf-binding-delete")[0] as HTMLElement).click();
-        await new Promise((r) => setTimeout(r, 20));
+        await Promise.resolve();
+        expect(confirmCalls.length).toBe(1);
+
+        // User cancels — the confirm callback is never invoked.
         expect(mounted.host.querySelectorAll(".gf-binding-item").length).toBe(4);
+        expect(mounted.configManager.getConfig().bindings.length).toBe(4);
     });
 
     it("启停开关更新绑定 enabled", async () => {
@@ -1018,5 +1045,240 @@ describe("SettingsPanel — 绑定管理（stage 5B）", () => {
         ).map((b) => b.textContent?.trim());
         expect(badges).toEqual(["↗", "↙"]);
         component.$destroy();
+    });
+});
+
+describe("SettingsPanel — 5B 稳定化（重复方向 / 方向模式 / 回滚 / 分组）", () => {
+    let mounted: MountedPanel;
+
+    beforeEach(() => {
+        stubRecorderEnvironment();
+        confirmCalls.length = 0;
+        mounted = mountPanel();
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+        cleanup(mounted.component);
+    });
+
+    it("含重复方向的绑定正常显示（U-D-U / R-L-R / R-D-R-D）", async () => {
+        const cfg = mounted.configManager.getConfig();
+        cfg.bindings = [
+            ...cfg.bindings,
+            { id: "udu", enabled: true, directions: ["U", "D", "U"], commandId: "tabs.next", commandParams: {} },
+            { id: "rlr", enabled: true, directions: ["R", "L", "R"], commandId: "tabs.previous", commandParams: {} },
+            { id: "rdrd", enabled: true, directions: ["R", "D", "R", "D"], commandId: "tabs.next", commandParams: {} },
+        ];
+        openBindingsTab(mounted);
+        await Promise.resolve();
+
+        const items = mounted.host.querySelectorAll(".gf-binding-item");
+        expect(items.length).toBe(7);
+        const badgeTexts = (el: Element) =>
+            Array.from(el.querySelectorAll(".gf-badge")).map((b) => b.textContent?.trim());
+        expect(badgeTexts(items[4])).toEqual(["↑", "↓", "↑"]);   // U-D-U
+        expect(badgeTexts(items[5])).toEqual(["→", "←", "→"]);   // R-L-R
+        expect(badgeTexts(items[6])).toEqual(["→", "↓", "→", "↓"]); // R-D-R-D
+    });
+
+    it("编辑含重复方向的绑定不抛错（打开编辑器保留全部徽标）", async () => {
+        const cfg = mounted.configManager.getConfig();
+        cfg.bindings.push({
+            id: "udu", enabled: true, directions: ["U", "D", "U"], commandId: "tabs.next", commandParams: {},
+        });
+        openBindingsTab(mounted);
+        await Promise.resolve();
+        const editBtns = mounted.host.querySelectorAll(".gf-binding-edit");
+        (editBtns[4] as HTMLElement).click(); // the U-D-U binding
+        await Promise.resolve();
+        const badges = mounted.host.querySelectorAll(".gf-binding-editor-dir");
+        expect(Array.from(badges).map((b) => b.textContent?.trim())).toEqual(["↑", "↓", "↑"]);
+    });
+
+    it("命令选择框 optgroup 使用本地化分组名", async () => {
+        openBindingsTab(mounted);
+        await Promise.resolve();
+        (mounted.host.querySelector(".gf-binding-add") as HTMLElement).click();
+        await Promise.resolve();
+        const groups = mounted.host.querySelectorAll(".gf-binding-editor optgroup");
+        const labels = Array.from(groups).map((g) => g.getAttribute("label"));
+        expect(labels).toContain("标签页");
+        expect(labels).toContain("滚动");
+    });
+
+    it("8→4 切换：存在启用斜向绑定时不修改配置并提示", async () => {
+        const cfg = mounted.configManager.getConfig();
+        cfg.recognizer.directionMode = 8;
+        cfg.bindings.push({
+            id: "diag", enabled: true, directions: ["UR"], commandId: "tabs.next", commandParams: {},
+        });
+        const cm = mounted.configManager as ConfigManager & { updateConfig: ReturnType<typeof vi.fn> };
+        const updateSpy = vi.spyOn(cm, "updateConfig");
+
+        // Switch to 识别 tab and change the direction mode select.
+        const navBtns = mounted.host.querySelectorAll(".gf-nav-btn");
+        (navBtns[1] as HTMLElement).click();
+        await Promise.resolve();
+        // Find the directionMode select (first select in the recognition tab).
+        const modeSelect = Array.from(
+            mounted.host.querySelectorAll<HTMLSelectElement>(".gf-content select"),
+        ).find((s) => Array.from(s.options).some((o) => ["4", "8"].includes(o.value)));
+        expect(modeSelect).toBeTruthy();
+        modeSelect!.value = "4";
+        modeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 20));
+
+        // Not written, not saved, config unchanged (still 8-dir with the
+        // enabled diagonal binding).
+        expect(mounted.configManager.getConfig().recognizer.directionMode).toBe(8);
+        expect(updateSpy).not.toHaveBeenCalled();
+    });
+
+    it("禁用斜向绑定后可以切换 4 方向，绑定被保留且不能启用", async () => {
+        const cfg = mounted.configManager.getConfig();
+        cfg.recognizer.directionMode = 8;
+        cfg.bindings = cfg.bindings.map((b) =>
+            b.id === "default-L" ? { ...b, directions: ["UR"] as const, enabled: false } : b,
+        );
+        openBindingsTab(mounted);
+        await Promise.resolve();
+
+        // Disabled diagonal binding survives the switch (4-dir).
+        const navBtns = mounted.host.querySelectorAll(".gf-nav-btn");
+        (navBtns[1] as HTMLElement).click();
+        await Promise.resolve();
+        const modeSelect = Array.from(
+            mounted.host.querySelectorAll<HTMLSelectElement>(".gf-content select"),
+        ).find((s) => Array.from(s.options).some((o) => ["4", "8"].includes(o.value)));
+        modeSelect!.value = "4";
+        modeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 500)); // allow the debounced save
+
+        const after = mounted.configManager.getConfig();
+        expect(after.recognizer.directionMode).toBe(4);
+        const diag = after.bindings.find((b) => b.id === "default-L");
+        expect(diag?.enabled).toBe(false); // retained but disabled
+        expect(diag?.directions).toEqual(["UR"]); // not silently rewritten
+
+        // Toggling it on in 4-dir mode is refused and the switch stays off.
+        openBindingsTab(mounted);
+        await Promise.resolve();
+        const sw = mounted.host.querySelectorAll('input[type="checkbox"].b3-switch')[0] as HTMLInputElement;
+        expect(sw.checked).toBe(false);
+        sw.checked = true;
+        sw.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 20));
+        expect(mounted.configManager.getConfig().bindings.find((b) => b.id === "default-L")?.enabled).toBe(false);
+    });
+
+    it("保存失败后界面恢复实际配置（方向模式）", async () => {
+        const cfg = mounted.configManager.getConfig();
+        cfg.recognizer.directionMode = 4;
+        const cm = mounted.configManager;
+        vi.spyOn(cm, "updateConfig").mockResolvedValue({ status: "error", message: "boom" });
+
+        const navBtns = mounted.host.querySelectorAll(".gf-nav-btn");
+        (navBtns[1] as HTMLElement).click();
+        await Promise.resolve();
+        const modeSelect = Array.from(
+            mounted.host.querySelectorAll<HTMLSelectElement>(".gf-content select"),
+        ).find((s) => Array.from(s.options).some((o) => ["4", "8"].includes(o.value)));
+        modeSelect!.value = "8";
+        modeSelect!.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 500)); // allow the debounced save
+
+        // UI rolled back to the real config (4).
+        expect(mounted.configManager.getConfig().recognizer.directionMode).toBe(4);
+    });
+
+    it("保存失败后启用开关恢复原状态（绑定启停）", async () => {
+        openBindingsTab(mounted);
+        await Promise.resolve();
+        const cm = mounted.configManager;
+        const updateSpy = vi.spyOn(cm, "updateConfig").mockResolvedValue({ status: "error", message: "boom" });
+
+        const sw = mounted.host.querySelectorAll('input[type="checkbox"].b3-switch')[0] as HTMLInputElement;
+        expect(sw.checked).toBe(true);
+        sw.checked = false;
+        sw.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 20));
+        expect(updateSpy).toHaveBeenCalledTimes(1);
+
+        // Rolled back: still enabled in config and the switch reads it.
+        expect(mounted.configManager.getConfig().bindings[0].enabled).toBe(true);
+        expect((mounted.host.querySelectorAll('input[type="checkbox"].b3-switch')[0] as HTMLInputElement).checked).toBe(true);
+    });
+
+    it("删除失败后列表恢复原状", async () => {
+        openBindingsTab(mounted);
+        await Promise.resolve();
+        const cm = mounted.configManager;
+        vi.spyOn(cm, "updateConfig").mockResolvedValue({ status: "error", message: "boom" });
+
+        (mounted.host.querySelectorAll(".gf-binding-delete")[0] as HTMLElement).click();
+        await Promise.resolve();
+        confirmCalls[0].confirmCb?.();
+        await new Promise((r) => setTimeout(r, 20));
+
+        expect(mounted.host.querySelectorAll(".gf-binding-item").length).toBe(4);
+        expect(mounted.configManager.getConfig().bindings.length).toBe(4);
+    });
+});
+
+describe("SettingsPanel — 保存失败回滚（display / numeric）", () => {
+    let mounted: MountedPanel;
+
+    beforeEach(() => {
+        mounted = mountPanel();
+    });
+
+    afterEach(() => {
+        vi.restoreAllMocks();
+        cleanup(mounted.component);
+    });
+
+    it("显示开关保存失败后恢复实际状态", async () => {
+        const cfg = mounted.configManager.getConfig();
+        cfg.overlay.showTrail = false;
+        const cm = mounted.configManager;
+        vi.spyOn(cm, "updateConfig").mockResolvedValue({ status: "error", message: "boom" });
+
+        const navBtns = mounted.host.querySelectorAll(".gf-nav-btn");
+        (navBtns[2] as HTMLElement).click(); // display tab
+        await Promise.resolve();
+        const sw = mounted.host.querySelectorAll('input[type="checkbox"].b3-switch')[0] as HTMLInputElement;
+        expect(sw.checked).toBe(false);
+        sw.checked = true;
+        sw.dispatchEvent(new Event("change", { bubbles: true }));
+        await new Promise((r) => setTimeout(r, 500)); // debounced save → fails → rollback
+
+        expect(mounted.configManager.getConfig().overlay.showTrail).toBe(false);
+    });
+
+    it("数字设置保存失败后恢复实际值并同步输入框", async () => {
+        const cfg = mounted.configManager.getConfig();
+        cfg.trigger.activationDistance = 24;
+        const cm = mounted.configManager;
+        vi.spyOn(cm, "updateConfig").mockResolvedValue({ status: "error", message: "boom" });
+
+        const navBtns = mounted.host.querySelectorAll(".gf-nav-btn");
+        (navBtns[0] as HTMLElement).click(); // general tab
+        await Promise.resolve();
+        // The activation distance number input is the first number input.
+        const numInput = Array.from(
+            mounted.host.querySelectorAll<HTMLInputElement>(".gf-content input"),
+        ).find((el) => el.type === "number");
+        expect(numInput).toBeTruthy();
+        const updateSpy = vi.spyOn(cm, "updateConfig").mockResolvedValue({ status: "error", message: "boom" });
+        numInput!.value = "48";
+        numInput!.dispatchEvent(new Event("input", { bubbles: true }));
+        numInput!.dispatchEvent(new Event("blur", { bubbles: true })); // numeric fields commit on blur
+        await new Promise((r) => setTimeout(r, 500)); // debounced save → fails → rollback
+
+        expect(updateSpy).toHaveBeenCalledTimes(1);
+        expect(mounted.configManager.getConfig().trigger.activationDistance).toBe(24);
+        expect((numInput as HTMLInputElement).value).toBe("24");
     });
 });

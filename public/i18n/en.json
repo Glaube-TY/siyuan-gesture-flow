@@ -90,5 +90,14 @@
   "bindingEditTitle": "Edit binding",
   "bindingErrorDiagonal4": "Diagonals are not supported in 4-direction mode",
   "bindingSave": "Save",
-  "bindingEdit": "Edit"
+  "bindingEdit": "Edit",
+  "directionModeSwitchHint": "edit or disable those bindings first",
+  "bindingErrorNotFound": "Binding not found",
+  "directionModeSwitchBlocked": "Cannot switch to 4-direction mode: enabled diagonal bindings exist",
+  "cmdGroupTabs": "Tabs",
+  "bindingErrorDuplicateId": "Could not generate a unique binding id — please retry",
+  "bindingErrorDiagonal4Enable": "Diagonal bindings cannot be enabled in 4-direction mode",
+  "bindingErrorDuplicate": "Another binding already uses this gesture",
+  "bindingErrorInvalidParams": "Invalid command parameters",
+  "cmdGroupScrolling": "Scrolling"
 }

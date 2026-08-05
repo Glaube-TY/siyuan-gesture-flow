@@ -2,7 +2,8 @@
     import { createEventDispatcher } from "svelte";
     import GestureRecorder from "./GestureRecorder.svelte";
     import { GestureEngine } from "@/gesture/GestureEngine";
-    import type { Direction, DirectionMode } from "@/gesture/recognition/DirectionVectorizer";
+    import type { RecognizerConfig } from "@/gesture/GestureEngine";
+    import type { Direction } from "@/gesture/recognition/DirectionVectorizer";
     import type { ConfigBinding } from "@/config/types";
     import type { SettingCommandItem } from "../commandCatalog";
     import { directionSymbol } from "../directionLabels";
@@ -18,14 +19,19 @@
      * Validation mirrors the config layer so errors are shown inline:
      * empty directions, too many segments, diagonals in 4-dir mode,
      * duplicate gesture, unknown command.
+     *
+     * Config parity (stage 5B stabilization): the recorder uses a
+     * GestureEngine built from the FULL current recognizer config
+     * (rebuilt reactively when the config changes) plus the current
+     * trigger activation/timeout values — no hard-coded defaults.
      */
 
     export let binding: ConfigBinding | null;
     export let commandCatalog: SettingCommandItem[];
-    export let recognizer: {
-        maximumSegments: number;
-        directionMode: DirectionMode;
-    };
+    /** Full current recognizer config — the recorder must match the runtime. */
+    export let recognizer: RecognizerConfig;
+    /** Trigger values the recorder must honour (activation distance + timeout). */
+    export let trigger: { activationDistance: number; timeoutMs: number };
     export let i18n: Record<string, string>;
     /** Parent-provided save callback.  Must not resolve until persisted. */
     export let handleSave: (draft: {
@@ -38,11 +44,13 @@
         cancel: Record<string, never>;
     }>();
 
-    const engine = new GestureEngine({
-        sampleDistance: 4,
-        simplifyTolerance: 2.8,
-        minimumSegmentLength: 18,
-        turnAngleThreshold: 42,
+    // Rebuilt whenever the recognizer config changes so the recorder
+    // always recognises with the same parameters as the runtime.
+    $: engine = new GestureEngine({
+        sampleDistance: recognizer.sampleDistance,
+        simplifyTolerance: recognizer.simplifyTolerance,
+        minimumSegmentLength: recognizer.minimumSegmentLength,
+        turnAngleThreshold: recognizer.turnAngleThreshold,
         maximumSegments: recognizer.maximumSegments,
         directionMode: recognizer.directionMode,
     });
@@ -75,8 +83,14 @@
                 `Gesture has too many segments (max ${recognizer.maximumSegments})`
             );
         }
-        if (recognizer.directionMode === 4 && directions.some((d) => d.length === 2)) {
-            return i18n.bindingErrorDiagonal4 ?? "Diagonals are not allowed in 4-direction mode";
+        // Mirrors the config layer: only ENABLED diagonal bindings are
+        // rejected in 4-direction mode; a disabled one may be kept.
+        if (
+            recognizer.directionMode === 4 &&
+            enabled &&
+            directions.some((d) => d.length === 2)
+        ) {
+            return i18n.bindingErrorDiagonal4Enable ?? "Diagonals cannot be enabled in 4-direction mode";
         }
         if (!commandId) {
             return i18n.bindingErrorNoCommand ?? "Choose a command";
@@ -110,6 +124,11 @@
     }
 
     const groups = [...new Set(commandCatalog.map((c) => c.group))];
+
+    /** Localised group label for the command optgroup. */
+    function groupTitle(group: string): string {
+        return commandCatalog.find((c) => c.group === group)?.groupTitle ?? group;
+    }
 </script>
 
 <div class="gf-binding-editor">
@@ -148,6 +167,7 @@
 
     <GestureRecorder
         {engine}
+        {trigger}
         {i18n}
         {directions}
         on:update={onRecord}
@@ -160,7 +180,7 @@
         </span>
         <select class="b3-select gf-binding-editor-select" bind:value={commandId}>
             {#each groups as group}
-                <optgroup label={group}>
+                <optgroup label={groupTitle(group)}>
                     {#each commandCatalog.filter((c) => c.group === group) as cmd}
                         <option value={cmd.id}>{cmd.title}</option>
                     {/each}

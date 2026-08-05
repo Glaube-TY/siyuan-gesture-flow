@@ -21,15 +21,27 @@ export interface SettingCommandItem {
     readonly titleKey: string;
     /** Localised display title (falls back to the raw key when missing). */
     readonly title: string;
-    /** Logical group for grouped display, e.g. `Tabs` / `Scrolling`. */
+    /** Stable logical group id, e.g. `Tabs` / `Scrolling` (runtime grouping). */
     readonly group: string;
+    /**
+     * Localised group name for the settings `<optgroup>` label
+     * (falls back to the raw group id).  The runtime group id itself
+     * is never changed.
+     */
+    readonly groupTitle: string;
+}
+
+/** i18n key for a command group label (e.g. `Tabs` → `cmdGroupTabs`). */
+function groupTitleKey(group: string): string {
+    return `cmdGroup${group}`;
 }
 
 /**
  * Build the settings command catalog from a live registry.
  *
  * Only command metadata is copied — no execute functions, no bridge
- * references, no registry reference is retained.
+ * references, no registry reference is retained.  Group labels are
+ * resolved through i18n so the UI never shows raw group ids.
  */
 export function buildCommandCatalog(
     registry: CommandRegistry,
@@ -40,6 +52,7 @@ export function buildCommandCatalog(
         titleKey: cmd.title,
         title: i18n[cmd.title] ?? cmd.title,
         group: cmd.group,
+        groupTitle: i18n[groupTitleKey(cmd.group)] ?? cmd.group,
     }));
 }
 

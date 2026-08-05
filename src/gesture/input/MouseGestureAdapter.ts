@@ -246,12 +246,6 @@ export class MouseGestureAdapter extends InputAdapter {
         if (e.button !== this.config.button) {
             return; // not the trigger button — do not disturb protection
         }
-        // Stage 5B: generic input-target exclusion (e.g. the settings
-        // gesture recorder).  No GestureSession is created, no gesture
-        // state machine is entered — the target owns this interaction.
-        if (this.shouldIgnoreTarget(e.target)) {
-            return;
-        }
         // A new trigger-button pointerdown with no active session: end the
         // previous interaction's leftover state BEFORE deciding whether this
         // pointerdown should bypass the gesture system (Alt held, non-mouse
@@ -277,6 +271,17 @@ export class MouseGestureAdapter extends InputAdapter {
         this.contextmenuSnapshot = null;
         this.replayToken++;
         this.interactionGeneration++;
+
+        // Stage 5B: generic input-target exclusion (e.g. the settings
+        // gesture recorder).  Checked AFTER the leftover-state cleanup so
+        // a recording-area pointerdown still invalidates any pending
+        // plain-right-click replay from a previous interaction (no stale
+        // menu can pop up mid-recording).  No GestureSession is created
+        // and no gesture state machine is entered — the target owns this
+        // interaction.
+        if (this.shouldIgnoreTarget(e.target)) {
+            return;
+        }
 
         // Stage 1: only handle mouse input.  Pen (including side keys) and
         // touch are not treated as mouse gestures.  The cleanup above

@@ -21,3 +21,15 @@ export function getActiveTab(): unknown {
 export function getActiveEditor(): unknown {
     return null;
 }
+
+/** SiYuan native confirm dialog (used by the binding delete flow). */
+export function confirm(
+    _title: string,
+    _text: string,
+    confirmCallback?: (dialog: unknown) => void,
+    _cancelCallback?: (dialog: unknown) => void,
+): void {
+    // Tests override via vi.mock("siyuan", ...) when they need to drive
+    // the confirm/cancel paths.
+    confirmCallback?.(null);
+}

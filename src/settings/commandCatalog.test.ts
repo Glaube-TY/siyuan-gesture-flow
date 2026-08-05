@@ -14,13 +14,22 @@ function makeRegistry(): CommandRegistry {
 }
 
 describe("commandCatalog", () => {
-    it("目录只包含只读元数据（id/titleKey/title/group），不包含 execute", () => {
+    it("目录只包含只读元数据（id/titleKey/title/group/groupTitle），不包含 execute", () => {
         const catalog = buildCommandCatalog(makeRegistry(), { cmdTabsNext: "下一个标签页" });
         expect(catalog).toHaveLength(3);
         for (const item of catalog) {
-            expect(Object.keys(item).sort()).toEqual(["group", "id", "title", "titleKey"]);
+            expect(Object.keys(item).sort()).toEqual(["group", "groupTitle", "id", "title", "titleKey"]);
             expect(item).not.toHaveProperty("execute");
         }
+    });
+
+    it("分组标题使用 i18n 解析，缺失时回退原始 group id", () => {
+        const catalog = buildCommandCatalog(makeRegistry(), { cmdGroupTabs: "标签页" });
+        const next = catalog.find((c) => c.id === "tabs.next");
+        expect(next?.groupTitle).toBe("标签页");
+        expect(next?.group).toBe("Tabs"); // runtime group id unchanged
+        const scroll = catalog.find((c) => c.group === "Scrolling");
+        expect(scroll?.groupTitle).toBe("Scrolling"); // no i18n key → fallback
     });
 
     it("标题使用 i18n 解析，缺失时回退 titleKey", () => {
@@ -34,7 +43,7 @@ describe("commandCatalog", () => {
 
     it("catalogCommandIds 提取 id 集合", () => {
         const catalog: SettingCommandItem[] = [
-            { id: "tabs.next", titleKey: "k", title: "t", group: "G" },
+            { id: "tabs.next", titleKey: "k", title: "t", group: "G", groupTitle: "G" },
         ];
         const ids = catalogCommandIds(catalog);
         expect(ids.has("tabs.next")).toBe(true);

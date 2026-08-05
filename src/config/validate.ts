@@ -539,13 +539,15 @@ function validateBindings(
             errors.push(`bindings[${i}].directions must not be empty`);
             continue;
         }
-        // Stage 5B: 4-direction mode must not silently carry diagonal
-        // bindings — reject loudly so the UI can tell the user to edit
-        // or disable them.  The runtime never sees an inconsistent
-        // config, so it cannot crash on it.
-        if (directionMode === 4 && directions.some((d) => DIAGONALS.includes(d))) {
+        // Stage 5B stabilization: 4-direction mode must not silently run
+        // ENABLED diagonal bindings — reject them loudly so the UI can
+        // tell the user to edit or disable them.  A *disabled* diagonal
+        // binding is allowed to stay (it can be re-enabled after
+        // switching back to 8-direction mode), and the runtime never
+        // resolves disabled bindings, so it cannot crash on them.
+        if (directionMode === 4 && enabled && directions.some((d) => DIAGONALS.includes(d))) {
             errors.push(
-                `bindings[${i}].directions contains diagonals not allowed in 4-direction mode: ${directions.join("-")}`,
+                `bindings[${i}].directions contains enabled diagonals not allowed in 4-direction mode: ${directions.join("-")}`,
             );
             continue;
         }

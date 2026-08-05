@@ -21,12 +21,14 @@ import type { ConfigUpdatePatch } from "@/config/ConfigManager";
  * the settings UI; the same rules apply to every field.
  */
 export function parseNumber(
-    raw: string,
+    raw: string | number,
     min: number,
     max: number,
     isInt: boolean,
 ): number | null {
-    const trimmed = raw.trim();
+    // Svelte 4 converts `<input type="number">` bind:value to a number,
+    // so the raw value may arrive as a number despite our string buffers.
+    const trimmed = String(raw).trim();
     if (trimmed === "") return null;
     const n = Number(trimmed);
     if (!Number.isFinite(n)) return null;

@@ -2146,3 +2146,123 @@ describe("MouseGestureAdapter — 输入目标排除", () => {
         expect(events.onStateChange).toHaveBeenCalledTimes(1);
     });
 });
+
+describe("MouseGestureAdapter — 录制区使旧重放失效（stage 5B 稳定化）", () => {
+    function recorderAwareAdapter() {
+        return new MouseGestureAdapter(TEST_TRIGGER, events, {
+            shouldIgnoreTarget: (t) =>
+                t instanceof Element && t.closest("[data-gesture-flow-recorder]") !== null,
+        });
+    }
+
+    /** Dispatch a contextmenu on window (the adapter listens in capture). */
+    function dispatchContextmenu(opts: {
+        clientX?: number;
+        clientY?: number;
+        target?: EventTarget;
+        cancelable?: boolean;
+    } = {}): MouseEvent {
+        const event = new MouseEvent("contextmenu", {
+            bubbles: true,
+            cancelable: opts.cancelable ?? true,
+            clientX: opts.clientX ?? 0,
+            clientY: opts.clientY ?? 0,
+            button: 2,
+        });
+        (opts.target ?? window).dispatchEvent(event);
+        return event;
+    }
+
+    it("普通右键已安排重放，紧接着开始录制，旧重放不得执行", async () => {
+        adapter = recorderAwareAdapter();
+        const recorder = document.createElement("div");
+        recorder.setAttribute("data-gesture-flow-recorder", "");
+        target.appendChild(recorder);
+        const receivedReplay: MouseEvent[] = [];
+        target.addEventListener("contextmenu", (e) => {
+            const me = e as MouseEvent;
+            if (!me.defaultPrevented) receivedReplay.push(me);
+        });
+        adapter.attach(target);
+
+        // Plain right-click: contextmenu during PENDING is intercepted
+        // and a replay is scheduled after pointerup (no movement).
+        dispatchPointer(target, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 10, clientY: 10 });
+        const ctxEvent = dispatchContextmenu({ target, clientX: 10, clientY: 10, cancelable: true });
+        expect(ctxEvent.defaultPrevented).toBe(true);
+        dispatchPointer(target, "pointerup", { button: 2, buttons: 0, clientX: 12, clientY: 10 });
+
+        // Recording starts on the recorder right after — this pointerdown
+        // must invalidate the pending replay (and not start a session).
+        const stateCalls = events.onStateChange.mock.calls.length; // the PENDING session only
+        dispatchPointer(recorder, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0 });
+        expect(events.onStateChange.mock.calls.length).toBe(stateCalls); // no new session
+
+        await Promise.resolve(); // flush the (stale) replay microtask
+        expect(receivedReplay.length).toBe(0);
+    });
+
+    it("全局手势保护期内开始录制，录制区仍可正常工作", () => {
+        adapter = recorderAwareAdapter();
+        const recorder = document.createElement("div");
+        recorder.setAttribute("data-gesture-flow-recorder", "");
+        target.appendChild(recorder);
+        adapter.attach(target);
+
+        // Complete a gesture on a normal target first → post-gesture
+        // suppression window opens.
+        dispatchPointer(target, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0 });
+        dispatchPointer(target, "pointermove", { buttons: RIGHT_BUTTON_MASK, clientX: 40, clientY: 0 });
+        dispatchPointer(target, "pointerup", { button: 2, buttons: 0, clientX: 40, clientY: 0 });
+        expect(events.onComplete).toHaveBeenCalledTimes(1);
+        const stateCalls = events.onStateChange.mock.calls.length; // PENDING + TRACKING
+
+        // A recording-area right-click inside that window is not
+        // suppressed and does not create a new session.
+        dispatchPointer(recorder, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0 });
+        expect(events.onStateChange.mock.calls.length).toBe(stateCalls);
+    });
+
+    it("录制完成后不会弹出思源右键菜单（录制区 contextmenu 未重放）", async () => {
+        adapter = recorderAwareAdapter();
+        const recorder = document.createElement("div");
+        recorder.setAttribute("data-gesture-flow-recorder", "");
+        target.appendChild(recorder);
+        const receivedReplay: MouseEvent[] = [];
+        target.addEventListener("contextmenu", (e) => {
+            const me = e as MouseEvent;
+            if (!me.defaultPrevented) receivedReplay.push(me);
+        });
+        adapter.attach(target);
+
+        dispatchPointer(recorder, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 0, clientY: 0 });
+        dispatchPointer(recorder, "pointermove", { buttons: RIGHT_BUTTON_MASK, clientX: 60, clientY: 0 });
+        dispatchPointer(recorder, "pointerup", { button: 2, buttons: 0, clientX: 60, clientY: 0 });
+        await Promise.resolve();
+
+        // No replay of the recorder's contextmenu (the recorder owns it).
+        expect(receivedReplay.length).toBe(0);
+        expect(events.onComplete).not.toHaveBeenCalled();
+    });
+
+    it("录制区外的普通右键仍正常", () => {
+        adapter = recorderAwareAdapter();
+        const recorder = document.createElement("div");
+        recorder.setAttribute("data-gesture-flow-recorder", "");
+        target.appendChild(recorder);
+        adapter.attach(target);
+
+        const receivedReplay: MouseEvent[] = [];
+        target.addEventListener("contextmenu", (e) => {
+            const me = e as MouseEvent;
+            if (!me.defaultPrevented) receivedReplay.push(me);
+        });
+
+        dispatchPointer(target, "pointerdown", { button: 2, buttons: RIGHT_BUTTON_MASK, clientX: 10, clientY: 10 });
+        dispatchContextmenu({ target, clientX: 10, clientY: 10, cancelable: true });
+        dispatchPointer(target, "pointerup", { button: 2, buttons: 0, clientX: 12, clientY: 10 });
+        return Promise.resolve().then(() => {
+            expect(receivedReplay.length).toBe(1);
+        });
+    });
+});

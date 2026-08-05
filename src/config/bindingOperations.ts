@@ -106,6 +106,11 @@ export function generateBindingId(): string {
  *
  * Pure check — no mutation.  Used by the binding editor before saving
  * and by add/update internally.
+ *
+ * Direction-mode compatibility (stage 5B stabilization): in 4-direction
+ * mode, ONLY *enabled* diagonal bindings are rejected.  A disabled
+ * diagonal binding may be kept so the user can switch back to
+ * 8-direction mode later and re-enable it.
  */
 export function validateBindingDraft(
     draft: BindingDraft,
@@ -122,10 +127,10 @@ export function validateBindingDraft(
             `direction sequence exceeds maximumSegments (${options.maximumSegments})`,
         );
     }
-    if (options.directionMode === 4 && directions.some((d) => DIAGONALS.includes(d))) {
+    if (options.directionMode === 4 && draft.enabled && directions.some((d) => DIAGONALS.includes(d))) {
         return fail(
             "direction-not-allowed",
-            "diagonal directions are not allowed in 4-direction mode",
+            "diagonal directions cannot be enabled in 4-direction mode",
         );
     }
     for (const d of directions) {
@@ -184,7 +189,10 @@ export function findDuplicateDirections(
 /**
  * Add a new binding (fresh unique id) to the bindings list.
  *
- * Returns a new array; the input config is never modified.
+ * The generated id is checked against the existing bindings; on a
+ * collision a new id is generated (bounded retries — never an infinite
+ * loop).  Returns `duplicate-id` after exhausting retries.  The input
+ * config is never modified.
  */
 export function addBinding(
     config: GestureFlowConfig,
@@ -199,7 +207,20 @@ export function addBinding(
     });
     if (!validation.ok) return validation;
 
-    const id = generateBindingId();
+    const existingIds = new Set(config.bindings.map((b) => b.id));
+    let id: string | null = null;
+    for (let attempt = 0; attempt < MAX_ID_GENERATION_ATTEMPTS; attempt++) {
+        const candidate = generateBindingId();
+        if (!existingIds.has(candidate)) {
+            id = candidate;
+            break;
+        }
+    }
+    if (id === null) {
+        // Extremely unlikely (UUID collision storm) — fail cleanly.
+        return fail("duplicate-id", "could not generate a unique binding id");
+    }
+
     const binding: ConfigBinding = {
         id,
         enabled: draft.enabled,
@@ -210,6 +231,28 @@ export function addBinding(
             : {},
     };
     return { ok: true, bindings: [...config.bindings, binding] };
+}
+
+/** Bounded retries for unique id generation in {@link addBinding}. */
+const MAX_ID_GENERATION_ATTEMPTS = 10;
+
+/**
+ * Find bindings that are incompatible with the given direction mode:
+ * *enabled* bindings containing diagonals while in 4-direction mode.
+ *
+ * Disabled diagonal bindings are allowed (they can be re-enabled after
+ * switching back to 8-direction mode) and are NOT reported here.
+ * Used by the settings UI to pre-check a mode switch before touching
+ * the config.
+ */
+export function findIncompatibleBindings(
+    bindings: readonly ConfigBinding[],
+    directionMode: DirectionMode,
+): ConfigBinding[] {
+    if (directionMode !== 4) return [];
+    return bindings.filter(
+        (b) => b.enabled && b.directions.some((d) => DIAGONALS.includes(d)),
+    );
 }
 
 /**
@@ -272,16 +315,26 @@ export function removeBinding(
 /**
  * Enable or disable a binding by id.
  *
- * Returns `not-found` when the id does not exist.  Input is never
+ * Returns `not-found` when the id does not exist.  Enabling a diagonal
+ * binding while in 4-direction mode is rejected (stage 5B: such a
+ * binding may exist disabled, but cannot be activated).  Input is never
  * mutated.
  */
 export function toggleBinding(
     config: GestureFlowConfig,
     id: string,
     enabled: boolean,
+    directionMode: DirectionMode = 4,
 ): BindingOperationResult {
-    if (!config.bindings.some((b) => b.id === id)) {
+    const target = config.bindings.find((b) => b.id === id);
+    if (!target) {
         return fail("not-found", `binding ${JSON.stringify(id)} not found`);
+    }
+    if (enabled && directionMode === 4 && target.directions.some((d) => DIAGONALS.includes(d))) {
+        return fail(
+            "direction-not-allowed",
+            "diagonal binding cannot be enabled in 4-direction mode",
+        );
     }
     return {
         ok: true,

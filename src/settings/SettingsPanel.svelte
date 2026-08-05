@@ -1,5 +1,6 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
+    import { confirm } from "siyuan";
     import type { ConfigManager, ConfigUpdatePatch } from "@/config/ConfigManager";
     import type { GestureFlowConfig } from "@/config/types";
     import type { ConfigBinding } from "@/config/types";
@@ -17,7 +18,9 @@
         updateBinding,
         removeBinding,
         toggleBinding,
+        findIncompatibleBindings,
     } from "@/config/bindingOperations";
+    import type { BindingOperationError } from "@/config/bindingOperations";
 
     /**
      * Props passed in from the host plugin.
@@ -68,6 +71,9 @@
             if (result.status === "saved") {
                 onStatus(i18n.settingsSaveSuccess ?? "Saved", false);
             } else {
+                // Validation or persistence failed — restore the UI to the
+                // real config so it never shows optimistic values.
+                rollbackConfig();
                 onStatus(result.message, true);
             }
         });
@@ -133,6 +139,19 @@
     }
 
     function setDirectionMode(value: 4 | 8): void {
+        // Stage 5B: switching to 4-direction mode with enabled diagonal
+        // bindings is refused up-front — nothing is written, no local
+        // state changes, and the user gets a clear localised hint.
+        if (value === 4) {
+            const incompatible = findIncompatibleBindings(config.bindings, 4);
+            if (incompatible.length > 0) {
+                onStatus(
+                    `${i18n.directionModeSwitchBlocked ?? "Cannot switch to 4-direction mode"} — ${i18n.directionModeSwitchHint ?? "edit or disable the diagonal bindings first"}`,
+                    true,
+                );
+                return;
+            }
+        }
         const recognizer = { ...config.recognizer, directionMode: value };
         pendingPatch = { ...pendingPatch, recognizer };
         config = { ...config, recognizer };
@@ -327,6 +346,38 @@
     /** Editor state: null = list view, otherwise a new or existing binding. */
     let editing: { mode: "new" } | { mode: "edit"; binding: ConfigBinding } | null = null;
 
+    /**
+     * Restore local state from the ConfigManager's real config after a
+     * failed save.  Re-syncs every numeric buffer, select and switch.
+     * Never triggers another save and never restarts the runtime.
+     */
+    function rollbackConfig(): void {
+        config = configManager.getConfig();
+        syncStringBuffers();
+    }
+
+    /** Map a binding-operation error code to a localised user message. */
+    function bindingErrorMessage(error: BindingOperationError): string {
+        switch (error) {
+            case "empty-directions":
+                return i18n.bindingErrorEmpty ?? "Record a gesture first";
+            case "too-many-segments":
+                return i18n.bindingErrorTooMany ?? "Gesture has too many segments";
+            case "direction-not-allowed":
+                return i18n.bindingErrorDiagonal4Enable ?? "Diagonal bindings cannot be enabled in 4-direction mode";
+            case "duplicate-directions":
+                return i18n.bindingErrorDuplicate ?? "Another binding already uses this gesture";
+            case "duplicate-id":
+                return i18n.bindingErrorDuplicateId ?? "Could not generate a unique binding id";
+            case "unknown-command":
+                return i18n.bindingErrorNoCommand ?? "Choose a command";
+            case "invalid-command-params":
+                return i18n.bindingErrorInvalidParams ?? "Invalid command parameters";
+            case "not-found":
+                return i18n.bindingErrorNotFound ?? "Binding not found";
+        }
+    }
+
     function commandTitle(id: string): string {
         return commandCatalog.find((c) => c.id === id)?.title ?? id;
     }
@@ -359,10 +410,12 @@
                 ? updateBinding(config, editing.binding.id, draft, bindingValidationOptions())
                 : addBinding(config, draft, bindingValidationOptions());
         if (!result.ok) {
-            return result.message;
+            rollbackConfig();
+            return bindingErrorMessage(result.error);
         }
         const save = await configManager.updateConfig({ bindings: result.bindings });
         if (save.status === "error") {
+            rollbackConfig();
             return save.message;
         }
         editing = null; // success — close the editor, list updates via subscribe
@@ -382,30 +435,49 @@
     }
 
     async function handleToggleBinding(binding: ConfigBinding, enabled: boolean): Promise<void> {
-        const result = toggleBinding(config, binding.id, enabled);
+        const result = toggleBinding(
+            config,
+            binding.id,
+            enabled,
+            config.recognizer.directionMode,
+        );
         if (!result.ok) {
-            onStatus(result.message, true);
+            rollbackConfig(); // e.g. diagonal binding in 4-dir mode — switch stays off
+            onStatus(bindingErrorMessage(result.error), true);
             return;
         }
+        // Optimistic local update so the switch flips immediately; on a
+        // failed save rollbackConfig restores the real state.
+        config = { ...config, bindings: result.bindings };
         const save = await configManager.updateConfig({ bindings: result.bindings });
         if (save.status === "error") {
+            rollbackConfig(); // switch reverts to the real state
             onStatus(save.message, true);
         }
     }
 
-    async function handleDeleteBinding(binding: ConfigBinding): Promise<void> {
+    /**
+     * Delete confirmation through SiYuan's native `confirm` dialog
+     * (styled like the rest of the app, not the browser confirm box).
+     * The actual delete only runs after the user confirms.
+     */
+    function handleDeleteBinding(binding: ConfigBinding): void {
         const label = `${directionsLabel(binding.directions)} — ${commandTitle(binding.commandId)}`;
-        const ok = window.confirm(
-            `${i18n.bindingDeleteConfirm ?? "Delete this binding?"}\n${label}`,
-        );
-        if (!ok) return;
+        confirm(i18n.bindingDeleteConfirm ?? "Delete binding", label, () => {
+            void doDeleteBinding(binding);
+        });
+    }
+
+    async function doDeleteBinding(binding: ConfigBinding): Promise<void> {
         const result = removeBinding(config, binding.id);
         if (!result.ok) {
-            onStatus(result.message, true);
+            rollbackConfig();
+            onStatus(bindingErrorMessage(result.error), true);
             return;
         }
         const save = await configManager.updateConfig({ bindings: result.bindings });
         if (save.status === "error") {
+            rollbackConfig(); // list reverts to the real state
             onStatus(save.message, true);
         }
     }
@@ -632,13 +704,21 @@
                     <BindingEditor
                         binding={editing.mode === "edit" ? editing.binding : null}
                         {commandCatalog}
-                        recognizer={{
-                            maximumSegments: config.recognizer.maximumSegments,
-                            directionMode: config.recognizer.directionMode,
-                        }}
                         {i18n}
                         handleSave={editorSave}
                         on:cancel={closeEditor}
+                        recognizer={{
+                            sampleDistance: config.recognizer.sampleDistance,
+                            simplifyTolerance: config.recognizer.simplifyTolerance,
+                            minimumSegmentLength: config.recognizer.minimumSegmentLength,
+                            turnAngleThreshold: config.recognizer.turnAngleThreshold,
+                            maximumSegments: config.recognizer.maximumSegments,
+                            directionMode: config.recognizer.directionMode,
+                        }}
+                        trigger={{
+                            activationDistance: config.trigger.activationDistance,
+                            timeoutMs: config.trigger.timeoutMs,
+                        }}
                     />
                 {:else}
                     <div class="gf-binding-toolbar">
@@ -660,7 +740,7 @@
                                 <div class="gf-binding-item">
                                     <div class="gf-binding-left">
                                         <div class="gf-binding-dirs">
-                                            {#each binding.directions as dir (dir)}
+                                            {#each binding.directions as dir, i (i)}
                                                 <span class="gf-badge">{directionSymbol(dir)}</span>
                                             {/each}
                                         </div>
