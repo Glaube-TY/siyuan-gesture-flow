@@ -13,6 +13,8 @@
     import type { SettingCommandItem } from "./commandCatalog";
     import { catalogCommandIds } from "./commandCatalog";
     import { directionSymbol } from "./directionLabels";
+    import { displayShortcut } from "@/shortcuts/shortcutUtils";
+    import type { BindingAction } from "@/config/types";
     import {
         addBinding,
         updateBinding,
@@ -323,8 +325,13 @@
     }
 
     async function handleReset(): Promise<void> {
-        const ok = window.confirm(i18n.settingsResetConfirm ?? "Restore defaults?");
-        if (!ok) return;
+        // SiYuan's native styled confirm dialog (not the browser one).
+        confirm(i18n.settingsResetConfirm ?? "Restore defaults?", "", () => {
+            void doReset();
+        });
+    }
+
+    async function doReset(): Promise<void> {
         const result = await configManager.reset();
         if (result.status === "saved") {
             onStatus(i18n.settingsResetDone ?? "Defaults restored", false);
@@ -373,6 +380,8 @@
                 return i18n.bindingErrorNoCommand ?? "Choose a command";
             case "invalid-command-params":
                 return i18n.bindingErrorInvalidParams ?? "Invalid command parameters";
+            case "invalid-shortcut":
+                return i18n.shortcutFormatError ?? "快捷键格式无效";
             case "not-found":
                 return i18n.bindingErrorNotFound ?? "Binding not found";
         }
@@ -380,6 +389,37 @@
 
     function commandTitle(id: string): string {
         return commandCatalog.find((c) => c.id === id)?.title ?? id;
+    }
+
+    /**
+     * Display name for a binding action (stage 6A): builtin commands
+     * show the localised command title; shortcuts show a badge-style
+     * label with the normalised shortcut text.  Unknown/invalid actions
+     * fall back to the direction sequence only.
+     */
+    function bindingActionTitle(binding: ConfigBinding): string {
+        const action = binding.action;
+        if (action.type === "builtin") {
+            return commandTitle(action.commandId);
+        }
+        if (action.type === "shortcut") {
+            return `${i18n.actionShortcut ?? "快捷键"}：${displayShortcut(action.shortcut)}`;
+        }
+        return directionsLabel(binding.directions);
+    }
+
+    /** Badge class for the implementation type. */
+    function actionBadgeClass(binding: ConfigBinding): string {
+        return binding.action.type === "builtin"
+            ? "gf-badge--builtin"
+            : "gf-badge--shortcut";
+    }
+
+    /** Badge text for the implementation type. */
+    function actionBadgeLabel(binding: ConfigBinding): string {
+        return binding.action.type === "builtin"
+            ? (i18n.actionBuiltinBadge ?? "内置功能")
+            : (i18n.actionShortcutBadge ?? "快捷键");
     }
 
     /** Direction symbols joined for confirmation dialogs. */
@@ -403,7 +443,7 @@
     async function editorSave(draft: {
         enabled: boolean;
         directions: Direction[];
-        commandId: string;
+        action: BindingAction;
     }): Promise<string | null> {
         const result =
             editing?.mode === "edit"
@@ -462,7 +502,7 @@
      * The actual delete only runs after the user confirms.
      */
     function handleDeleteBinding(binding: ConfigBinding): void {
-        const label = `${directionsLabel(binding.directions)} — ${commandTitle(binding.commandId)}`;
+        const label = `${directionsLabel(binding.directions)} — ${bindingActionTitle(binding)}`;
         confirm(i18n.bindingDeleteConfirm ?? "Delete binding", label, () => {
             void doDeleteBinding(binding);
         });
@@ -744,8 +784,11 @@
                                                 <span class="gf-badge">{directionSymbol(dir)}</span>
                                             {/each}
                                         </div>
+                                        <span class="gf-badge gf-binding-type {actionBadgeClass(binding)}">
+                                            {actionBadgeLabel(binding)}
+                                        </span>
                                         <span class="gf-binding-cmd">
-                                            {commandTitle(binding.commandId)}
+                                            {bindingActionTitle(binding)}
                                             {#if !binding.enabled}
                                                 <span class="gf-binding-disabled">
                                                     ({i18n.settingsBindingDisabled ?? "disabled"})
@@ -901,6 +944,21 @@
         margin: 0 0 4px;
         word-break: normal;
         overflow-wrap: break-word;
+    }
+    .gf-binding-type {
+        font-size: 11px;
+        line-height: 1;
+        padding: 3px 8px;
+        border-radius: 3px;
+        flex: 0 0 auto;
+    }
+    .gf-binding-type.gf-badge--builtin {
+        background: var(--b3-theme-primary-lightest, #e8f0fe);
+        color: var(--b3-theme-primary, #4285f4);
+    }
+    .gf-binding-type.gf-badge--shortcut {
+        background: var(--b3-theme-secondary-lightest, #fef3e2);
+        color: var(--b3-theme-secondary, #f29900);
     }
     .gf-binding-left {
         display: flex;

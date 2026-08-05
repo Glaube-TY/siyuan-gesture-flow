@@ -11,6 +11,7 @@ import {
     ValidationResult,
 } from "./types";
 import { createDefaultConfig, deepCloneConfig } from "./defaults";
+import { MODIFIER_KEYS, SUPPORTED_KEYS } from "@/shortcuts/shortcutUtils";
 
 /**
  * Options for {@link validateConfig}.
@@ -561,40 +562,106 @@ function validateBindings(
         }
         seenKeys.add(key);
 
-        // commandId
-        if (o.commandId === undefined || typeof o.commandId !== "string") {
-            errors.push(`bindings[${i}].commandId must be a string`);
+        // action (stage 6A: unified binding action, version 2)
+        if (o.action === undefined || o.action === null || !isPlainObject(o.action)) {
+            errors.push(`bindings[${i}].action must be an object`);
             continue;
         }
-        const commandId = o.commandId.trim();
-        if (!commandId) {
-            errors.push(`bindings[${i}].commandId must not be empty`);
-            continue;
-        }
-        if (availableCommandIds && !availableCommandIds.has(commandId)) {
-            // Unknown command: disable and report (do not silently execute
-            // a wrong command, do not drop the binding).
-            notes.push(`bindings[${i}].commandId "${commandId}" unknown — disabled`);
-            enabled = false;
-        }
+        const rawAction = o.action as Record<string, unknown>;
+        const actionType = rawAction.type;
 
-        // commandParams
-        let commandParams: Record<string, unknown> = {};
-        if (o.commandParams !== undefined) {
-            if (!isPlainObject(o.commandParams)) {
-                errors.push(`bindings[${i}].commandParams must be a plain object`);
+        if (actionType === "builtin") {
+            if (typeof rawAction.commandId !== "string") {
+                errors.push(`bindings[${i}].action.commandId must be a string`);
                 continue;
             }
-            commandParams = { ...(o.commandParams as Record<string, unknown>) };
+            const commandId = rawAction.commandId.trim();
+            if (!commandId) {
+                errors.push(`bindings[${i}].action.commandId must not be empty`);
+                continue;
+            }
+            if (availableCommandIds && !availableCommandIds.has(commandId)) {
+                // Unknown command: disable and report (do not silently
+                // execute a wrong command, do not drop the binding).
+                notes.push(`bindings[${i}].action.commandId "${commandId}" unknown — disabled`);
+                enabled = false;
+            }
+            let commandParams: Record<string, unknown> = {};
+            if (rawAction.commandParams !== undefined) {
+                if (!isPlainObject(rawAction.commandParams)) {
+                    errors.push(`bindings[${i}].action.commandParams must be a plain object`);
+                    continue;
+                }
+                commandParams = { ...(rawAction.commandParams as Record<string, unknown>) };
+            }
+            result.push({
+                id,
+                enabled,
+                directions,
+                action: { type: "builtin", commandId, commandParams },
+            });
+            continue;
         }
 
-        result.push({
-            id,
-            enabled,
-            directions,
-            commandId,
-            commandParams,
-        });
+        if (actionType === "shortcut") {
+            const rawShortcut = rawAction.shortcut;
+            if (rawShortcut === undefined || rawShortcut === null || !isPlainObject(rawShortcut)) {
+                errors.push(`bindings[${i}].action.shortcut must be an object`);
+                continue;
+            }
+            const s = rawShortcut as Record<string, unknown>;
+            // Reject functions / DOM data (JSON payloads can't carry them,
+            // but be strict anyway).
+            if (Object.values(s).some((v) => typeof v === "function")) {
+                errors.push(`bindings[${i}].action.shortcut must not contain functions`);
+                continue;
+            }
+            const key = typeof s.key === "string" ? s.key : "";
+            const code = typeof s.code === "string" ? s.code : "";
+            const keyCodeRaw = s.keyCode;
+            const keyCode = typeof keyCodeRaw === "number" ? keyCodeRaw : NaN;
+            const ctrl = s.ctrlKey;
+            const alt = s.altKey;
+            const shift = s.shiftKey;
+            const meta = s.metaKey;
+            const ok =
+                key.length > 0 &&
+                !MODIFIER_KEYS.has(key) &&
+                SUPPORTED_KEYS.has(key.toUpperCase()) &&
+                typeof code === "string" &&
+                Number.isInteger(keyCode) &&
+                keyCode >= 0 &&
+                typeof ctrl === "boolean" &&
+                typeof alt === "boolean" &&
+                typeof shift === "boolean" &&
+                typeof meta === "boolean";
+            if (!ok) {
+                errors.push(`bindings[${i}].action.shortcut is invalid`);
+                continue;
+            }
+            result.push({
+                id,
+                enabled,
+                directions,
+                action: {
+                    type: "shortcut",
+                    shortcut: { key, code, keyCode, ctrlKey: ctrl, altKey: alt, shiftKey: shift, metaKey: meta },
+                },
+            });
+            continue;
+        }
+
+        if (actionType === "javascript") {
+            // JavaScript actions are NOT a persistent type in stage 6A —
+            // reject them so imports can never bypass the disabled
+            // "in development" state.
+            errors.push(`bindings[${i}].action.type "javascript" is not available in this version`);
+            continue;
+        }
+
+        // Unknown action type: config is invalid.  Never silently convert
+        // to builtin, never execute.
+        errors.push(`bindings[${i}].action.type unknown: ${JSON.stringify(actionType)}`);
     }
 
     if (errors.length > 0) {
@@ -608,11 +675,25 @@ function validateBindings(
 }
 
 function cloneBindingShallow(b: ConfigBinding): ConfigBinding {
+    if (b.action.type === "builtin") {
+        return {
+            id: b.id,
+            enabled: b.enabled,
+            directions: b.directions.slice(),
+            action: {
+                type: "builtin",
+                commandId: b.action.commandId,
+                commandParams: { ...b.action.commandParams },
+            },
+        };
+    }
     return {
         id: b.id,
         enabled: b.enabled,
         directions: b.directions.slice(),
-        commandId: b.commandId,
-        commandParams: { ...b.commandParams },
+        action: {
+            type: "shortcut",
+            shortcut: { ...b.action.shortcut },
+        },
     };
 }

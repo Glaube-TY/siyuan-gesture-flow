@@ -1,53 +1,47 @@
 import { Direction } from "@/gesture/recognition/DirectionVectorizer";
-import { CommandRegistry } from "@/commands/CommandRegistry";
+import { BindingAction } from "@/config/types";
 import { GestureBinding, ResolvedBinding } from "./types";
 
 /**
- * Registry of gesture-to-command bindings.
+ * Registry of gesture-to-action bindings (stage 6A).
  *
- * Bindings map a direction sequence (e.g. `["L"]`) to a command id.
- * Matching is **strict and complete**: `["R"]` does not match
- * `["R", "D"]`.
+ * Bindings map a direction sequence (e.g. `["L"]`) to an action
+ * (built-in command or keyboard shortcut).  Matching is **strict and
+ * complete**: `["R"]` does not match `["R", "D"]`.
  *
  * - Empty direction sequences are rejected.
  * - Duplicate direction sequences are rejected.
  * - Duplicate binding ids are rejected.
- * - Bindings referencing unregistered commands are rejected.
  * - Disabled bindings never resolve.
+ *
+ * The registry is deliberately action-agnostic: it performs NO command
+ * lookup and knows nothing about {@link CommandRegistry} or the
+ * shortcut system.  Resolving only answers "which binding, if any,
+ * matches these directions and is enabled?" — executing the action is
+ * the action executor's job.
  *
  * **Immutability**: the registry stores deep defensive copies of every
  * binding.  {@link list}, {@link resolve}, and {@link getById} all
  * return fresh copies — external code cannot mutate internal state by
- * modifying the returned objects.  In particular, mutating the
- * `directions` array, `commandParams` object, or `enabled` flag of a
- * returned binding has no effect on the registry.
+ * modifying the returned objects (including the nested action).
  *
  * **Indexing**: the registry maintains two internal indices — by
  * direction key (the primary store) and by binding id (a secondary
  * lookup).  Both indices always point to the same authoritative record;
  * {@link setEnabled} and {@link setEnabledById} update the single
  * shared object so the two indices can never diverge.
- *
- * The registry depends on {@link CommandRegistry} for command validation
- * but knows nothing about the DOM, the overlay, or the input layer.
  */
 export class GestureBindingRegistry {
-    private readonly commandRegistry: CommandRegistry;
     /** Primary store: direction-key → binding (authoritative record). */
     private readonly byKey = new Map<string, GestureBinding>();
     /** Secondary index: binding-id → direction-key. */
     private readonly idToKey = new Map<string, string>();
 
-    constructor(commandRegistry: CommandRegistry) {
-        this.commandRegistry = commandRegistry;
-    }
-
     /**
      * Register a single binding.
      *
      * @throws if the id is empty, the id is a duplicate, the directions
-     *         are empty, the directions are a duplicate, or the binding
-     *         references an unregistered command.
+     *         are empty, or the directions are a duplicate.
      */
     register(binding: GestureBinding): void {
         const id = this.validateId(binding.id);
@@ -60,9 +54,6 @@ export class GestureBindingRegistry {
         const key = this.keyOf(binding.directions);
         if (this.byKey.has(key)) {
             throw new Error(`Duplicate binding for directions: ${key}`);
-        }
-        if (!this.commandRegistry.has(binding.commandId)) {
-            throw new Error(`Binding references unknown command: ${binding.commandId}`);
         }
         // Store a defensive deep copy — the caller retains no alias.
         this.byKey.set(key, this.cloneBinding(binding));
@@ -97,9 +88,6 @@ export class GestureBindingRegistry {
             if (this.byKey.has(key) || seenKeys.has(key)) {
                 throw new Error(`Duplicate binding for directions: ${key}`);
             }
-            if (!this.commandRegistry.has(binding.commandId)) {
-                throw new Error(`Binding references unknown command: ${binding.commandId}`);
-            }
             validated.push({ key, id, stored: this.cloneBinding(binding) });
             seenIds.add(id);
             seenKeys.add(key);
@@ -113,26 +101,19 @@ export class GestureBindingRegistry {
     }
 
     /**
-     * Resolve a direction sequence to a binding.
+     * Resolve a direction sequence to an enabled binding.
      *
-     * Returns `null` if:
-     * - No binding matches the exact sequence.
-     * - The matching binding is disabled.
-     * - The referenced command no longer exists.
-     *
-     * The returned {@link ResolvedBinding.binding} is a defensive copy
-     * — mutating it does not affect the registry.
+     * Returns `null` if no binding matches the exact sequence or the
+     * matching binding is disabled.  The returned binding is a
+     * defensive copy — mutating it does not affect the registry.
      */
     resolve(directions: readonly Direction[]): ResolvedBinding | null {
         if (directions.length === 0) return null;
         const key = this.keyOf(directions);
         const binding = this.byKey.get(key);
         if (!binding || !binding.enabled) return null;
-        const command = this.commandRegistry.get(binding.commandId);
-        if (!command) return null;
         return {
             binding: this.cloneBinding(binding),
-            command,
         };
     }
 
@@ -197,19 +178,35 @@ export class GestureBindingRegistry {
     }
 
     /**
-     * Create a deep defensive copy of a binding.
-     *
-     * `directions` (array) and `commandParams` (object) are copied so
-     * external mutation cannot affect the stored binding.  `enabled`
-     * is a primitive and copied by value.
+     * Create a deep defensive copy of a binding, including its nested
+     * action (commandParams / shortcut object).
      */
     private cloneBinding(b: GestureBinding): GestureBinding {
         return {
             id: b.id,
             enabled: b.enabled,
             directions: b.directions.slice(),
-            commandId: b.commandId,
-            commandParams: { ...b.commandParams },
+            action: cloneAction(b.action),
         };
     }
+}
+
+/** Deep-copy a binding action (builtin commandParams / shortcut object). */
+export function cloneAction(action: BindingAction): BindingAction {
+    if (action.type === "builtin") {
+        return {
+            type: "builtin",
+            commandId: action.commandId,
+            commandParams: { ...action.commandParams },
+        };
+    }
+    if (action.type === "shortcut") {
+        return {
+            type: "shortcut",
+            shortcut: { ...action.shortcut },
+        };
+    }
+    // Unknown / invalid action type: keep it as-is (never convert to a
+    // different type).  The validator and action executor reject it.
+    return action;
 }

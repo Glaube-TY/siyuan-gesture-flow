@@ -140,6 +140,24 @@ const i18n: Record<string, string> = {
     gestureRecorderUnrecognised: "无法识别",
     gestureRecorderClear: "清除",
     gestureRecorderEmpty: "尚未录制手势",
+    actionType: "实现类型",
+    actionBuiltin: "内置功能",
+    actionShortcut: "快捷键",
+    actionJavascript: "JavaScript",
+    actionInDevelopment: "开发中",
+    actionBuiltinSelect: "选择内置功能",
+    actionBuiltinBadge: "内置功能",
+    actionShortcutBadge: "快捷键",
+    shortcutCaptureHint: "点击后按下组合键",
+    shortcutCapturing: "正在录入…",
+    shortcutClear: "清除快捷键",
+    shortcutClearLabel: "清除",
+    shortcutTest: "测试快捷键",
+    shortcutTestSent: "已发送测试快捷键",
+    shortcutEmptyError: "快捷键不能为空",
+    shortcutCompatibilityHint: "快捷键会作为合成键盘事件发送",
+    shortcutContextHint: "上下文相关快捷键请关闭设置窗口后用真实手势验证",
+    bindingErrorJavascriptUnavailable: "JavaScript 功能正在开发",
 };
 
 /** Read-only command catalog matching the runtime's built-in commands. */
@@ -367,7 +385,7 @@ describe("SettingsPanel — 绑定分类", () => {
         (buttons[3] as HTMLElement).click();
         await Promise.resolve();
 
-        const badges = mounted.host.querySelectorAll(".gf-binding-item .gf-badge");
+        const badges = mounted.host.querySelectorAll(".gf-binding-item .gf-binding-dirs .gf-badge");
         expect(badges.length).toBe(4); // L, R, U, D
         const badgeTexts = Array.from(badges).map((b) => b.textContent?.trim());
         expect(badgeTexts).toContain("←"); // L
@@ -397,7 +415,7 @@ describe("SettingsPanel — 绑定分类", () => {
         const cfg = mounted.configManager.getConfig();
         expect(items.length).toBe(cfg.bindings.length);
         for (let i = 0; i < items.length; i++) {
-            const badges = items[i].querySelectorAll(".gf-badge");
+            const badges = items[i].querySelectorAll(".gf-binding-dirs .gf-badge");
             const badgeTexts = Array.from(badges).map((b) => b.textContent?.trim());
             expect(badgeTexts).toEqual(
                 cfg.bindings[i].directions.map((d) => symbolFor(d)),
@@ -894,10 +912,15 @@ describe("SettingsPanel — 绑定管理（stage 5B）", () => {
         await Promise.resolve();
         (mounted.host.querySelector(".gf-binding-add") as HTMLElement).click();
         await Promise.resolve();
-        const select = mounted.host.querySelector(".gf-binding-editor select") as HTMLSelectElement;
+        // The first select is the implementation type; the command
+        // catalog select is the one with optgroups.
+        const selects = mounted.host.querySelectorAll(".gf-binding-editor select");
+        const select = Array.from(selects).find(
+            (s) => s.querySelectorAll("optgroup").length > 0,
+        ) as HTMLSelectElement | undefined;
         expect(select).toBeTruthy();
-        expect(select.querySelectorAll("option").length).toBe(4);
-        expect(select.querySelectorAll("optgroup").length).toBe(2);
+        expect(select!.querySelectorAll("option").length).toBe(4);
+        expect(select!.querySelectorAll("optgroup").length).toBe(2);
     });
 
     it("新增绑定：录制 R→D 并保存成功，列表更新为 5 项", async () => {
@@ -918,7 +941,7 @@ describe("SettingsPanel — 绑定管理（stage 5B）", () => {
         const items = mounted.host.querySelectorAll(".gf-binding-item");
         expect(items.length).toBe(5);
         const lastBadges = Array.from(
-            items[items.length - 1].querySelectorAll(".gf-badge"),
+            items[items.length - 1].querySelectorAll(".gf-binding-dirs .gf-badge"),
         ).map((b) => b.textContent?.trim());
         expect(lastBadges).toEqual(["→", "↓"]);
     });
@@ -1029,8 +1052,7 @@ describe("SettingsPanel — 绑定管理（stage 5B）", () => {
             id: "diag-1",
             enabled: true,
             directions: ["UR", "DL"],
-            commandId: "tabs.next",
-            commandParams: {},
+            action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} },
         });
         const cm = makeConfigManager(cfg);
         const component = new SettingsPanel({
@@ -1041,7 +1063,7 @@ describe("SettingsPanel — 绑定管理（stage 5B）", () => {
         (navBtns[3] as HTMLElement).click();
         await Promise.resolve();
         const badges = Array.from(
-            host.querySelectorAll(".gf-binding-item:last-child .gf-badge"),
+            host.querySelectorAll(".gf-binding-item:last-child .gf-binding-dirs .gf-badge"),
         ).map((b) => b.textContent?.trim());
         expect(badges).toEqual(["↗", "↙"]);
         component.$destroy();
@@ -1067,9 +1089,9 @@ describe("SettingsPanel — 5B 稳定化（重复方向 / 方向模式 / 回滚 
         const cfg = mounted.configManager.getConfig();
         cfg.bindings = [
             ...cfg.bindings,
-            { id: "udu", enabled: true, directions: ["U", "D", "U"], commandId: "tabs.next", commandParams: {} },
-            { id: "rlr", enabled: true, directions: ["R", "L", "R"], commandId: "tabs.previous", commandParams: {} },
-            { id: "rdrd", enabled: true, directions: ["R", "D", "R", "D"], commandId: "tabs.next", commandParams: {} },
+            { id: "udu", enabled: true, directions: ["U", "D", "U"], action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} } },
+            { id: "rlr", enabled: true, directions: ["R", "L", "R"], action: { type: "builtin" as const, commandId: "tabs.previous", commandParams: {} } },
+            { id: "rdrd", enabled: true, directions: ["R", "D", "R", "D"], action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} } },
         ];
         openBindingsTab(mounted);
         await Promise.resolve();
@@ -1077,7 +1099,7 @@ describe("SettingsPanel — 5B 稳定化（重复方向 / 方向模式 / 回滚 
         const items = mounted.host.querySelectorAll(".gf-binding-item");
         expect(items.length).toBe(7);
         const badgeTexts = (el: Element) =>
-            Array.from(el.querySelectorAll(".gf-badge")).map((b) => b.textContent?.trim());
+            Array.from(el.querySelectorAll(".gf-binding-dirs .gf-badge")).map((b) => b.textContent?.trim());
         expect(badgeTexts(items[4])).toEqual(["↑", "↓", "↑"]);   // U-D-U
         expect(badgeTexts(items[5])).toEqual(["→", "←", "→"]);   // R-L-R
         expect(badgeTexts(items[6])).toEqual(["→", "↓", "→", "↓"]); // R-D-R-D
@@ -1086,7 +1108,7 @@ describe("SettingsPanel — 5B 稳定化（重复方向 / 方向模式 / 回滚 
     it("编辑含重复方向的绑定不抛错（打开编辑器保留全部徽标）", async () => {
         const cfg = mounted.configManager.getConfig();
         cfg.bindings.push({
-            id: "udu", enabled: true, directions: ["U", "D", "U"], commandId: "tabs.next", commandParams: {},
+            id: "udu", enabled: true, directions: ["U", "D", "U"], action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} },
         });
         openBindingsTab(mounted);
         await Promise.resolve();
@@ -1112,7 +1134,7 @@ describe("SettingsPanel — 5B 稳定化（重复方向 / 方向模式 / 回滚 
         const cfg = mounted.configManager.getConfig();
         cfg.recognizer.directionMode = 8;
         cfg.bindings.push({
-            id: "diag", enabled: true, directions: ["UR"], commandId: "tabs.next", commandParams: {},
+            id: "diag", enabled: true, directions: ["UR"], action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} },
         });
         const cm = mounted.configManager as ConfigManager & { updateConfig: ReturnType<typeof vi.fn> };
         const updateSpy = vi.spyOn(cm, "updateConfig");
@@ -1280,5 +1302,200 @@ describe("SettingsPanel — 保存失败回滚（display / numeric）", () => {
         expect(updateSpy).toHaveBeenCalledTimes(1);
         expect(mounted.configManager.getConfig().trigger.activationDistance).toBe(24);
         expect((numInput as HTMLInputElement).value).toBe("24");
+    });
+});
+
+// ============================================================ 实现类型（stage 6A）
+
+describe("SettingsPanel — 实现类型（stage 6A）", () => {
+    let mounted: MountedPanel;
+
+    beforeEach(() => {
+        stubRecorderEnvironment();
+        confirmCalls.length = 0;
+        mounted = mountPanel();
+        openBindingsTab(mounted);
+    });
+
+    afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.restoreAllMocks();
+        cleanup(mounted.component);
+    });
+
+    const flush = () => new Promise<void>((r) => setTimeout(r, 0));
+
+    /** Currently checked implementation-type radio. */
+    function typeRadio(): HTMLInputElement {
+        const radios = Array.from(
+            mounted.host.querySelectorAll('input[name="gf-binding-impl-type"]'),
+        ) as HTMLInputElement[];
+        return radios.find((r) => r.checked) ?? radios[0];
+    }
+
+    async function openEditor(): Promise<void> {
+        (mounted.host.querySelector(".gf-binding-add") as HTMLElement).click();
+        await flush();
+
+    }
+
+    async function switchToShortcut(): Promise<void> {
+        const radio = Array.from(
+            mounted.host.querySelectorAll('input[name="gf-binding-impl-type"]'),
+        ).find((r) => (r as HTMLInputElement).value === "shortcut") as HTMLInputElement;
+        expect(radio).toBeTruthy();
+        radio.checked = true;
+        radio.dispatchEvent(new Event("change", { bubbles: true }));
+        await flush();
+    }
+
+    /** Record R→D and capture Ctrl+P via the ShortcutRecorder. */
+    async function recordAndCaptureShortcut(): Promise<void> {
+        await openEditor();
+        drawGestureInRecorder(mounted.host, [[0, 0], [120, 0], [120, 120]]);
+        await flush();
+        await switchToShortcut();
+        const input = mounted.host.querySelector(".gf-shortcut-input") as HTMLInputElement;
+        expect(input).toBeTruthy();
+        input.dispatchEvent(new Event("click", { bubbles: true }));
+        window.dispatchEvent(new KeyboardEvent("keydown", {
+            key: "p", code: "KeyP", ctrlKey: true, bubbles: true, cancelable: true,
+        }));
+        await flush();
+    }
+
+    /** Mutate the config, then force the panel to re-render with it. */
+    function setConfig(mutate: (cfg: GestureFlowConfig) => void): void {
+        const cfg = mounted.configManager.getConfig();
+        mutate(cfg);
+        // Re-assign to a new object and notify the component.
+        (mounted.configManager as unknown as { updateConfig: (p: ConfigUpdatePatch) => Promise<unknown> })
+            .updateConfig({ bindings: cfg.bindings });
+    }
+
+    it("实现类型包含三个选项，JavaScript 可见但 disabled", async () => {
+        await openEditor();
+        const radios = Array.from(
+            mounted.host.querySelectorAll("input[name=\"gf-binding-impl-type\"]"),
+        ) as HTMLInputElement[];
+        expect(radios.map((r) => r.value)).toEqual(["builtin", "shortcut", "javascript"]);
+        expect(radios[0].checked).toBe(true); // 默认 builtin
+        const jsRadio = radios.find((r) => r.value === "javascript");
+        expect(jsRadio?.disabled).toBe(true);
+        expect(jsRadio?.parentElement?.textContent).toContain("开发中");
+    });
+
+    it("默认 builtin 分支显示命令选择框", async () => {
+        await openEditor();
+        const commandSelect = Array.from(
+            mounted.host.querySelectorAll(".gf-binding-editor select"),
+        ).find((s) => s.querySelectorAll("optgroup").length > 0);
+        expect(commandSelect).toBeTruthy();
+        expect(mounted.host.querySelector(".gf-shortcut-recorder")).toBeNull();
+    });
+
+    it("已有 builtin 绑定编辑时打开 builtin 分支", async () => {
+        await openEditor();
+        // 取消，回到列表，再编辑 default-L
+        (mounted.host.querySelector(".gf-binding-editor button.b3-button--text") as HTMLElement).click();
+        await flush();
+        (mounted.host.querySelectorAll(".gf-binding-edit")[0] as HTMLElement).click();
+        await flush();
+        expect(typeRadio().checked).toBe(true);
+    });
+
+    it("已有 shortcut 绑定编辑时打开 shortcut 分支并显示快捷键", async () => {
+        setConfig((cfg) => {
+            cfg.bindings = [
+                ...cfg.bindings,
+                {
+                    id: "sc-1",
+                    enabled: true,
+                    directions: ["R", "D"],
+                    action: { type: "shortcut", shortcut: { key: "p", code: "KeyP", keyCode: 80, ctrlKey: true, altKey: false, shiftKey: false, metaKey: false } },
+                },
+            ];
+        });
+        await flush();
+        (mounted.host.querySelectorAll(".gf-binding-edit")[4] as HTMLElement).click();
+        await flush();
+        expect(typeRadio().checked).toBe(true);
+        const input = mounted.host.querySelector(".gf-shortcut-input") as HTMLInputElement;
+        expect(input.value).toBe("Ctrl+p");
+    });
+
+    it("切换实现类型只修改草稿，取消后配置完全不变", async () => {
+        const before = JSON.stringify(mounted.configManager.getConfig());
+        await openEditor();
+        await switchToShortcut();
+        const input = mounted.host.querySelector(".gf-shortcut-input") as HTMLInputElement;
+        input.dispatchEvent(new Event("click", { bubbles: true }));
+        window.dispatchEvent(new KeyboardEvent("keydown", { key: "p", code: "KeyP", ctrlKey: true }));
+        await flush();
+        // 取消
+        (mounted.host.querySelector(".gf-binding-editor button.b3-button--text") as HTMLElement).click();
+        await flush();
+        expect(JSON.stringify(mounted.configManager.getConfig())).toBe(before);
+    });
+
+    it("shortcut 绑定保存成功，列表显示类型徽标与快捷键", async () => {
+        await recordAndCaptureShortcut();
+        (mounted.host.querySelector(".gf-binding-editor-save") as HTMLElement).click();
+        await flush();
+
+        const cfg = mounted.configManager.getConfig();
+        const last = cfg.bindings[cfg.bindings.length - 1];
+        expect(last.action.type).toBe("shortcut");
+        if (last.action.type === "shortcut") {
+            expect(last.action.shortcut.key).toBe("p");
+            expect(last.action.shortcut.ctrlKey).toBe(true);
+        }
+        const items = mounted.host.querySelectorAll(".gf-binding-item");
+        const lastItem = items[items.length - 1];
+        expect(lastItem.querySelector(".gf-badge--shortcut")?.textContent?.trim()).toBe("快捷键");
+        expect(lastItem.textContent).toContain("快捷键：Ctrl+p");
+    });
+
+    it("空快捷键不能保存（显示错误，配置不变）", async () => {
+        const before = JSON.stringify(mounted.configManager.getConfig());
+        await openEditor();
+        drawGestureInRecorder(mounted.host, [[0, 0], [120, 0], [120, 120]]);
+        await switchToShortcut();
+        (mounted.host.querySelector(".gf-binding-editor-save") as HTMLElement).click();
+        await flush();
+        expect(mounted.host.querySelector(".gf-binding-editor")).not.toBeNull(); // 编辑器保持打开
+        expect(JSON.stringify(mounted.configManager.getConfig())).toBe(before);
+    });
+
+    it("清除快捷键按钮清空草稿", async () => {
+        await recordAndCaptureShortcut();
+        const clearBtn = mounted.host.querySelector(".gf-shortcut-btn") as HTMLElement;
+        expect(clearBtn).toBeTruthy();
+        clearBtn.click();
+        await flush();
+        const input = mounted.host.querySelector(".gf-shortcut-input") as HTMLInputElement;
+        expect(input.value).toBe("");
+    });
+
+    it("测试按钮不保存配置（草稿仍保留，编辑器保持打开）", async () => {
+        const before = JSON.stringify(mounted.configManager.getConfig());
+        await recordAndCaptureShortcut();
+        const testBtn = Array.from(
+            mounted.host.querySelectorAll(".gf-shortcut-btn"),
+        ).find((b) => (b as HTMLElement).textContent?.trim() === "测试快捷键") as HTMLElement;
+        expect(testBtn).toBeTruthy();
+        testBtn.click();
+        await flush();
+        expect(mounted.host.querySelector(".gf-binding-editor")).not.toBeNull();
+        expect(JSON.stringify(mounted.configManager.getConfig())).toBe(before);
+        expect(mounted.host.querySelector(".gf-binding-editor-test")?.textContent).toContain("已发送测试快捷键");
+    });
+
+    it("列表显示 builtin 类型徽标与具体命令名", async () => {
+        const items = mounted.host.querySelectorAll(".gf-binding-item");
+        expect(items.length).toBe(4);
+        const first = items[0];
+        expect(first.querySelector(".gf-badge--builtin")?.textContent?.trim()).toBe("内置功能");
+        expect(first.textContent).toContain("上一个标签页");
     });
 });

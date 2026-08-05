@@ -21,8 +21,35 @@ import { DirectionMode, Direction } from "@/gesture/recognition/DirectionVectori
  * {@link createDefaultConfig} so external mutation cannot leak between
  * instances or tests.
  */
+const DEFAULT_BINDINGS: ConfigBinding[] = [
+    {
+        id: "default-L",
+        enabled: true,
+        directions: ["L"] as Direction[],
+        action: { type: "builtin", commandId: "tabs.previous", commandParams: {} },
+    },
+    {
+        id: "default-R",
+        enabled: true,
+        directions: ["R"] as Direction[],
+        action: { type: "builtin", commandId: "tabs.next", commandParams: {} },
+    },
+    {
+        id: "default-U",
+        enabled: true,
+        directions: ["U"] as Direction[],
+        action: { type: "builtin", commandId: "scroll.top", commandParams: {} },
+    },
+    {
+        id: "default-D",
+        enabled: true,
+        directions: ["D"] as Direction[],
+        action: { type: "builtin", commandId: "scroll.bottom", commandParams: {} },
+    },
+];
+
 const DEFAULT_CONFIG: Readonly<GestureFlowConfig> = Object.freeze({
-    version: 1,
+    version: 2,
     enabled: true,
     trigger: {
         button: 2,
@@ -43,36 +70,7 @@ const DEFAULT_CONFIG: Readonly<GestureFlowConfig> = Object.freeze({
         showHint: true,
         lineWidth: 3,
     },
-    bindings: [
-        {
-            id: "default-L",
-            enabled: true,
-            directions: ["L"] as Direction[],
-            commandId: "tabs.previous",
-            commandParams: {},
-        },
-        {
-            id: "default-R",
-            enabled: true,
-            directions: ["R"] as Direction[],
-            commandId: "tabs.next",
-            commandParams: {},
-        },
-        {
-            id: "default-U",
-            enabled: true,
-            directions: ["U"] as Direction[],
-            commandId: "scroll.top",
-            commandParams: {},
-        },
-        {
-            id: "default-D",
-            enabled: true,
-            directions: ["D"] as Direction[],
-            commandId: "scroll.bottom",
-            commandParams: {},
-        },
-    ],
+    bindings: DEFAULT_BINDINGS,
 });
 
 /**
@@ -107,13 +105,31 @@ export function deepCloneConfig(config: GestureFlowConfig): GestureFlowConfig {
     };
 }
 
-/** Deep-copy a single binding (directions + commandParams included). */
+/**
+ * Deep-copy a single binding: directions and the nested action
+ * (commandParams object / shortcut object) are copied so the returned
+ * binding shares no references with the input.
+ */
 export function cloneBinding(b: ConfigBinding): ConfigBinding {
+    if (b.action.type === "builtin") {
+        return {
+            id: b.id,
+            enabled: b.enabled,
+            directions: b.directions.slice(),
+            action: {
+                type: "builtin",
+                commandId: b.action.commandId,
+                commandParams: { ...b.action.commandParams },
+            },
+        };
+    }
     return {
         id: b.id,
         enabled: b.enabled,
         directions: b.directions.slice(),
-        commandId: b.commandId,
-        commandParams: { ...b.commandParams },
+        action: {
+            type: "shortcut",
+            shortcut: { ...b.action.shortcut },
+        },
     };
 }

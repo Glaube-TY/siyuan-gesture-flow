@@ -13,10 +13,11 @@ import {
     directionsKey,
     BindingDraft,
     findIncompatibleBindings,
+    cloneAction as cloneActionRef,
 } from "./bindingOperations";
 
 function makeConfig(bindings: ConfigBinding[] = createDefaultConfig().bindings): GestureFlowConfig {
-    return { ...createDefaultConfig(), bindings: bindings.map((b) => ({ ...b, directions: b.directions.slice(), commandParams: { ...b.commandParams } })) };
+    return { ...createDefaultConfig(), bindings: bindings.map((b) => ({ ...b, directions: b.directions.slice(), action: cloneActionRef(b.action) })) };
 }
 
 const opts = {
@@ -28,7 +29,7 @@ const opts = {
 const draftRD: BindingDraft = {
     enabled: true,
     directions: ["R", "D"],
-    commandId: "tabs.next",
+    action: { type: "builtin", commandId: "tabs.next", commandParams: {} },
 };
 
 describe("bindingOperations — 生成 id", () => {
@@ -79,7 +80,7 @@ describe("bindingOperations — 校验", () => {
 
     it("未知命令被拒绝", () => {
         const r = validateBindingDraft(
-            { ...draftRD, commandId: "tabs.close" },
+            { ...draftRD, action: { type: "builtin", commandId: "tabs.close", commandParams: {} } },
             { bindings: config.bindings, ...opts },
         );
         expect(r.ok).toBe(false);
@@ -88,7 +89,7 @@ describe("bindingOperations — 校验", () => {
 
     it("commandParams 必须是普通对象", () => {
         const r = validateBindingDraft(
-            { ...draftRD, commandParams: [1, 2] as unknown as Record<string, unknown> },
+            { ...draftRD, action: { type: "builtin", commandId: "tabs.next", commandParams: [1, 2] as unknown as Record<string, unknown> } },
             { bindings: config.bindings, ...opts },
         );
         expect(r.ok).toBe(false);
@@ -134,8 +135,7 @@ describe("bindingOperations — 增删改启停", () => {
         expect(r.bindings).toHaveLength(before.length + 1);
         const added = r.bindings[r.bindings.length - 1];
         expect(added.directions).toEqual(["R", "D"]);
-        expect(added.commandId).toBe("tabs.next");
-        expect(added.commandParams).toEqual({});
+        expect(added.action).toEqual({ type: "builtin", commandId: "tabs.next", commandParams: {} });
         // 输入未被修改
         expect(config.bindings).toHaveLength(before.length);
         expect(config.bindings[0].directions).toEqual(["L"]);
@@ -149,7 +149,7 @@ describe("bindingOperations — 增删改启停", () => {
         if (!r.ok) return;
         const updated = r.bindings.find((b) => b.id === target.id);
         expect(updated?.directions).toEqual(["D", "R"]);
-        expect(updated?.commandId).toBe("tabs.next");
+        expect(updated?.action).toEqual({ type: "builtin", commandId: "tabs.next", commandParams: {} });
         expect(r.bindings).toHaveLength(config.bindings.length);
         // 其它绑定不变
         expect(r.bindings.find((b) => b.id === "default-R")?.directions).toEqual(["R"]);
@@ -257,7 +257,7 @@ describe("bindingOperations — 4 方向兼容（stage 5B 稳定化）", () => {
     it("toggleBinding 在 4 方向模式下拒绝启用斜向绑定", () => {
         const config = makeConfig();
         config.bindings.push({
-            id: "diag", enabled: false, directions: ["UR"], commandId: "tabs.next", commandParams: {},
+            id: "diag", enabled: false, directions: ["UR"], action: { type: "builtin", commandId: "tabs.next", commandParams: {} },
         });
         const r = toggleBinding(config, "diag", true, 4);
         expect(r.ok).toBe(false);
@@ -269,7 +269,7 @@ describe("bindingOperations — 4 方向兼容（stage 5B 稳定化）", () => {
     it("toggleBinding 在 4 方向模式下允许禁用斜向绑定", () => {
         const config = makeConfig();
         config.bindings.push({
-            id: "diag", enabled: true, directions: ["UR"], commandId: "tabs.next", commandParams: {},
+            id: "diag", enabled: true, directions: ["UR"], action: { type: "builtin", commandId: "tabs.next", commandParams: {} },
         });
         const r = toggleBinding(config, "diag", false, 4);
         expect(r.ok).toBe(true);
@@ -279,7 +279,7 @@ describe("bindingOperations — 4 方向兼容（stage 5B 稳定化）", () => {
     it("8 方向模式下 toggleBinding 允许启用斜向", () => {
         const config = makeConfig();
         config.bindings.push({
-            id: "diag", enabled: false, directions: ["UR"], commandId: "tabs.next", commandParams: {},
+            id: "diag", enabled: false, directions: ["UR"], action: { type: "builtin", commandId: "tabs.next", commandParams: {} },
         });
         const r = toggleBinding(config, "diag", true, 8);
         expect(r.ok).toBe(true);
@@ -288,9 +288,9 @@ describe("bindingOperations — 4 方向兼容（stage 5B 稳定化）", () => {
     it("findIncompatibleBindings 只报告 4 方向模式启用中的斜向绑定", () => {
         const config = makeConfig();
         config.bindings = [
-            { id: "a", enabled: true, directions: ["L"], commandId: "tabs.next", commandParams: {} },
-            { id: "diag-on", enabled: true, directions: ["UR"], commandId: "tabs.next", commandParams: {} },
-            { id: "diag-off", enabled: false, directions: ["DL"], commandId: "tabs.next", commandParams: {} },
+            { id: "a", enabled: true, directions: ["L"], action: { type: "builtin", commandId: "tabs.next", commandParams: {} } },
+            { id: "diag-on", enabled: true, directions: ["UR"], action: { type: "builtin", commandId: "tabs.next", commandParams: {} } },
+            { id: "diag-off", enabled: false, directions: ["DL"], action: { type: "builtin", commandId: "tabs.next", commandParams: {} } },
         ];
         const incompatible = findIncompatibleBindings(config.bindings, 4);
         expect(incompatible.map((b) => b.id)).toEqual(["diag-on"]);

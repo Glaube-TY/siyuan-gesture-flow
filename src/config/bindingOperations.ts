@@ -1,8 +1,9 @@
-import { ConfigBinding, GestureFlowConfig } from "./types";
+import { BindingAction, BuiltinBindingAction, ConfigBinding, GestureFlowConfig, ShortcutBindingAction } from "./types";
 import {
     Direction,
     DirectionMode,
 } from "@/gesture/recognition/DirectionVectorizer";
+import { isValidShortcut } from "@/shortcuts/shortcutUtils";
 
 /**
  * Atomic binding configuration operations (stage 5B).
@@ -33,6 +34,7 @@ export type BindingOperationError =
     | "duplicate-id"
     | "unknown-command"
     | "invalid-command-params"
+    | "invalid-shortcut"
     | "not-found";
 
 export interface BindingOperationFailure {
@@ -49,8 +51,8 @@ export type BindingOperationResult =
 export interface BindingDraft {
     enabled: boolean;
     directions: readonly Direction[];
-    commandId: string;
-    commandParams?: Record<string, unknown>;
+    /** The action this binding performs (builtin command or shortcut). */
+    action: BindingAction;
 }
 
 /** Options shared by the validating operations. */
@@ -151,17 +153,34 @@ export function validateBindingDraft(
         );
     }
 
-    if (!draft.commandId || draft.commandId.trim().length === 0) {
-        return fail("unknown-command", "commandId must not be empty");
+    const rawAction: unknown = draft.action;
+    if (typeof rawAction !== "object" || rawAction === null) {
+        return fail("unknown-command", "action is missing");
     }
-    if (options.availableCommandIds && !options.availableCommandIds.has(draft.commandId)) {
-        return fail("unknown-command", `unknown command ${JSON.stringify(draft.commandId)}`);
-    }
-
-    if (draft.commandParams !== undefined) {
-        if (typeof draft.commandParams !== "object" || draft.commandParams === null || Array.isArray(draft.commandParams)) {
-            return fail("invalid-command-params", "commandParams must be a plain object");
+    const actionType = (rawAction as { type?: unknown }).type;
+    if (actionType === "builtin") {
+        const builtin = rawAction as BuiltinBindingAction;
+        const commandId = builtin.commandId;
+        if (!commandId || commandId.trim().length === 0) {
+            return fail("unknown-command", "commandId must not be empty");
         }
+        if (options.availableCommandIds && !options.availableCommandIds.has(commandId)) {
+            return fail("unknown-command", `unknown command ${JSON.stringify(commandId)}`);
+        }
+        const cp = builtin.commandParams;
+        if (cp !== undefined) {
+            if (typeof cp !== "object" || cp === null || Array.isArray(cp)) {
+                return fail("invalid-command-params", "commandParams must be a plain object");
+            }
+        }
+    } else if (actionType === "shortcut") {
+        const shortcut = (rawAction as ShortcutBindingAction).shortcut;
+        if (!isValidShortcut(shortcut)) {
+            return fail("invalid-shortcut", "shortcut is invalid or empty");
+        }
+    } else {
+        // Unknown action type (including "javascript") is never saved.
+        return fail("unknown-command", `unsupported action type ${JSON.stringify(actionType)}`);
     }
 
     return { ok: true };
@@ -225,10 +244,7 @@ export function addBinding(
         id,
         enabled: draft.enabled,
         directions: draft.directions.slice(),
-        commandId: draft.commandId,
-        commandParams: draft.commandParams !== undefined
-            ? { ...draft.commandParams }
-            : {},
+        action: cloneAction(draft.action),
     };
     return { ok: true, bindings: [...config.bindings, binding] };
 }
@@ -284,15 +300,32 @@ export function updateBinding(
         id,
         enabled: draft.enabled,
         directions: draft.directions.slice(),
-        commandId: draft.commandId,
-        commandParams: draft.commandParams !== undefined
-            ? { ...draft.commandParams }
-            : {},
+        action: cloneAction(draft.action),
     };
     return {
         ok: true,
         bindings: config.bindings.map((b) => (b.id === id ? updated : b)),
     };
+}
+
+/** Deep-copy a binding action (builtin commandParams / shortcut object). */
+export function cloneAction(action: BindingAction): BindingAction {
+    if (action.type === "builtin") {
+        return {
+            type: "builtin",
+            commandId: action.commandId,
+            commandParams: { ...action.commandParams },
+        };
+    }
+    if (action.type === "shortcut") {
+        return {
+            type: "shortcut",
+            shortcut: { ...action.shortcut },
+        };
+    }
+    // Unknown / invalid action type: keep it as-is (never convert to a
+    // different type).  The validator and action executor reject it.
+    return action;
 }
 
 /**

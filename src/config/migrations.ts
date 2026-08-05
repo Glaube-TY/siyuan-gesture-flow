@@ -69,10 +69,52 @@ interface MigrationFailure {
  */
 const MIGRATIONS = new Map<number, MigrationStep>();
 
-// Stage 5A: no historical migrations exist yet — version 1 is the only
-// supported version.  The map is intentionally empty so that the runner
-// becomes a no-op for v1 payloads.  The framework is in place for future
-// upgrades.
+/**
+ * v1 → v2 migration (stage 6A): wrap legacy top-level `commandId` /
+ * `commandParams` into a `builtin` action.
+ *
+ * Pure function: takes a plain v1 payload, returns a plain v2 payload.
+ * Never calls saveData, never touches the DOM, never throws.  Binding
+ * id / enabled / directions are preserved untouched; empty bindings
+ * stay empty; unknown or malformed bindings are left for the v2
+ * validator to reject.
+ */
+function migrateV1ToV2(input: Record<string, unknown>): Record<string, unknown> | MigrationFailure {
+    const rawBindings = input.bindings;
+    let bindings: unknown[] = [];
+    if (Array.isArray(rawBindings)) {
+        bindings = rawBindings.map((raw) => {
+            if (!isPlainObject(raw)) return raw;
+            const b = raw as Record<string, unknown>;
+            // Already migrated (a v2-shaped binding inside a v1 payload):
+            // keep it for the validator, but strip any stale top-level
+            // legacy fields so the payload is a clean v2 shape.
+            if (isPlainObject(b.action)) {
+                const { commandId: _cid, commandParams: _cp, ...rest } = b;
+                void _cid;
+                void _cp;
+                return rest;
+            }
+            const commandId = typeof b.commandId === "string" ? b.commandId : "";
+            const commandParams =
+                isPlainObject(b.commandParams) ? b.commandParams : {};
+            const { commandId: _cid2, commandParams: _cp2, ...rest } = b;
+            void _cid2;
+            void _cp2;
+            return {
+                ...rest,
+                action: { type: "builtin", commandId, commandParams },
+            };
+        });
+    }
+    return {
+        ...input,
+        bindings,
+    };
+}
+
+// Register the v1 → v2 migration (stage 6A).
+registerMigration(1, migrateV1ToV2);
 
 /**
  * Detect the version field of an unknown payload.
@@ -128,7 +170,8 @@ export function migrateAndValidate(
         ]);
     }
 
-    // Step 2: run migration chain (currently a no-op for v1).
+    // Step 2: run migration chain from the detected version up to the
+    // current one (currently v1 → v2 for the stage 6A schema bump).
     let payload: unknown = input;
     if (detected === null) {
         // Missing version — the validator will fill in defaults for

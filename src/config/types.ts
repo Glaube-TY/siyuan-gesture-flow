@@ -1,5 +1,6 @@
 import { SuppressionKey } from "@/gesture/types";
 import { DirectionMode, Direction } from "@/gesture/recognition/DirectionVectorizer";
+import type { ShortcutSpec } from "@/shortcuts/types";
 
 /**
  * Versioned gesture-flow plugin configuration.
@@ -10,16 +11,23 @@ import { DirectionMode, Direction } from "@/gesture/recognition/DirectionVectori
  * a successful load; older on-disk data is migrated forward before the
  * rest of the plugin ever sees it.
  *
+ * Stage 6A bumps the schema to version 2: bindings no longer carry a
+ * top-level `commandId`/`commandParams`.  Instead each binding holds a
+ * single {@link BindingAction} — either a built-in command action or a
+ * keyboard-shortcut action.  JavaScript actions are NOT a persistent
+ * type in this stage (the settings UI shows a disabled "in development"
+ * placeholder that can never be saved or imported).
+ *
  * All nested structures are plain JSON-serialisable data — no functions,
  * DOM nodes, events, or session objects.  This keeps `saveData` / export
  * safe and deterministic.
  */
 
 /** Current config schema version.  Bump when the shape changes. */
-export const CURRENT_CONFIG_VERSION = 1 as const;
+export const CURRENT_CONFIG_VERSION = 2 as const;
 
 /** Supported historical config versions (for migration source checks). */
-export type SupportedConfigVersion = 1;
+export type SupportedConfigVersion = 1 | 2;
 
 /** Trigger (input-layer) configuration. */
 export interface TriggerConfig {
@@ -59,18 +67,41 @@ export interface OverlayConfig {
     lineWidth: number;
 }
 
-/** A single gesture-to-command binding (config-layer shape). */
+/** Action: run a built-in command through the CommandRegistry. */
+export interface BuiltinBindingAction {
+    readonly type: "builtin";
+    /** Target command id in the CommandRegistry. */
+    commandId: string;
+    /** Parameters passed to the command's execute function (plain object). */
+    commandParams: Record<string, unknown>;
+}
+
+/** Action: dispatch a synthetic keyboard shortcut. */
+export interface ShortcutBindingAction {
+    readonly type: "shortcut";
+    /** Structured, serialisable shortcut data (never a KeyboardEvent). */
+    shortcut: ShortcutSpec;
+}
+
+/**
+ * The union of persistent binding actions (stage 6A).
+ *
+ * JavaScript is deliberately NOT a member: it exists only as a disabled
+ * "in development" option in the settings UI and can never be saved,
+ * imported, or executed.
+ */
+export type BindingAction = BuiltinBindingAction | ShortcutBindingAction;
+
+/** A single gesture-to-action binding (config-layer shape, version 2). */
 export interface ConfigBinding {
     /** Unique binding id. */
     id: string;
     /** Whether this binding is active. */
     enabled: boolean;
-    /** Direction sequence that triggers the command. */
+    /** Direction sequence that triggers the action. */
     directions: Direction[];
-    /** Target command id in the CommandRegistry. */
-    commandId: string;
-    /** Parameters passed to the command's execute function (plain object). */
-    commandParams: Record<string, unknown>;
+    /** The action performed when the gesture is recognised. */
+    action: BindingAction;
 }
 
 /** The full persisted plugin configuration. */

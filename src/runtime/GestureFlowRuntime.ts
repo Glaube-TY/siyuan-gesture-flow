@@ -7,7 +7,8 @@ import { OverlayI18n } from "@/gesture/overlay/types";
 import { CommandRegistry } from "@/commands/CommandRegistry";
 import { CommandExecutor } from "@/commands/CommandExecutor";
 import { SiyuanActionBridge } from "@/commands/SiyuanActionBridge";
-import { GestureCommandDispatcher } from "@/commands/GestureCommandDispatcher";
+import { GestureActionExecutor } from "@/actions/GestureActionExecutor";
+import { ShortcutExecutor } from "@/shortcuts/ShortcutExecutor";
 import { registerBuiltinCommands } from "@/commands/registerBuiltinCommands";
 import { GestureBindingRegistry } from "@/gesture/bindings/GestureBindingRegistry";
 import { createCommandLabelResolver } from "@/gesture/bindings/CommandLabelResolver";
@@ -100,7 +101,7 @@ export function defaultGestureIgnoreTarget(target: EventTarget | null): boolean 
  *
  * The runtime is the single place where `MouseGestureAdapter`,
  * `GestureFeedbackController`, `GestureOverlay`, `GestureEngine`,
- * `CommandRegistry`, `CommandExecutor`, `GestureCommandDispatcher`, and
+ * `CommandRegistry`, `CommandExecutor`, `GestureActionExecutor`, and
  * `GestureBindingRegistry` are constructed and wired together.  Callers
  * (index.ts) only need to call {@link start} / {@link restart} / {@link stop}.
  *
@@ -135,8 +136,9 @@ export class GestureFlowRuntime {
     // Owned components (created on start, destroyed on stop).
     private adapter: MouseGestureAdapter | null = null;
     private controller: GestureFeedbackController | null = null;
-    private dispatcher: GestureCommandDispatcher | null = null;
+    private dispatcher: GestureActionExecutor | null = null;
     private commandExecutor: CommandExecutor | null = null;
+    private shortcutExecutor: ShortcutExecutor | null = null;
 
     constructor(opts: GestureFlowRuntimeOptions) {
         this.target = opts.target;
@@ -255,12 +257,18 @@ export class GestureFlowRuntime {
         this.commandExecutor = commandExecutor;
 
         // --- Gesture bindings (from config) ---
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
+        const bindingRegistry = new GestureBindingRegistry();
         const bindings = this.toGestureBindings(config.bindings);
         bindingRegistry.registerMany(bindings);
 
-        // --- Dispatcher ---
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, commandExecutor);
+        // --- Action dispatcher (builtin commands + keyboard shortcuts) ---
+        const shortcutExecutor = new ShortcutExecutor();
+        this.shortcutExecutor = shortcutExecutor;
+        const dispatcher = new GestureActionExecutor(
+            bindingRegistry,
+            commandExecutor,
+            shortcutExecutor,
+        );
         this.dispatcher = dispatcher;
 
         // --- Feedback controller ---
@@ -274,9 +282,13 @@ export class GestureFlowRuntime {
         });
 
         const overlay = new GestureOverlay(this.overlayI18n, config.overlay);
+        const commandTitles = new Map<string, string>(
+            commandRegistry.list().map((c) => [c.id, c.title]),
+        );
         const commandLabelResolver = createCommandLabelResolver(
             bindingRegistry,
             this.i18n,
+            { commandTitles },
         );
 
         const controller = new GestureFeedbackController({
@@ -347,6 +359,9 @@ export class GestureFlowRuntime {
             this.commandExecutor.reset();
             this.commandExecutor = null;
         }
+        if (this.shortcutExecutor) {
+            this.shortcutExecutor = null;
+        }
         this.dispatcher = null;
     }
 
@@ -360,13 +375,32 @@ export class GestureFlowRuntime {
      * copying — the binding registry makes its own deep copies on
      * `registerMany`.
      */
+    /**
+     * Convert config-layer bindings to runtime-layer bindings.
+     *
+     * Config bindings use plain `Direction[]` and a nested `action`; the
+     * runtime binding type is structurally identical but declared in a
+     * separate module so the config layer does not depend on the
+     * runtime.  The conversion is inlined (not delegated to a shared
+     * helper) so the bundled runtime never depends on a cross-module
+     * function reference that tree-shaking could drop.
+     */
     private toGestureBindings(bindings: readonly ConfigBinding[]): GestureBinding[] {
         return bindings.map((b) => ({
             id: b.id,
             enabled: b.enabled,
             directions: b.directions.slice(),
-            commandId: b.commandId,
-            commandParams: { ...b.commandParams },
+            action:
+                b.action.type === "builtin"
+                    ? {
+                          type: "builtin",
+                          commandId: b.action.commandId,
+                          commandParams: { ...b.action.commandParams },
+                      }
+                    : {
+                          type: "shortcut",
+                          shortcut: { ...b.action.shortcut },
+                      },
         }));
     }
 
@@ -387,8 +421,12 @@ export class GestureFlowRuntime {
         const dispatchResult = await dispatcher.dispatch(session, result);
 
         if (dispatchResult.status === "executed") {
+            const detail =
+                dispatchResult.actionType === "builtin"
+                    ? dispatchResult.commandId
+                    : "shortcut";
             this.onLog(
-                `session ${session.id} → ${dispatchResult.commandId} → ${dispatchResult.result.status}`,
+                `session ${session.id} → ${detail} → ${dispatchResult.result.status}`,
             );
         } else {
             this.onLog(

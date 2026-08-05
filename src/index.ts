@@ -27,7 +27,7 @@ const IS_DEV = process.env.DEV_MODE === "true" || process.env.NODE_ENV === "deve
  * - Unload cleanup: stop the runtime, destroy the config manager, and
  *   tear down the settings panel.
  *
- * All dispatch decisions live in {@link GestureCommandDispatcher}; this
+ * All dispatch decisions live in {@link GestureActionExecutor}; this
  * file does not inspect session state or recognition results directly.
  */
 export default class GestureFlowPlugin extends Plugin {

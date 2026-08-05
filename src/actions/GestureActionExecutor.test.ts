@@ -1,15 +1,46 @@
-import { describe, it, expect } from "vitest";
-import { CommandRegistry } from "./CommandRegistry";
-import { CommandExecutor } from "./CommandExecutor";
-import { GestureCommandDispatcher } from "./GestureCommandDispatcher";
+// @vitest-environment happy-dom
+import { describe, it, expect, vi } from "vitest";
+import { CommandRegistry } from "@/commands/CommandRegistry";
+import { CommandExecutor } from "@/commands/CommandExecutor";
+import { GestureActionExecutor } from "./GestureActionExecutor";
 import { GestureBindingRegistry } from "@/gesture/bindings/GestureBindingRegistry";
 import { GestureSession } from "@/gesture/GestureSession";
 import { DEFAULT_TRIGGER } from "@/gesture/types";
 import { RecognitionResult } from "@/gesture/GestureEngine";
 import { Direction } from "@/gesture/recognition/DirectionVectorizer";
-import { CommandContext } from "./types";
+import { CommandContext } from "@/commands/types";
+import type { ShortcutSpec } from "@/shortcuts/types";
+import { ShortcutExecutor as ShortcutExecutorReal } from "@/shortcuts/ShortcutExecutor";
 
 // --------------------------------------------------------------- helpers
+
+function makeBuiltinBinding(id: string, dirs: Direction[], commandId: string) {
+    return {
+        id,
+        enabled: true,
+        directions: dirs,
+        action: { type: "builtin" as const, commandId, commandParams: {} },
+    };
+}
+
+function makeShortcutBinding(id: string, dirs: Direction[], shortcut: ShortcutSpec) {
+    return {
+        id,
+        enabled: true,
+        directions: dirs,
+        action: { type: "shortcut" as const, shortcut },
+    };
+}
+
+const CTRL_P: ShortcutSpec = {
+    key: "p",
+    code: "KeyP",
+    keyCode: 80,
+    ctrlKey: true,
+    altKey: false,
+    shiftKey: false,
+    metaKey: false,
+};
 
 function setupRegistries() {
     const commandRegistry = new CommandRegistry();
@@ -39,16 +70,26 @@ function setupRegistries() {
             execute: () => ({ status: "executed" as const }),
         },
     ]);
-    const bindingRegistry = new GestureBindingRegistry(commandRegistry);
+    const bindingRegistry = new GestureBindingRegistry();
     bindingRegistry.registerMany([
-        { id: "default-L", enabled: true, directions: ["L" as Direction], commandId: "tabs.previous", commandParams: {} },
-        { id: "default-R", enabled: true, directions: ["R" as Direction], commandId: "tabs.next", commandParams: {} },
-        { id: "default-U", enabled: true, directions: ["U" as Direction], commandId: "scroll.top", commandParams: {} },
-        { id: "default-D", enabled: true, directions: ["D" as Direction], commandId: "scroll.bottom", commandParams: {} },
+        makeBuiltinBinding("default-L", ["L" as Direction], "tabs.previous"),
+        makeBuiltinBinding("default-R", ["R" as Direction], "tabs.next"),
+        makeBuiltinBinding("default-U", ["U" as Direction], "scroll.top"),
+        makeBuiltinBinding("default-D", ["D" as Direction], "scroll.bottom"),
     ]);
     const executor = new CommandExecutor(commandRegistry);
-    const dispatcher = new GestureCommandDispatcher(bindingRegistry, executor);
+    const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
     return { commandRegistry, bindingRegistry, executor, dispatcher };
+}
+
+/** Stub ShortcutExecutor for the happy-path dispatch tests. */
+class ShortcutExecutorStub extends ShortcutExecutorReal {
+    dispatchCount = 0;
+    override dispatch(spec: ShortcutSpec) {
+        this.dispatchCount++;
+        void spec;
+        return { status: "dispatched" as const, target: "stub" };
+    }
 }
 
 /** Build a COMPLETED session with the given points. */
@@ -115,15 +156,15 @@ function makeInvalidResult(invalidReason: "too-short" | "too-many-segments" | "e
     };
 }
 
-// ============================================================ dispatch — happy path
-describe("GestureCommandDispatcher — 完成且有效且有绑定时执行一次", () => {
+// ============================================================ dispatch — builtin happy path
+describe("GestureActionExecutor — 内置动作：完成且有效且有绑定时执行一次", () => {
     it("R 方向执行 tabs.next", async () => {
         const { dispatcher } = setupRegistries();
         const session = makeCompletedSession();
         const result = makeValidResult(["R"]);
         const dispatchResult = await dispatcher.dispatch(session, result);
         expect(dispatchResult.status).toBe("executed");
-        if (dispatchResult.status === "executed") {
+        if (dispatchResult.status === "executed" && dispatchResult.actionType === "builtin") {
             expect(dispatchResult.commandId).toBe("tabs.next");
             expect(dispatchResult.result.status).toBe("executed");
         }
@@ -135,15 +176,74 @@ describe("GestureCommandDispatcher — 完成且有效且有绑定时执行一�
         const result = makeValidResult(["L"]);
         const dispatchResult = await dispatcher.dispatch(session, result);
         expect(dispatchResult.status).toBe("executed");
-        if (dispatchResult.status === "executed") {
+        if (dispatchResult.status === "executed" && dispatchResult.actionType === "builtin") {
             expect(dispatchResult.commandId).toBe("tabs.previous");
         }
     });
 });
 
+// ============================================================ dispatch — shortcut
+describe("GestureActionExecutor — 快捷键动作", () => {
+    it("快捷键绑定调用 ShortcutExecutor（每手势一次）", async () => {
+        const commandRegistry = new CommandRegistry();
+        commandRegistry.register({
+            id: "unused.cmd",
+            title: "Unused",
+            group: "Test",
+            execute: () => ({ status: "executed" as const }),
+        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeShortcutBinding("sc-R", ["R" as Direction], CTRL_P));
+        const executor = new CommandExecutor(commandRegistry);
+        const shortcutExecutor = new ShortcutExecutorStub();
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, shortcutExecutor);
+
+        const session = makeCompletedSession();
+        const result = makeValidResult(["R"]);
+        const dispatchResult = await dispatcher.dispatch(session, result);
+        expect(dispatchResult.status).toBe("executed");
+        if (dispatchResult.status === "executed") {
+            expect(dispatchResult.actionType).toBe("shortcut");
+            expect(dispatchResult.result.status).toBe("dispatched");
+        }
+        expect(shortcutExecutor.dispatchCount).toBe(1);
+        // 同一 session 二次派发：跨类型去重 → shortcut 不再发送。
+        const second = await dispatcher.dispatch(session, result);
+        expect(second.status).toBe("skipped");
+        expect(shortcutExecutor.dispatchCount).toBe(1);
+    });
+
+    it("无效 action（unknown type）不执行", async () => {
+        const commandRegistry = new CommandRegistry();
+        commandRegistry.register({
+            id: "unused.cmd",
+            title: "Unused",
+            group: "Test",
+            execute: () => ({ status: "executed" as const }),
+        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register({
+            id: "bad-R",
+            enabled: true,
+            directions: ["R" as Direction],
+            // @ts-expect-error — unknown action type must never execute
+            action: { type: "javascript", script: "..." },
+        });
+        const executor = new CommandExecutor(commandRegistry);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
+        const session = makeCompletedSession();
+        const result = makeValidResult(["R"]);
+        const dispatchResult = await dispatcher.dispatch(session, result);
+        // The registry itself cannot know the type is invalid — the
+        // action executor must never execute unknown actions.  Dispatch
+        // skips silently.
+        expect(dispatchResult.status).toBe("skipped");
+    });
+});
+
 // ============================================================ dispatch — de-duplication
-describe("GestureCommandDispatcher — 同一 session 重复派发最多执行一次", () => {
-    it("第二次 dispatch 同一 session 命令实际只执行一次", async () => {
+describe("GestureActionExecutor — 同一 session 重复派发最多执行一次", () => {
+    it("builtin：第二次 dispatch 同一 session 命令实际只执行一次", async () => {
         let callCount = 0;
         const commandRegistry = new CommandRegistry();
         commandRegistry.register({
@@ -152,16 +252,10 @@ describe("GestureCommandDispatcher — 同一 session 重复派发最多执行�
             group: "Test",
             execute: () => { callCount++; return { status: "executed" as const }; },
         });
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
-        bindingRegistry.register({
-            id: "count-R",
-            enabled: true,
-            directions: ["R" as Direction],
-            commandId: "count.cmd",
-            commandParams: {},
-        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeBuiltinBinding("count-R", ["R" as Direction], "count.cmd"));
         const executor = new CommandExecutor(commandRegistry);
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, executor);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
 
         const session = makeCompletedSession();
         const result = makeValidResult(["R"]);
@@ -170,18 +264,13 @@ describe("GestureCommandDispatcher — 同一 session 重复派发最多执行�
         expect(first.status).toBe("executed");
 
         const second = await dispatcher.dispatch(session, result);
-        // The executor de-duplicates by sessionId — the command is not
-        // re-invoked; the second dispatch returns noop.
-        expect(second.status).toBe("executed");
-        if (second.status === "executed") {
-            expect(second.result.status).toBe("noop");
-        }
+        expect(second.status).toBe("skipped");
         expect(callCount).toBe(1);
     });
 });
 
 // ============================================================ dispatch — state guards
-describe("GestureCommandDispatcher — 状态守卫", () => {
+describe("GestureActionExecutor — 状态守卫", () => {
     it("CANCELLED 会话不执行", async () => {
         const { dispatcher } = setupRegistries();
         const session = makeCancelledSession();
@@ -200,7 +289,7 @@ describe("GestureCommandDispatcher — 状态守卫", () => {
 });
 
 // ============================================================ dispatch — result guards
-describe("GestureCommandDispatcher — 识别结果守卫", () => {
+describe("GestureActionExecutor — 识别结果守卫", () => {
     it("invalid 结果不执行", async () => {
         const { dispatcher } = setupRegistries();
         const session = makeCompletedSession();
@@ -235,7 +324,7 @@ describe("GestureCommandDispatcher — 识别结果守卫", () => {
 });
 
 // ============================================================ dispatch — binding guards
-describe("GestureCommandDispatcher — 绑定守卫", () => {
+describe("GestureActionExecutor — 绑定守卫", () => {
     it("无绑定不执行（D-R）", async () => {
         const { dispatcher } = setupRegistries();
         const session = makeCompletedSession();
@@ -254,45 +343,8 @@ describe("GestureCommandDispatcher — 绑定守卫", () => {
     });
 });
 
-// ============================================================ dispatch — command existence
-describe("GestureCommandDispatcher — 命令不存在不执行", () => {
-    it("绑定引用的命令未注册时不执行", async () => {
-        // Build a registry where the command is removed after binding.
-        const commandRegistry = new CommandRegistry();
-        commandRegistry.register({
-            id: "temp.cmd",
-            title: "Temp",
-            group: "Test",
-            execute: () => ({ status: "executed" as const }),
-        });
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
-        bindingRegistry.register({
-            id: "temp-R",
-            enabled: true,
-            directions: ["R" as Direction],
-            commandId: "temp.cmd",
-            commandParams: {},
-        });
-        const executor = new CommandExecutor(commandRegistry);
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, executor);
-
-        // Note: CommandRegistry has no unregister method, so we cannot
-        // truly remove the command.  Instead, we verify that resolve()
-        // returns null when the command is missing by using a binding
-        // whose commandId doesn't match.  Since the binding registry
-        // validates command existence at registration time, this scenario
-        // can only happen if commands are removed — which the current
-        // API doesn't support.  We verify the guard indirectly: a
-        // non-existent direction returns skipped.
-        const session = makeCompletedSession();
-        const result = makeValidResult(["U", "L"]);
-        const dispatchResult = await dispatcher.dispatch(session, result);
-        expect(dispatchResult.status).toBe("skipped");
-    });
-});
-
 // ============================================================ dispatch — sync / async commands
-describe("GestureCommandDispatcher — 同步和异步命令", () => {
+describe("GestureActionExecutor — 同步和异步命令", () => {
     it("同步命令正常返回", async () => {
         const { dispatcher } = setupRegistries();
         const session = makeCompletedSession();
@@ -315,16 +367,10 @@ describe("GestureCommandDispatcher — 同步和异步命令", () => {
                 return { status: "executed" as const };
             },
         });
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
-        bindingRegistry.register({
-            id: "async-R",
-            enabled: true,
-            directions: ["R" as Direction],
-            commandId: "async.cmd",
-            commandParams: {},
-        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeBuiltinBinding("async-R", ["R" as Direction], "async.cmd"));
         const executor = new CommandExecutor(commandRegistry);
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, executor);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
 
         const session = makeCompletedSession();
         const result = makeValidResult(["R"]);
@@ -337,7 +383,7 @@ describe("GestureCommandDispatcher — 同步和异步命令", () => {
 });
 
 // ============================================================ dispatch — error containment
-describe("GestureCommandDispatcher — 命令抛错转换为 failed", () => {
+describe("GestureActionExecutor — 命令抛错转换为 failed", () => {
     it("同步抛错", async () => {
         const commandRegistry = new CommandRegistry();
         commandRegistry.register({
@@ -346,16 +392,10 @@ describe("GestureCommandDispatcher — 命令抛错转换为 failed", () => {
             group: "Test",
             execute: () => { throw new Error("boom"); },
         });
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
-        bindingRegistry.register({
-            id: "throw-R",
-            enabled: true,
-            directions: ["R" as Direction],
-            commandId: "throw.cmd",
-            commandParams: {},
-        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeBuiltinBinding("throw-R", ["R" as Direction], "throw.cmd"));
         const executor = new CommandExecutor(commandRegistry);
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, executor);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
 
         const session = makeCompletedSession();
         const result = makeValidResult(["R"]);
@@ -374,23 +414,14 @@ describe("GestureCommandDispatcher — 命令抛错转换为 failed", () => {
             group: "Test",
             execute: async () => { throw new Error("async boom"); },
         });
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
-        bindingRegistry.register({
-            id: "reject-R",
-            enabled: true,
-            directions: ["R" as Direction],
-            commandId: "reject.cmd",
-            commandParams: {},
-        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeBuiltinBinding("reject-R", ["R" as Direction], "reject.cmd"));
         const executor = new CommandExecutor(commandRegistry);
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, executor);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
 
         const session = makeCompletedSession();
         const result = makeValidResult(["R"]);
 
-        // Track unhandled rejections via the Node.js process event.
-        // (This test runs in the "node" environment, so `window` is
-        // unavailable.)  The dispatch promise must not reject.
         const unhandled: unknown[] = [];
         const handler = (reason: unknown) => {
             unhandled.push(reason);
@@ -403,7 +434,6 @@ describe("GestureCommandDispatcher — 命令抛错转换为 failed", () => {
             if (dispatchResult.status === "executed") {
                 expect(dispatchResult.result.status).toBe("failed");
             }
-            // Give the microtask queue a tick to surface any unhandled rejection.
             await new Promise((r) => setTimeout(r, 10));
             expect(unhandled.length).toBe(0);
         } finally {
@@ -413,7 +443,7 @@ describe("GestureCommandDispatcher — 命令抛错转换为 failed", () => {
 });
 
 // ============================================================ dispatch — context snapshot
-describe("GestureCommandDispatcher — context 是独立快照", () => {
+describe("GestureActionExecutor — context 是独立快照", () => {
     it("修改原始 result.directions 不影响 CommandExecutor 接收的 context", async () => {
         const commandRegistry = new CommandRegistry();
         let capturedContext: CommandContext | null = null;
@@ -426,22 +456,15 @@ describe("GestureCommandDispatcher — context 是独立快照", () => {
                 return { status: "executed" as const };
             },
         });
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
-        bindingRegistry.register({
-            id: "capture-R",
-            enabled: true,
-            directions: ["R" as Direction],
-            commandId: "capture.cmd",
-            commandParams: {},
-        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeBuiltinBinding("capture-R", ["R" as Direction], "capture.cmd"));
         const executor = new CommandExecutor(commandRegistry);
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, executor);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
 
         const session = makeCompletedSession();
         const result = makeValidResult(["R"]);
         await dispatcher.dispatch(session, result);
 
-        // Mutate the original result after dispatch.
         result.directions.push("D" as Direction);
         result.directions[0] = "L" as Direction;
 
@@ -461,23 +484,16 @@ describe("GestureCommandDispatcher — context 是独立快照", () => {
                 return { status: "executed" as const };
             },
         });
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
-        bindingRegistry.register({
-            id: "capture-R",
-            enabled: true,
-            directions: ["R" as Direction],
-            commandId: "capture.cmd",
-            commandParams: {},
-        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeBuiltinBinding("capture-R", ["R" as Direction], "capture.cmd"));
         const executor = new CommandExecutor(commandRegistry);
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, executor);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
 
         const session = makeCompletedSession();
         const result = makeValidResult(["R"]);
         await dispatcher.dispatch(session, result);
 
         const originalPointCount = capturedContext!.points.length;
-        // Mutate the original session after dispatch.
         session.points.push({ x: 999, y: 999, t: 999 });
 
         expect(capturedContext!.points.length).toBe(originalPointCount);
@@ -495,34 +511,25 @@ describe("GestureCommandDispatcher — context 是独立快照", () => {
                 return { status: "executed" as const };
             },
         });
-        const bindingRegistry = new GestureBindingRegistry(commandRegistry);
-        bindingRegistry.register({
-            id: "capture-R",
-            enabled: true,
-            directions: ["R" as Direction],
-            commandId: "capture.cmd",
-            commandParams: {},
-        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeBuiltinBinding("capture-R", ["R" as Direction], "capture.cmd"));
         const executor = new CommandExecutor(commandRegistry);
-        const dispatcher = new GestureCommandDispatcher(bindingRegistry, executor);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
 
         const session = makeCompletedSession([{ x: 10, y: 20 }, { x: 110, y: 20 }]);
         const result = makeValidResult(["R"]);
         await dispatcher.dispatch(session, result);
 
-        // start and end should be independent objects with the right values.
         expect(capturedContext!.start).toEqual({ x: 10, y: 20 });
         expect(capturedContext!.end).toEqual({ x: 110, y: 20 });
-        // They must not be the same object.
         expect(capturedContext!.start).not.toBe(capturedContext!.end);
-        // They must not be references into session.points.
         expect(capturedContext!.start).not.toBe(session.points[0]);
         expect(capturedContext!.end).not.toBe(session.points[session.points.length - 1]);
     });
 });
 
 // ============================================================ dispatch — strict direction matching
-describe("GestureCommandDispatcher — 严格方向匹配", () => {
+describe("GestureActionExecutor — 严格方向匹配", () => {
     it("D-R 不误执行 D 的命令", async () => {
         const { dispatcher } = setupRegistries();
         const session = makeCompletedSession();
@@ -537,5 +544,78 @@ describe("GestureCommandDispatcher — 严格方向匹配", () => {
         const result = makeValidResult(["R", "D"]);
         const dispatchResult = await dispatcher.dispatch(session, result);
         expect(dispatchResult.status).toBe("skipped");
+    });
+});
+
+// ============================================================ dispatch — reset clears history
+describe("GestureActionExecutor — reset 清空历史", () => {
+    it("reset 后同一 session 可再次执行", async () => {
+        let callCount = 0;
+        const commandRegistry = new CommandRegistry();
+        commandRegistry.register({
+            id: "count.cmd",
+            title: "Count",
+            group: "Test",
+            execute: () => { callCount++; return { status: "executed" as const }; },
+        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeBuiltinBinding("count-R", ["R" as Direction], "count.cmd"));
+        const executor = new CommandExecutor(commandRegistry);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorStub());
+
+        const session = makeCompletedSession();
+        const result = makeValidResult(["R"]);
+        await dispatcher.dispatch(session, result);
+        expect(callCount).toBe(1);
+
+        // Both the action dispatcher and the command executor keep their
+        // own dedup history — reset both to allow re-execution.
+        dispatcher.reset();
+        executor.reset();
+        await dispatcher.dispatch(session, result);
+        expect(callCount).toBe(2);
+    });
+});
+
+// ============================================================ ShortcutExecutor real dispatch
+describe("GestureActionExecutor — 真实 ShortcutExecutor 分发", () => {
+    it("快捷键绑定把合成 keydown 派发到 activeElement", async () => {
+        const commandRegistry = new CommandRegistry();
+        commandRegistry.register({
+            id: "unused.cmd",
+            title: "Unused",
+            group: "Test",
+            execute: () => ({ status: "executed" as const }),
+        });
+        const bindingRegistry = new GestureBindingRegistry();
+        bindingRegistry.register(makeShortcutBinding("sc-R", ["R" as Direction], CTRL_P));
+        const executor = new CommandExecutor(commandRegistry);
+        const dispatcher = new GestureActionExecutor(bindingRegistry, executor, new ShortcutExecutorReal());
+
+        const listener = vi.fn();
+        const target = document.createElement("input");
+        document.body.appendChild(target);
+        target.focus();
+        target.addEventListener("keydown", listener);
+
+        const session = makeCompletedSession();
+        const result = makeValidResult(["R"]);
+        const dispatchResult = await dispatcher.dispatch(session, result);
+        expect(dispatchResult.status).toBe("executed");
+        if (dispatchResult.status === "executed") {
+            expect(dispatchResult.result.status).toBe("dispatched");
+        }
+        expect(listener).toHaveBeenCalledTimes(1);
+        const event = listener.mock.calls[0][0] as KeyboardEvent;
+        expect(event.type).toBe("keydown");
+        expect(event.bubbles).toBe(true);
+        expect(event.cancelable).toBe(true);
+        expect(event.key).toBe("p");
+        expect(event.code).toBe("KeyP");
+        expect(event.keyCode).toBe(80);
+        expect(event.which).toBe(80);
+        expect(event.ctrlKey).toBe(true);
+        expect(event.isTrusted ?? false).toBe(false); // never forged
+        target.remove();
     });
 });

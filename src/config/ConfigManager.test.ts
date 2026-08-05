@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { ConfigManager, ConfigPersistenceHost } from "./ConfigManager";
 import { createDefaultConfig } from "./defaults";
-import { GestureFlowConfig } from "./types";
+import { GestureFlowConfig, CURRENT_CONFIG_VERSION } from "./types";
 import type { Direction } from "@/gesture/recognition/DirectionVectorizer";
 
 const AVAILABLE_COMMANDS = new Set([
@@ -99,7 +99,7 @@ describe("ConfigManager — 加载", () => {
         const result = await mgr.load();
         expect(result.ok).toBe(true);
         expect(result.source).toBe("normalized");
-        expect(result.config.version).toBe(1);
+        expect(result.config.version).toBe(CURRENT_CONFIG_VERSION);
     });
 
     it("无效数据回退默认配置", async () => {
@@ -413,7 +413,9 @@ describe("ConfigManager — 绑定深拷贝", () => {
         const mgr = createManager(mock.host);
         await mgr.load();
         const cfg = createDefaultConfig();
-        cfg.bindings[0].commandId = "unknown.cmd";
+        if (cfg.bindings[0].action.type === "builtin") {
+            cfg.bindings[0].action.commandId = "unknown.cmd";
+        }
         const result = await mgr.importJson(cfg);
         expect(result.status).toBe("imported");
         expect(mgr.getConfig().bindings[0].enabled).toBe(false);
@@ -446,8 +448,7 @@ describe("ConfigManager — 绑定深拷贝", () => {
                 id: "custom-1",
                 enabled: true,
                 directions: ["R", "D"] as Direction[],
-                commandId: "tabs.next",
-                commandParams: {},
+                action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} },
             },
         ];
         const result = await mgr.updateConfig({ bindings: custom });
@@ -456,7 +457,11 @@ describe("ConfigManager — 绑定深拷贝", () => {
         const mgr2 = createManager(mock.host);
         await mgr2.load();
         expect(mgr2.getConfig().bindings).toEqual([
-            expect.objectContaining({ id: "custom-1", directions: ["R", "D"] }),
+            expect.objectContaining({
+                id: "custom-1",
+                directions: ["R", "D"],
+                action: { type: "builtin", commandId: "tabs.next", commandParams: {} },
+            }),
         ]);
     });
 });

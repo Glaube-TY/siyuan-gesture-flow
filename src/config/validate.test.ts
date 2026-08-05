@@ -185,16 +185,20 @@ describe("validateConfig — 版本检查", () => {
 describe("validateConfig — 绑定校验", () => {
     it("未知 commandId 时禁用绑定并规范化", () => {
         const cfg = createDefaultConfig();
-        const bindings = cfg.bindings.map((b, i) =>
-            i === 0 ? { ...b, commandId: "unknown.cmd" } : b,
-        );
+        const bindings = cfg.bindings.map((b, i) => {
+            if (i !== 0) return b;
+            if (b.action.type !== "builtin") return b;
+            return { ...b, action: { ...b.action, commandId: "unknown.cmd" } };
+        });
         const result = validateConfig(
             { ...cfg, bindings },
             { availableCommandIds: AVAILABLE_COMMANDS },
         );
         expect(result.status).toBe("normalized");
         expect(result.config.bindings[0].enabled).toBe(false);
-        expect(result.config.bindings[0].commandId).toBe("unknown.cmd");
+        if (result.config.bindings[0].action.type === "builtin") {
+            expect(result.config.bindings[0].action.commandId).toBe("unknown.cmd");
+        }
     });
 
     it("重复 binding id 拒绝", () => {
@@ -247,9 +251,11 @@ describe("validateConfig — 绑定校验", () => {
 
     it("commandParams 非对象时拒绝", () => {
         const cfg = createDefaultConfig();
-        const bindings = cfg.bindings.map((b, i) =>
-            i === 0 ? { ...b, commandParams: "not an object" as never } : b,
-        );
+        const bindings = cfg.bindings.map((b, i) => {
+            if (i !== 0) return b;
+            if (b.action.type !== "builtin") return b;
+            return { ...b, action: { ...b.action, commandParams: "not an object" as never } };
+        });
         const result = validateConfig(
             { ...cfg, bindings },
             { availableCommandIds: AVAILABLE_COMMANDS },
@@ -283,7 +289,7 @@ describe("validateConfig — 绑定校验", () => {
     it("4 方向模式下含斜向的绑定被明确拒绝", () => {
         const cfg = createDefaultConfig();
         const bindings = [
-            { id: "diag", enabled: true, directions: ["UR" as const], commandId: "tabs.next", commandParams: {} },
+            { id: "diag", enabled: true, directions: ["UR" as const], action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} } },
         ];
         const result = validateConfig(
             { ...cfg, recognizer: { ...cfg.recognizer, directionMode: 4 }, bindings },
@@ -295,7 +301,7 @@ describe("validateConfig — 绑定校验", () => {
     it("8 方向模式下斜向绑定合法", () => {
         const cfg = createDefaultConfig();
         const bindings = [
-            { id: "diag", enabled: true, directions: ["UR" as const, "DL" as const], commandId: "tabs.next", commandParams: {} },
+            { id: "diag", enabled: true, directions: ["UR" as const, "DL" as const], action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} } },
         ];
         const result = validateConfig(
             { ...cfg, recognizer: { ...cfg.recognizer, directionMode: 8 }, bindings },
@@ -308,7 +314,7 @@ describe("validateConfig — 绑定校验", () => {
     it("4 方向模式下禁用的斜向绑定允许保留（valid）", () => {
         const cfg = createDefaultConfig();
         const bindings = [
-            { id: "diag-off", enabled: false, directions: ["UR" as const], commandId: "tabs.next", commandParams: {} },
+            { id: "diag-off", enabled: false, directions: ["UR" as const], action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} } },
         ];
         const result = validateConfig(
             { ...cfg, recognizer: { ...cfg.recognizer, directionMode: 4 }, bindings },
@@ -322,12 +328,109 @@ describe("validateConfig — 绑定校验", () => {
     it("4 方向模式下启用的斜向绑定仍被拒绝", () => {
         const cfg = createDefaultConfig();
         const bindings = [
-            { id: "diag-on", enabled: true, directions: ["UR" as const], commandId: "tabs.next", commandParams: {} },
+            { id: "diag-on", enabled: true, directions: ["UR" as const], action: { type: "builtin" as const, commandId: "tabs.next", commandParams: {} } },
         ];
         const result = validateConfig(
             { ...cfg, recognizer: { ...cfg.recognizer, directionMode: 4 }, bindings },
             { availableCommandIds: AVAILABLE_COMMANDS },
         );
+        expect(result.status).toBe("invalid");
+    });
+});
+
+// ============================================================ action 校验（stage 6A）
+
+describe("validateConfig — action 校验（stage 6A）", () => {
+    const validShortcut = {
+        key: "p",
+        code: "KeyP",
+        keyCode: 80,
+        ctrlKey: true,
+        altKey: false,
+        shiftKey: false,
+        metaKey: false,
+    };
+
+    function withBindings(bindings: unknown[]) {
+        const cfg = createDefaultConfig();
+        return validateConfig(
+            { ...cfg, bindings },
+            { availableCommandIds: AVAILABLE_COMMANDS },
+        );
+    }
+
+    it("shortcut 动作合法时通过", () => {
+        const result = withBindings([
+            { id: "sc-1", enabled: true, directions: ["R" as const], action: { type: "shortcut", shortcut: validShortcut } },
+        ]);
+        expect(result.status).toBe("valid");
+        const a = result.config.bindings[0].action;
+        expect(a.type).toBe("shortcut");
+        if (a.type === "shortcut") {
+            expect(a.shortcut).toEqual(validShortcut);
+        }
+    });
+
+    it("shortcut 主键为空 / 纯修饰键 / 非法 keyCode 被拒绝", () => {
+        expect(withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "shortcut", shortcut: { ...validShortcut, key: "" } } },
+        ]).status).toBe("invalid");
+        expect(withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "shortcut", shortcut: { ...validShortcut, key: "Control" } } },
+        ]).status).toBe("invalid");
+        expect(withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "shortcut", shortcut: { ...validShortcut, keyCode: 1.5 } } },
+        ]).status).toBe("invalid");
+    });
+
+    it("shortcut 修饰字段非布尔 / 含函数被拒绝", () => {
+        expect(withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "shortcut", shortcut: { ...validShortcut, ctrlKey: "yes" } } },
+        ]).status).toBe("invalid");
+        expect(withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "shortcut", shortcut: { ...validShortcut, onDown: () => {} } } },
+        ]).status).toBe("invalid");
+    });
+
+    it("shortcut 缺失（无 shortcut 字段）被拒绝", () => {
+        expect(withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "shortcut" } },
+        ]).status).toBe("invalid");
+    });
+
+    it("builtin 动作 commandId 空 / 非字符串被拒绝", () => {
+        expect(withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "builtin", commandId: "", commandParams: {} } },
+        ]).status).toBe("invalid");
+        expect(withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "builtin", commandId: 42, commandParams: {} } },
+        ]).status).toBe("invalid");
+    });
+
+    it("未知 action.type 被拒绝（不静默转 builtin）", () => {
+        const result = withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "mystery", payload: 1 } },
+        ]);
+        expect(result.status).toBe("invalid");
+        if (result.status === "invalid") {
+            expect(result.errors.join(" ")).toContain("mystery");
+        }
+    });
+
+    it("javascript action 被拒绝", () => {
+        const result = withBindings([
+            { id: "x", enabled: true, directions: ["R" as const], action: { type: "javascript", script: "alert(1)" } },
+        ]);
+        expect(result.status).toBe("invalid");
+        if (result.status === "invalid") {
+            expect(result.errors.join(" ")).toContain("javascript");
+        }
+    });
+
+    it("action 缺失被拒绝", () => {
+        const result = withBindings([
+            { id: "x", enabled: true, directions: ["R" as const] },
+        ]);
         expect(result.status).toBe("invalid");
     });
 });

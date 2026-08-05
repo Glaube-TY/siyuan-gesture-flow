@@ -29,7 +29,7 @@ describe("defaults — 默认配置", () => {
 
     it("默认绑定 L/R/U/D 对应正确的命令", () => {
         const cfg = createDefaultConfig();
-        const byDir = new Map(cfg.bindings.map((b) => [b.directions.join("-"), b.commandId]));
+        const byDir = new Map(cfg.bindings.map((b) => [b.directions.join("-"), (b.action as { commandId?: string }).commandId]));
         expect(byDir.get("L")).toBe("tabs.previous");
         expect(byDir.get("R")).toBe("tabs.next");
         expect(byDir.get("U")).toBe("scroll.top");
@@ -54,13 +54,17 @@ describe("defaults — 深拷贝不可变性", () => {
         a.recognizer.directionMode = 8;
         a.bindings[0].enabled = false;
         a.bindings[0].directions.push("U" as never);
-        a.bindings[0].commandParams.foo = "bar";
+        if (a.bindings[0].action.type === "builtin") {
+            a.bindings[0].action.commandParams.foo = "bar";
+        }
         const b = createDefaultConfig();
         expect(b.trigger.activationDistance).toBe(16);
         expect(b.recognizer.directionMode).toBe(4);
         expect(b.bindings[0].enabled).toBe(true);
         expect(b.bindings[0].directions).toEqual(["L"]);
-        expect(b.bindings[0].commandParams).toEqual({});
+        if (b.bindings[0].action.type === "builtin") {
+            expect(b.bindings[0].action.commandParams).toEqual({});
+        }
     });
 
     it("deepCloneConfig 返回的 bindings 是深度独立的", () => {
@@ -70,19 +74,21 @@ describe("defaults — 深拷贝不可变性", () => {
         for (let i = 0; i < a.bindings.length; i++) {
             expect(a.bindings[i]).not.toBe(b.bindings[i]);
             expect(a.bindings[i].directions).not.toBe(b.bindings[i].directions);
-            expect(a.bindings[i].commandParams).not.toBe(b.bindings[i].commandParams);
+            expect(a.bindings[i].action).not.toBe(b.bindings[i].action);
         }
     });
 
-    it("cloneBinding 返回独立副本", () => {
+    it("cloneBinding 返回独立副本（含 action）", () => {
         const src = createDefaultConfig().bindings[0];
         const copy = cloneBinding(src);
         expect(copy).not.toBe(src);
         expect(copy.directions).not.toBe(src.directions);
-        expect(copy.commandParams).not.toBe(src.commandParams);
+        expect(copy.action).not.toBe(src.action);
         copy.directions.push("U" as never);
-        copy.commandParams.foo = "bar";
+        if (copy.action.type === "builtin" && src.action.type === "builtin") {
+            copy.action.commandParams.foo = "bar";
+            expect(src.action.commandParams).toEqual({});
+        }
         expect(src.directions).toEqual(["L"]);
-        expect(src.commandParams).toEqual({});
     });
 });

@@ -1,6 +1,5 @@
 // @vitest-environment happy-dom
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { CommandRegistry } from "@/commands/CommandRegistry";
 import { GestureBindingRegistry } from "./GestureBindingRegistry";
 import { DEFAULT_BINDINGS } from "./defaultBindings";
 import { createCommandLabelResolver } from "./CommandLabelResolver";
@@ -28,17 +27,16 @@ function installMockCanvas() {
 }
 
 function setupRegistries(i18n: Record<string, string>) {
-    const commandRegistry = new CommandRegistry();
-    commandRegistry.registerMany([
-        { id: "tabs.previous", title: "cmdTabsPrevious", group: "Tabs", execute: () => ({ status: "executed" }) },
-        { id: "tabs.next", title: "cmdTabsNext", group: "Tabs", execute: () => ({ status: "executed" }) },
-        { id: "scroll.top", title: "cmdScrollTop", group: "Scrolling", execute: () => ({ status: "executed" }) },
-        { id: "scroll.bottom", title: "cmdScrollBottom", group: "Scrolling", execute: () => ({ status: "executed" }) },
-    ]);
-    const bindingRegistry = new GestureBindingRegistry(commandRegistry);
+    const bindingRegistry = new GestureBindingRegistry();
     bindingRegistry.registerMany(DEFAULT_BINDINGS);
-    const resolver = createCommandLabelResolver(bindingRegistry, i18n);
-    return { commandRegistry, bindingRegistry, resolver };
+    const commandTitles = new Map<string, string>([
+        ["tabs.previous", "cmdTabsPrevious"],
+        ["tabs.next", "cmdTabsNext"],
+        ["scroll.top", "cmdScrollTop"],
+        ["scroll.bottom", "cmdScrollBottom"],
+    ]);
+    const resolver = createCommandLabelResolver(bindingRegistry, i18n, { commandTitles });
+    return { bindingRegistry, resolver };
 }
 
 beforeEach(() => {
