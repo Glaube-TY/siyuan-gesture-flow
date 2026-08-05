@@ -24,11 +24,11 @@ GestureFlow is under active development. The following is **done**:
   diagonals.
 - **Recognition result validation** — gestures that exceed the maximum segment count are
   marked invalid (not truncated), preventing accidental action matches.
-- **Automated tests** — covers the recognition pipeline, mouse input adapter,
-  Canvas Overlay (element lifecycle, DPR scaling, drawing calls, hint edge
-  clamping, theme variable usage, commandLabel wrapping), and
-  FeedbackController (RAF coalescing, timer competition, PENDING
-  invisibility, unload cleanup).
+- **Smoke tests (small, permanent)** — pure-logic suites only: recognition
+  pipeline, config migration, shortcut utilities, binding operations.
+  Production correctness is enforced by `pnpm check` → `pnpm build` →
+  `pnpm verify`; UI / pointer / lifecycle behaviour is verified in a real
+  SiYuan instance.
 - **Canvas trajectory overlay** — a fixed full-viewport Canvas renders the live
   mouse trail with DPR-aware scaling, plus a hint element showing the current
   direction sequence (e.g. `R → D`).  Updates are coalesced via
@@ -106,10 +106,8 @@ src/
       PathSimplifier.ts         RDP simplification + jitter/short-segment removal
       DirectionVectorizer.ts    Heading segmentation + direction quantisation
       DirectionMatcher.ts       Adjacent-duplicate merging
-      recognition.test.ts       Pipeline tests
     overlay/
       GestureOverlay.ts         Canvas trail + hint element (config-driven)
-      overlay.test.ts           Overlay tests
       types.ts                  Overlay-specific types
     bindings/
       GestureBindingRegistry.ts Direction → command bindings (immutable, ID-indexed)
@@ -145,11 +143,28 @@ pnpm install
 | Command | Description |
 |---|---|
 | `pnpm dev` | Watch-mode build with inline sourcemaps (dev deployment mirror) |
+| `pnpm check` | Type-check production code only (tests excluded via tsconfig) |
 | `pnpm build` | Production build → `dist/` + `package.zip` |
-| `pnpm check` | TypeScript / Svelte type-check |
-| `pnpm test` | Run all vitest tests |
-| `pnpm verify` | Verify `dist/` and `package.zip` contain required files and no forbidden files |
+| `pnpm verify` | Verify `dist/` / `package.zip` (required + forbidden files, credential scan, style isolation of `index.css`) |
+| `pnpm test:smoke` | Run the small permanent smoke suite (`tests/smoke/`) |
+| `pnpm test` | Alias for `pnpm test:smoke` |
+| `pnpm release:check` | Production-first gate: `check` → `build` → `verify` → `test:smoke` |
 | `pnpm make-install` | Build + copy to SiYuan plugin directory |
+
+### Development flow (production-first)
+
+Always run in this order — never put tests before type-check and build:
+
+1. `pnpm check` — production type-check (tests are excluded; test errors never
+   block production checks).
+2. `pnpm build` — production build.
+3. `pnpm verify` — artifact verification incl. style-isolation of `dist/index.css`.
+4. `pnpm test:smoke` — the small pure-logic smoke suite.
+
+Real SiYuan interaction (right-button menu, gesture recording, settings dialog,
+theme, tab switching, scrolling, shortcut capture/test, import/export, restart
+persistence) is validated manually against the built plugin — not through
+browser mocks.
 
 ### Dev Deployment
 

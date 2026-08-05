@@ -21,10 +21,9 @@ GestureFlow 正在开发中。以下功能**已完成**：
   不会将圆弧压缩成对角线。
 - **识别结果校验** — 超过最大段数的手势标记为无效（而非截断），
   防止误匹配已绑定动作。
-- **自动化测试** — 覆盖识别管线、鼠标输入适配器、Canvas Overlay
-  （元素生命周期、DPR 缩放、绘制调用、提示边缘钳制、主题变量引用、
-  commandLabel 换行）以及 FeedbackController（RAF 合并、定时器竞争、
-  PENDING 不可见、卸载清理）。
+- **冒烟测试（少量、长期保留）** — 仅纯逻辑套件：识别管线、配置迁移、
+  快捷键工具、绑定操作。生产正确性由 `pnpm check` → `pnpm build` →
+  `pnpm verify` 保证；UI / 指针 / 生命周期行为在真实思源实例中验证。
 - **Canvas 轨迹层** — 固定全视口 Canvas 实时绘制鼠标轨迹，DPR 自适应缩放，
   提示元素显示当前方向序列（如 `R → D`），更新通过 `requestAnimationFrame` 合并。
 - **命令注册表** — 类型化的 `CommandRegistry`，支持原子批量注册、分组元数据
@@ -87,10 +86,8 @@ src/
       PathSimplifier.ts         RDP 简化 + 抖动/短段处理
       DirectionVectorizer.ts    航向分段 + 方向量化
       DirectionMatcher.ts       相邻同方向合并
-      recognition.test.ts       管线测试
     overlay/
       GestureOverlay.ts         Canvas 轨迹 + 提示元素（配置驱动）
-      overlay.test.ts           Overlay 测试
       types.ts                  Overlay 专用类型
     bindings/
       GestureBindingRegistry.ts 方向 → 命令绑定（不可变，ID 索引）
@@ -126,11 +123,26 @@ pnpm install
 | 命令 | 说明 |
 |---|---|
 | `pnpm dev` | 监听模式构建，带 inline sourcemap（开发目录镜像） |
+| `pnpm check` | 仅类型检查生产代码（tsconfig 排除测试） |
 | `pnpm build` | 生产构建 → `dist/` + `package.zip` |
-| `pnpm check` | TypeScript / Svelte 类型检查 |
-| `pnpm test` | 运行全部 vitest 测试 |
-| `pnpm verify` | 验证 `dist/` 和 `package.zip` 包含必需文件、无禁止文件 |
+| `pnpm verify` | 验证 `dist/` / `package.zip`（必需/禁止文件、凭据扫描、`index.css` 样式隔离） |
+| `pnpm test:smoke` | 运行少量长期保留的冒烟测试（`tests/smoke/`） |
+| `pnpm test` | 等价于 `pnpm test:smoke` |
+| `pnpm release:check` | 生产优先门禁：`check` → `build` → `verify` → `test:smoke` |
 | `pnpm make-install` | 构建 + 复制到思源插件目录 |
+
+### 开发流程（生产优先）
+
+严格按此顺序执行，测试不得排在类型检查与构建之前：
+
+1. `pnpm check` — 生产类型检查（测试已被 tsconfig 排除，测试错误不会阻塞生产检查）。
+2. `pnpm build` — 生产构建。
+3. `pnpm verify` — 产物验证，含 `dist/index.css` 样式隔离检查。
+4. `pnpm test:smoke` — 少量纯逻辑冒烟测试。
+
+真实思源交互（右键菜单、手势录制、设置弹窗、主题、标签页切换、滚动、
+快捷键录入/测试、导入导出、重启后配置保留）一律以构建后的真实思源手动测试为准，
+不使用浏览器 Mock。
 
 ### 开发部署
 

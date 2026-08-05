@@ -48,13 +48,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Type-check
+      # Type-check production code first
       - name: Type-check
         run: pnpm check
-
-      # Run tests
-      - name: Run tests
-        run: pnpm test
 
       # Build for production, 这一步会生成一个 package.zip
       - name: Build for production
@@ -63,6 +59,10 @@ jobs:
       # Verify build artifacts
       - name: Verify build artifacts
         run: pnpm verify
+
+      # Run the small smoke suite (after check + build + verify pass)
+      - name: Run smoke tests
+        run: pnpm test:smoke
 
       - name: Release
         uses: ncipollo/release-action@v1

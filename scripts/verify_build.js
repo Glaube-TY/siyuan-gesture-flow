@@ -395,11 +395,94 @@ function verifyZip() {
     ok("package.zip content scan complete");
 }
 
+// --------------------------------------------------------------- style checks
+
+/**
+ * Style-isolation checks on the built `dist/index.css` (stage 6A policy).
+ *
+ * The plugin must never override SiYuan's global styles:
+ * - every rule touching a `.b3-*` class must be scoped under a `gf-`
+ *   plugin class (Svelte scoped styles and the global index.scss both
+ *   satisfy this by construction);
+ * - global selectors (`body`, `html`, `:root`, `.layout`) are forbidden;
+ * - `!important` is forbidden;
+ * - `:global` must not appear in the built output.
+ */
+function verifyStyles(cssPath) {
+    if (!fs.existsSync(cssPath)) {
+        warn("dist/index.css not found — skipping style checks");
+        return;
+    }
+    const css = fs.readFileSync(cssPath, "utf-8");
+
+    // Split the CSS into top-level rules with a character-level brace
+    // scanner (string- and comment-aware) so minified single-line output
+    // is split correctly.
+    const rules = [];
+    let start = 0;
+    let depth = 0;
+    let inString = null;
+    let inComment = false;
+    for (let i = 0; i < css.length; i++) {
+        const ch = css[i];
+        if (inComment) {
+            if (ch === "*" && css[i + 1] === "/") { inComment = false; i++; }
+            continue;
+        }
+        if (inString) {
+            if (ch === "\\") { i++; continue; }
+            if (ch === inString) inString = null;
+            continue;
+        }
+        if (ch === "/" && css[i + 1] === "*") { inComment = true; i++; continue; }
+        if (ch === '"' || ch === "'") { inString = ch; continue; }
+        if (ch === "{") {
+            depth++;
+        } else if (ch === "}") {
+            depth--;
+            if (depth === 0) {
+                rules.push(css.slice(start, i + 1));
+                start = i + 1;
+            }
+        }
+    }
+
+    let checked = 0;
+    for (const rule of rules) {
+        const braceIdx = rule.indexOf("{");
+        const selector = braceIdx >= 0 ? rule.slice(0, braceIdx) : rule;
+        const body = braceIdx >= 0 ? rule.slice(braceIdx + 1) : "";
+        const sel = selector.trim();
+        if (!sel) continue;
+        checked++;
+
+        if (/!important\b/i.test(body)) {
+            fail(`dist/index.css — !important in rule: ${sel}`);
+        }
+        if (
+            /(^|[,\s])(body|html)(?=[\s,{.#:[]|$)/.test(sel) ||
+            /(^|[,\s]):root(?=[\s,{.#:[]|$)/.test(sel) ||
+            /(^|[,\s])\.layout(?=[\s,{.#:[]|$)/.test(sel)
+        ) {
+            fail(`dist/index.css — global selector in rule: ${sel}`);
+        }
+        if (/:global/.test(sel)) {
+            fail(`dist/index.css — :global in rule: ${sel}`);
+        }
+        // Any rule touching a b3-* class must live under a gf- scope.
+        if (/\.b3-/.test(sel) && !/gf-/.test(sel)) {
+            fail(`dist/index.css — unscoped b3-* selector: ${sel}`);
+        }
+    }
+    ok(`dist/index.css style isolation checks complete (${checked} rules)`);
+}
+
 // --------------------------------------------------------------- main
 
 console.log("=== Build Artifact Verification ===");
 verifyDist();
 verifyZip();
+verifyStyles(path.join(DIST_DIR, "index.css"));
 
 console.log("");
 if (errors === 0) {
