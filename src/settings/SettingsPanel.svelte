@@ -40,7 +40,6 @@ import { showSafeConfirm } from "./confirmDialog";
     export let i18n: Record<string, string>;
     export let commandCatalog: SettingCommandItem[] = [];
     export let onStatus: (message: string, isError: boolean) => void = () => {};
-    export let version = "";
 
     let config: GestureFlowConfig = configManager.getConfig();
     let activeTab: "general" | "recognition" | "display" | "bindings" | "data" | "about" = "general";
@@ -898,7 +897,7 @@ import { showSafeConfirm } from "./confirmDialog";
         {/if}
 
         {#if activeTab === "about"}
-            <AboutPlugin {i18n} {version} />
+            <AboutPlugin {i18n} />
         {/if}
     </main>
 </div>

@@ -9,8 +9,6 @@
     } from "@/meta/links";
 
     export let i18n: Record<string, string> = {};
-    /** Plugin version — passed in by the settings panel (never hard-coded). */
-    export let version: string;
 
     // Remote QR images: hide a broken one (onerror), keep the support
     // button as the always-available fallback.
@@ -22,9 +20,6 @@
     <header class="gf-about-header">
         <h4 class="gf-about-title">GestureFlow</h4>
         <div class="gf-about-meta">
-            <span class="gf-about-meta-item">
-                {i18n.aboutVersion ?? "Version"}: {version}
-            </span>
             <span class="gf-about-meta-item">Glaube-TY</span>
             <span class="gf-about-meta-item">MIT License</span>
         </div>

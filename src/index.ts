@@ -2,7 +2,6 @@ import { Plugin, showMessage, globalCommand } from "siyuan";
 import "./index.scss";
 import { SettingsDialog } from "@/settings/SettingsDialog";
 import { closeAllSafeConfirms } from "@/settings/confirmDialog";
-import pluginMeta from "../plugin.json";
 import { ConfigManager, CONFIG_STORAGE_NAME } from "@/config/ConfigManager";
 import type { ConfigPersistenceHost } from "@/config/ConfigManager";
 import type { ConfigLoadResult } from "@/config/types";
@@ -240,7 +239,6 @@ export default class GestureFlowPlugin extends Plugin {
             configManager: this.configManager,
             i18n: this.i18n ?? {},
             commandCatalog,
-            version: pluginMeta.version,
             onStatus: (message: string, isError: boolean) => {
                 showMessage(message, 2000, isError ? "error" : "info");
             },

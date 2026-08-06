@@ -73,8 +73,6 @@ export class SettingsDialog {
         i18n: Record<string, string>;
         commandCatalog: SettingCommandItem[];
         onStatus: (message: string, isError: boolean) => void;
-        /** Plugin version shown in the About tab (from plugin.json). */
-        version?: string;
     }): void {
         if (this.destroyed) return;
         if (this.state) return; // already open — prevent duplicate
@@ -139,7 +137,6 @@ export class SettingsDialog {
                 i18n: opts.i18n,
                 commandCatalog: opts.commandCatalog,
                 onStatus: opts.onStatus,
-                version: opts.version ?? "",
             },
         });
     }

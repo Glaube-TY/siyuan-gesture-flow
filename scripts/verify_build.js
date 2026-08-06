@@ -668,6 +668,16 @@ function verifyQuietRuntime() {
                 problems++;
             }
         }
+        // The About page must not carry a version (removed from the data
+        // flow); the About-tab version prop wiring must be gone too.
+        if (js.includes("aboutVersion")) {
+            fail("dist/index.js still references aboutVersion i18n key");
+            problems++;
+        }
+        if (js.includes("opts.version")) {
+            fail("dist/index.js still passes a version option to the settings dialog");
+            problems++;
+        }
     }
 
     if (problems === 0) {
