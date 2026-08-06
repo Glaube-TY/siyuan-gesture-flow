@@ -1,4 +1,4 @@
-name: Create Release on Tag Push
+name: Release
 
 on:
   push:
@@ -8,96 +8,97 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+
     steps:
-      # Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Version consistency: package.json.version === plugin.json.version,
-      # the tag must equal "v" + that version, and the version must be
-      # valid SemVer.  Any mismatch fails the workflow before building.
-      - name: Validate version consistency
-        shell: bash
-        run: |
-          set -euo pipefail
-          PKG_VER=$(node -p "require('./package.json').version")
-          PLUGIN_VER=$(node -p "require('./plugin.json').version")
-          echo "package.json version: $PKG_VER"
-          echo "plugin.json version: $PLUGIN_VER"
-          echo "tag: ${{ github.ref_name }}"
-          if [ "$PKG_VER" != "$PLUGIN_VER" ]; then
-            echo "::error::version mismatch: package.json=$PKG_VER plugin.json=$PLUGIN_VER"
-            exit 1
-          fi
-          if [ "v$PLUGIN_VER" != "${{ github.ref_name }}" ]; then
-            echo "::error::tag must equal v$PLUGIN_VER, got ${{ github.ref_name }}"
-            exit 1
-          fi
-          if ! [[ "$PLUGIN_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::invalid SemVer: $PLUGIN_VER"
-            exit 1
-          fi
-          echo "Version consistency OK: v$PLUGIN_VER"
-
-      # Install Node.js
-      - name: Install Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-          registry-url: "https://registry.npmjs.org"
-
-      # Install pnpm (must match packageManager field exactly)
-      - name: Install pnpm
+      - name: Set up pnpm
         uses: pnpm/action-setup@v4
-        id: pnpm-install
         with:
           version: 10.14.0
           run_install: false
 
-      # Get pnpm store directory
-      - name: Get pnpm store directory
-        id: pnpm-cache
-        shell: bash
-        run: |
-          echo "STORE_PATH=$(pnpm store path)" >> $GITHUB_OUTPUT
-
-      # Setup pnpm cache
-      - name: Setup pnpm cache
-        uses: actions/cache@v4
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
         with:
-          path: ${{ steps.pnpm-cache.outputs.STORE_PATH }}
-          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
-          restore-keys: |
-            ${{ runner.os }}-pnpm-store-
+          node-version: 20
+          cache: pnpm
 
-      # Install dependencies (frozen lockfile for reproducible CI)
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Type-check production code first
-      - name: Type-check
+      - name: Validate version and tag
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+
+          const readJson = (file) => {
+            try {
+              return JSON.parse(fs.readFileSync(file, "utf8"));
+            } catch (error) {
+              console.error(`::error file=${file}::Unable to parse ${file}: ${error.message}`);
+              process.exit(1);
+            }
+          };
+
+          const packageJson = readJson("package.json");
+          const pluginJson = readJson("plugin.json");
+          const tag = process.env.RELEASE_TAG;
+          const semver = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/;
+
+          if (!semver.test(packageJson.version)) {
+            console.error(`::error::Invalid SemVer in package.json: ${packageJson.version}`);
+            process.exit(1);
+          }
+          if (packageJson.version !== pluginJson.version) {
+            console.error(`::error::Version mismatch: package.json=${packageJson.version}, plugin.json=${pluginJson.version}`);
+            process.exit(1);
+          }
+          if (tag !== `v${pluginJson.version}`) {
+            console.error(`::error::Tag ${tag} does not match plugin version v${pluginJson.version}`);
+            process.exit(1);
+          }
+
+          console.log(`Validated ${tag}: package.json and plugin.json are both ${pluginJson.version}.`);
+          NODE
+
+      - name: Check
         run: pnpm check
 
-      # Build for production, 这一步会生成一个 package.zip
-      - name: Build for production
+      - name: Build
         run: pnpm build
 
-      # Verify build artifacts
-      - name: Verify build artifacts
+      - name: Verify package
         run: pnpm verify
 
-      # Run the small smoke suite (after check + build + verify pass)
       - name: Run smoke tests
         run: pnpm test:smoke
 
-      - name: Release
-        uses: ncipollo/release-action@v1
-        with:
-          allowUpdates: true
-          artifactErrorsFailBuild: true
-          artifacts: "package.zip"
-          token: ${{ secrets.GITHUB_TOKEN }}
-          prerelease: false
+      - name: Generate SHA-256 checksum
+        run: sha256sum package.zip > SHA256SUMS.txt
+
+      - name: Create or update GitHub Release
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_TAG" package.zip SHA256SUMS.txt --clobber
+          else
+            gh release create "$RELEASE_TAG" package.zip SHA256SUMS.txt \
+              --verify-tag \
+              --title "GestureFlow $RELEASE_TAG" \
+              --generate-notes
+          fi

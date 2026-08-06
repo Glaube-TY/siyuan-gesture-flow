@@ -22,16 +22,14 @@ const ZIP_PATH = path.join(ROOT, "package.zip");
 
 const REQUIRED_FILES = [
     "index.js",
+    "index.css",
     "plugin.json",
     "icon.png",
     "preview.png",
     "README.md",
     "README.zh-CN.md",
-];
-
-const REQUIRED_GLOBS = [
-    // At least one i18n JSON file must exist
-    "i18n/*.json",
+    "i18n/zh-CN.json",
+    "i18n/en.json",
 ];
 
 const FORBIDDEN_FILES = [
@@ -46,7 +44,11 @@ const FORBIDDEN_PATTERNS = [
     /Hello/i,
     /^plugin-sample/i,
     // Whole source/dev directories must never ship.
-    /^(tests|src|node_modules|\.git|\.github)(\/|$)/,
+    /^(tests|src|scripts|node_modules|\.git|\.github)(\/|$)/,
+    /(^|\/)CHANGELOG\.md$/i,
+    /\.map$/i,
+    /(^|\/)(tmp|temp)(\/|$)/i,
+    /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock)$/i,
 ];
 
 // Patterns that indicate sensitive data leakage.
@@ -83,6 +85,16 @@ const MAX_SCAN_SIZE = 2 * 1024 * 1024; // 2 MB
  */
 /** @type {Array<{regex: RegExp, label: string, allow?: string[]}>} */
 const CREDENTIAL_PATTERNS = [
+    // GitHub personal access tokens, wherever they appear.
+    {
+        regex: /(?:ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,})/i,
+        label: "GitHub token",
+    },
+    // Absolute user-home paths disclose local machine/user information.
+    {
+        regex: /(?:[A-Za-z]:[\\/]Users[\\/][^\\/\s"']+|\/(?:Users|home)\/[^/\s"']+)/i,
+        label: "Local user path",
+    },
     // Authorization: token <something>
     {
         regex: /Authorization\s*[:=]\s*["']?(?:token|Bearer)\s+([A-Za-z0-9_\-]{8,})["']?/i,
@@ -131,12 +143,6 @@ function warn(msg) {
 
 function ok(msg) {
     console.log(`  [OK]   ${msg}`);
-}
-
-function globToRegex(pattern) {
-    return new RegExp(
-        "^" + pattern.replace(/\./g, "\\.").replace(/\*/g, ".*") + "$",
-    );
 }
 
 function walkFiles(dir, base = dir) {
@@ -286,22 +292,18 @@ function verifyDist() {
     const allFiles = walkFiles(DIST_DIR);
     console.log(`  dist contains ${allFiles.length} files`);
 
+    for (const file of allFiles) {
+        if (!REQUIRED_FILES.includes(file)) {
+            fail(`dist/${file} — unexpected release file`);
+        }
+    }
+
     // Required files
     for (const req of REQUIRED_FILES) {
         if (allFiles.includes(req)) {
             ok(`dist/${req}`);
         } else {
             fail(`dist/${req} is missing`);
-        }
-    }
-
-    // Required globs
-    for (const glob of REQUIRED_GLOBS) {
-        const regex = globToRegex(glob);
-        if (allFiles.some((f) => regex.test(f))) {
-            ok(`dist/${glob}`);
-        } else {
-            fail(`dist/${glob} — no matching file found`);
         }
     }
 
@@ -354,6 +356,12 @@ function verifyZip() {
         normalized: e.replace(/^\.\//, ""),
     }));
 
+    for (const { normalized } of entryMap) {
+        if (!normalized.endsWith("/") && !REQUIRED_FILES.includes(normalized)) {
+            fail(`package.zip/${normalized} — unexpected release file`);
+        }
+    }
+
     // Path-traversal check (uses normalised name).
     for (const { normalized } of entryMap) {
         if (isPathTraversal(normalized)) {
@@ -367,16 +375,6 @@ function verifyZip() {
             ok(`package.zip/${req}`);
         } else {
             fail(`package.zip/${req} is missing`);
-        }
-    }
-
-    // Required globs
-    for (const glob of REQUIRED_GLOBS) {
-        const regex = globToRegex(glob);
-        if (entryMap.some((e) => regex.test(e.normalized))) {
-            ok(`package.zip/${glob}`);
-        } else {
-            fail(`package.zip/${glob} — no matching file found`);
         }
     }
 
@@ -597,6 +595,53 @@ function verifyVersions() {    let pkg, plugin;
 }
 
 /**
+ * Static release files must be byte-for-byte identical in the repository,
+ * dist directory and ZIP. This prevents a stale build from publishing old
+ * metadata, documentation or marketplace artwork.
+ */
+function verifyStaticFileConsistency() {
+    const files = [
+        "plugin.json",
+        "icon.png",
+        "preview.png",
+        "README.md",
+        "README.zh-CN.md",
+    ];
+
+    if (!fs.existsSync(ZIP_PATH)) {
+        fail("package.zip missing — cannot compare static files");
+        return;
+    }
+
+    let zip;
+    try {
+        zip = new AdmZip(ZIP_PATH);
+    } catch (e) {
+        fail(`cannot compare static files in package.zip: ${e.message}`);
+        return;
+    }
+
+    for (const file of files) {
+        const rootPath = path.join(ROOT, file);
+        const distPath = path.join(DIST_DIR, file);
+        const entry = zip.getEntries().find((candidate) => candidate.entryName.replace(/^\.\//, "") === file);
+        if (!fs.existsSync(rootPath) || !fs.existsSync(distPath) || !entry) {
+            fail(`${file} — missing from root, dist or package.zip`);
+            continue;
+        }
+
+        const rootHash = sha256(fs.readFileSync(rootPath));
+        const distHash = sha256(fs.readFileSync(distPath));
+        const zipHash = sha256(entry.getData());
+        if (rootHash !== distHash || rootHash !== zipHash) {
+            fail(`${file} — root, dist and package.zip contents differ`);
+        } else {
+            ok(`${file} — identical in root, dist and package.zip`);
+        }
+    }
+}
+
+/**
  * Quiet-runtime check: the shipped plugin must not log normal-operation
  * chatter.  Scans src/ production code (and dist/index.js when present)
  * for console.log / console.info / console.debug, and verifies that any
@@ -693,6 +738,7 @@ verifyDist();
 verifyZip();
 verifyAssets("dist");
 verifyAssets("zip");
+verifyStaticFileConsistency();
 verifyStyles(path.join(DIST_DIR, "index.css"));
 verifyQuietRuntime();
 
