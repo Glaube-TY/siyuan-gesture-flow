@@ -78,3 +78,43 @@
         min-height: 0;
     }
 }
+
+/* Safe confirm dialog (RC hardening): scope all rules to the dialog we
+   create — never any global b3-* overrides. */
+.gf-confirm-dialog {
+    .b3-dialog__container {
+        flex: 0 0 auto;
+        min-width: 0;
+        min-height: 0;
+    }
+
+    .b3-dialog__body {
+        overflow: hidden;
+    }
+
+    .gf-confirm-host {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        padding: 4px 0;
+        min-width: 0;
+    }
+
+    .gf-confirm-line {
+        font-size: 14px;
+        line-height: 1.6;
+        color: var(--b3-theme-on-background, #1f2329);
+        word-break: break-word;
+    }
+
+    .gf-confirm-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        margin-top: 12px;
+    }
+
+    .gf-confirm-btn {
+        padding: 4px 16px;
+    }
+}

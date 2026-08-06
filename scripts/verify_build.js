@@ -14,6 +14,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import AdmZip from "adm-zip";
+import { createHash } from "node:crypto";
 
 const ROOT = process.cwd();
 const DIST_DIR = path.join(ROOT, "dist");
@@ -38,11 +39,14 @@ const FORBIDDEN_FILES = [
     "kernel.js.map",
     ".env",
     ".siyuan-dev-target.json",
+    "asset/action.png",
 ];
 
 const FORBIDDEN_PATTERNS = [
     /Hello/i,
     /^plugin-sample/i,
+    // Whole source/dev directories must never ship.
+    /^(tests|src|node_modules|\.git|\.github)(\/|$)/,
 ];
 
 // Patterns that indicate sensitive data leakage.
@@ -477,11 +481,130 @@ function verifyStyles(cssPath) {
     ok(`dist/index.css style isolation checks complete (${checked} rules)`);
 }
 
+// --------------------------------------------------------------- version & assets
+
+/**
+ * Known placeholder-image SHA-256 hashes (the grey "160 × 160" /
+ * "1024 × 768" placeholder PNGs).  Their presence blocks release.
+ */
+const PLACEHOLDER_ICON_SHA256 = "84225444cb7edd973efd33f9797e53c946ba91c071fb9380ceabc2394bb604f2";
+const PLACEHOLDER_PREVIEW_SHA256 = "7fcd2462574ff7a6ed3952d8b3477a6a8e59f0ff5a839d545da3140e083cb852";
+
+const ICON_DIMENSIONS = { w: 160, h: 160, maxBytes: 20 * 1024 };
+const PREVIEW_DIMENSIONS = { w: 1024, h: 768, maxBytes: 200 * 1024 };
+
+/** Read PNG width/height from the IHDR chunk (bytes 16–23). */
+function readPngDimensions(buf) {
+    if (buf.length < 24 || buf.readUInt32BE(0) !== 0x89504e47) return null;
+    return { w: buf.readUInt32BE(16), h: buf.readUInt32BE(20) };
+}
+
+function sha256(buf) {
+    return createHash("sha256").update(buf).digest("hex");
+}
+
+/**
+ * Verify one image file: PNG signature, exact dimensions, size cap and
+ * rejection of the known placeholder hashes.
+ */
+function verifyImage(label, buffer, dims) {
+    const dim = readPngDimensions(buffer);
+    if (!dim) {
+        fail(`${label} — not a valid PNG`);
+        return false;
+    }
+    if (dim.w !== dims.w || dim.h !== dims.h) {
+        fail(`${label} — expected ${dims.w}x${dims.h}, got ${dim.w}x${dim.h}`);
+        return false;
+    }
+    if (buffer.length > dims.maxBytes) {
+        fail(`${label} — ${buffer.length} bytes exceeds ${dims.maxBytes}`);
+        return false;
+    }
+    const hash = sha256(buffer);
+    const placeholder = dims.w === 160 ? PLACEHOLDER_ICON_SHA256 : PLACEHOLDER_PREVIEW_SHA256;
+    if (hash === placeholder) {
+        fail(`${label} — still the known placeholder image (${hash})`);
+        return false;
+    }
+    ok(`${label} — ${dim.w}x${dim.h}, ${buffer.length} bytes`);
+    return true;
+}
+
+/** Verify icon/preview in a directory (dist) or a zip (package.zip). */
+function verifyAssets(source) {
+    const read = (name) => {
+        if (source === "dist") {
+            const p = path.join(DIST_DIR, name);
+            return fs.existsSync(p) ? fs.readFileSync(p) : null;
+        }
+        const zip = new AdmZip(ZIP_PATH);
+        const entry = zip.getEntries().find((e) => e.entryName.replace(/^\.\//, "") === name);
+        return entry ? entry.getData() : null;
+    };
+    const icon = read("icon.png");
+    const preview = read("preview.png");
+    if (!icon) {
+        fail(`${source}/icon.png missing`);
+    } else {
+        verifyImage(`${source}/icon.png`, icon, ICON_DIMENSIONS);
+    }
+    if (!preview) {
+        fail(`${source}/preview.png missing`);
+    } else {
+        verifyImage(`${source}/preview.png`, preview, PREVIEW_DIMENSIONS);
+    }
+}
+
+/** package.json.version === plugin.json.version, and valid SemVer. */
+function verifyVersions() {
+    let pkg, plugin;
+    try {
+        pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"));
+        plugin = JSON.parse(fs.readFileSync(path.join(ROOT, "plugin.json"), "utf-8"));
+    } catch (e) {
+        fail(`cannot read package.json/plugin.json: ${e.message}`);
+        return;
+    }
+    if (pkg.version !== plugin.version) {
+        fail(`version mismatch: package.json=${pkg.version} plugin.json=${plugin.version}`);
+        return;
+    }
+    if (!/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.test(pkg.version)) {
+        fail(`invalid SemVer: ${pkg.version}`);
+        return;
+    }
+    ok(`version consistency: v${pkg.version} (package.json === plugin.json, valid SemVer)`);
+
+    // package.zip's plugin.json must carry the same version.
+    if (fs.existsSync(ZIP_PATH)) {
+        try {
+            const zip = new AdmZip(ZIP_PATH);
+            const entry = zip.getEntries().find((e) => e.entryName.replace(/^\.\//, "") === "plugin.json");
+            if (!entry) {
+                fail("package.zip/plugin.json missing");
+                return;
+            }
+            const zipPlugin = JSON.parse(entry.getData().toString("utf-8"));
+            if (zipPlugin.version !== pkg.version) {
+                fail(`package.zip/plugin.json version ${zipPlugin.version} != package.json ${pkg.version}`);
+            } else {
+                ok(`package.zip/plugin.json version ${zipPlugin.version}`);
+            }
+        } catch (e) {
+            fail(`cannot inspect package.zip plugin.json: ${e.message}`);
+        }
+    }
+}
+
 // --------------------------------------------------------------- main
 
 console.log("=== Build Artifact Verification ===");
+verifyVersions();
 verifyDist();
 verifyZip();
+verifyAssets("dist");
+verifyAssets("zip");
 verifyStyles(path.join(DIST_DIR, "index.css"));
 
 console.log("");

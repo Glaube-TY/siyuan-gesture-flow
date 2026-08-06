@@ -1,8 +1,10 @@
 import { Plugin, getFrontend, getBackend, showMessage, globalCommand } from "siyuan";
 import "./index.scss";
 import { SettingsDialog } from "@/settings/SettingsDialog";
+import { closeAllSafeConfirms } from "@/settings/confirmDialog";
 import { ConfigManager, CONFIG_STORAGE_NAME } from "@/config/ConfigManager";
 import type { ConfigPersistenceHost } from "@/config/ConfigManager";
+import type { ConfigLoadResult } from "@/config/types";
 import { GestureFlowRuntime } from "@/runtime/GestureFlowRuntime";
 import { CommandRegistry } from "@/commands/CommandRegistry";
 import { SiyuanActionBridge } from "@/commands/SiyuanActionBridge";
@@ -47,6 +49,24 @@ export default class GestureFlowPlugin extends Plugin {
     private settingsDialog: SettingsDialog | null = null;
 
     /**
+     * Lifecycle generation token (RC hardening).  Incremented at the
+     * start of {@link onload} and at the start of {@link onunload}; every
+     * asynchronous continuation (config load, settings-open wait, config
+     * subscription) captures the token it was created under and re-checks
+     * it before touching any component.  A stale token means the plugin
+     * was unloaded — the continuation must not mount listeners, start a
+     * runtime, open settings, or restore anything.
+     */
+    private lifecycleToken = 0;
+
+    /**
+     * Shared config-load promise.  Reused by {@link openSetting} while
+     * the initial load is still in flight so the settings page is never
+     * created from defaults before the real config arrives.
+     */
+    private configLoadPromise: Promise<ConfigLoadResult> | null = null;
+
+    /**
      * Receive the same options object the official plugin loader passes
      * to every plugin subclass constructor, forward it to the base class,
      * then keep the App instance for runtime wiring.  The parameter type
@@ -70,6 +90,10 @@ export default class GestureFlowPlugin extends Plugin {
     private commandCatalogSource: CommandRegistry | null = null;
 
     onload(): void {
+        // New lifecycle generation — invalidates any continuation still
+        // pending from a previous load/unload cycle.
+        const token = ++this.lifecycleToken;
+
         if (IS_DEV) {
             console.log(`[${this.name}] loading (frontend: ${getFrontend()}, backend: ${getBackend()})`);
         }
@@ -103,9 +127,8 @@ export default class GestureFlowPlugin extends Plugin {
             storageName: CONFIG_STORAGE_NAME,
             availableCommandIds: () => {
                 // The runtime's registry is rebuilt on every start, so
-                // the command set is stable for stage 5A.  Future stages
-                // that add commands at runtime should expose the live
-                // registry here.
+                // the command set is stable; it is derived from the
+                // built-in registry above.
                 return commandIds;
             },
         });
@@ -132,8 +155,19 @@ export default class GestureFlowPlugin extends Plugin {
 
         // --- Load config and start runtime ---
         // We start the runtime after the config loads so the first start
-        // uses the persisted values (or defaults on first run).
-        void configManager.load().then((result) => {
+        // uses the persisted values (or defaults on first run).  The
+        // shared promise is also used by openSetting so the settings page
+        // is never created from defaults while the config is still
+        // loading.  Every continuation re-checks the lifecycle token and
+        // the exact instances captured here — a late callback after
+        // onunload must not remount anything.
+        this.configLoadPromise = configManager.load();
+        void this.configLoadPromise.then((result) => {
+            if (token !== this.lifecycleToken) return; // unloaded meanwhile
+            if (this.configManager !== configManager || this.runtime !== runtime) {
+                return; // replaced by a newer lifecycle
+            }
+
             if (IS_DEV) {
                 console.log(`[${this.name}] config loaded (source: ${result.source})`);
             }
@@ -144,11 +178,26 @@ export default class GestureFlowPlugin extends Plugin {
             // established after the first start so the initial load does
             // not trigger a redundant restart.
             this.unsubscribeConfig = configManager.subscribe((next) => {
+                if (token !== this.lifecycleToken) return;
                 const restartResult = runtime.restart(next);
-                if (restartResult.status === "rolled-back" && IS_DEV) {
-                    console.warn(
-                        `[${this.name}] ${this.i18n?.settingsRollback ?? "Restart failed; previous configuration restored"}: ${restartResult.error}`,
-                    );
+                if (restartResult.status === "rolled-back") {
+                    // Consistency: the new config was persisted and shown
+                    // in the settings UI, but the runtime could not apply
+                    // it and rolled back to the previous working config.
+                    // Restore that working config into the ConfigManager
+                    // (memory + disk) so UI, disk and runtime never
+                    // diverge.  The restored config is already valid, so
+                    // the resulting notify→restart cycle settles as
+                    // "applied" and does not loop.
+                    void configManager.replaceConfig(restartResult.config).catch(() => {
+                        // Non-fatal — the runtime keeps running the
+                        // working config regardless.
+                    });
+                    if (IS_DEV) {
+                        console.warn(
+                            `[${this.name}] ${this.i18n?.settingsRollback ?? "Restart failed; previous configuration restored"}: ${restartResult.error}`,
+                        );
+                    }
                 }
             });
         });
@@ -157,19 +206,34 @@ export default class GestureFlowPlugin extends Plugin {
     /**
      * Open the settings dialog.
      *
-     * Uses the SiYuan `Dialog` API (not `Setting`) so the settings UI
-     * gets the full dialog content width.  The previous approach used
-     * `Setting.addItem({ actionElement })` which placed the entire panel
-     * into a ~200 px right-side control column.
-     *
-     * The {@link SettingsDialog} guards against duplicate opens and
-     * handles Svelte component lifecycle.
+     * Waits until the shared config load has finished: the settings page
+     * is never created from a default config that a later load would
+     * overwrite.  While loading, a short localised hint is shown and the
+     * SAME load promise is reused (no second load).  If the plugin was
+     * unloaded while waiting, the dialog is not opened.
      */
     openSetting(): void {
+        const token = this.lifecycleToken;
         if (!this.configManager) {
             showMessage("GestureFlow not ready");
             return;
         }
+        if (this.configManager.isLoaded) {
+            this.doOpenSetting();
+            return;
+        }
+        const pending = this.configLoadPromise ?? this.configManager.load();
+        showMessage(this.i18n?.settingsLoading ?? "正在加载手势设置…", 1500);
+        void pending.then(() => {
+            if (token !== this.lifecycleToken) return; // unloaded while waiting
+            if (this.configManager === null) return;
+            this.doOpenSetting();
+        });
+    }
+
+    /** Build and show the settings dialog (config is already loaded). */
+    private doOpenSetting(): void {
+        if (this.configManager === null) return;
         if (!this.settingsDialog) {
             this.settingsDialog = new SettingsDialog();
         }
@@ -191,14 +255,24 @@ export default class GestureFlowPlugin extends Plugin {
     }
 
     onunload(): void {
+        // Invalidate the lifecycle generation FIRST so every pending
+        // asynchronous continuation (config load, settings-open wait,
+        // config subscription callback, runtime restart) becomes a no-op
+        // before any component is torn down.
+        this.lifecycleToken++;
+        this.configLoadPromise = null;
+
         if (this.unsubscribeConfig) {
             this.unsubscribeConfig();
             this.unsubscribeConfig = null;
         }
-        this.runtime?.stop();
-        this.runtime = null;
         this.settingsDialog?.destroy();
         this.settingsDialog = null;
+        // Close any safe-confirm dialog we opened (e.g. delete-binding
+        // confirmation) so it cannot outlive the plugin.
+        closeAllSafeConfirms();
+        this.runtime?.stop();
+        this.runtime = null;
         this.configManager?.destroy();
         this.configManager = null;
         if (IS_DEV) {

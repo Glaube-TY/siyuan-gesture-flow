@@ -24,8 +24,8 @@
     "zh-CN": "手势流"
   },
   "description": {
-    "default": "Draw right-button mouse gestures to run tab actions, document actions, or keyboard shortcuts.",
-    "zh-CN": "通过鼠标右键绘制手势，执行标签页、文档操作或快捷键。"
+    "default": "Run tab actions, document actions, or keyboard shortcuts with custom gestures.",
+    "zh-CN": "通过自定义手势执行标签页、文档操作或快捷键。"
   },
   "readme": {
     "default": "README.md",
@@ -39,9 +39,12 @@
   },
   "keywords": [
     "gesture",
-    "mouse gesture",
+    "gesture automation",
+    "shortcut",
+    "productivity",
     "手势",
-    "鼠标手势",
+    "快捷键",
+    "效率",
     "gestureflow"
   ]
 }

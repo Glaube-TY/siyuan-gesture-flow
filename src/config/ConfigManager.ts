@@ -151,6 +151,9 @@ export class ConfigManager {
             // reports an error.  Treat both as "no config yet" and fall
             // back to defaults.  The error is captured in the message
             // but never re-thrown.
+            if (this.destroyed) {
+                return this.destroyedResult();
+            }
             const label = err instanceof Error ? err.message : String(err);
             this.config = createDefaultConfig();
             this.loaded = true;
@@ -160,6 +163,13 @@ export class ConfigManager {
                 source: "defaults",
                 message: `loadData failed (${label}) — using defaults`,
             };
+        }
+
+        // The plugin may have been unloaded while loadData was in
+        // flight.  After destroy we must not mutate state, write back
+        // defaults, notify subscribers, or continue saving.
+        if (this.destroyed) {
+            return this.destroyedResult();
         }
 
         // loadData returns `null` / `undefined` when the storage file
@@ -177,6 +187,9 @@ export class ConfigManager {
         }
 
         const result = validateConfig(raw, this.validateOptions());
+        if (this.destroyed) {
+            return this.destroyedResult();
+        }
         if (result.status === "invalid") {
             // Pre-release policy: incompatible dev-era configs are NOT
             // migrated or repaired — fall back to the current defaults
@@ -408,6 +421,11 @@ export class ConfigManager {
      * function.
      */
     subscribe(listener: ConfigListener): () => void {
+        // After destroy no listener is added and nothing is ever called
+        // back — a safe no-op unsubscribe is returned instead.
+        if (this.destroyed) {
+            return () => undefined;
+        }
         this.listeners.add(listener);
         return () => {
             this.listeners.delete(listener);
@@ -433,6 +451,16 @@ export class ConfigManager {
     }
 
     // --------------------------------------------------------------- internals
+
+    /** Result returned by any async path that resolves after destroy. */
+    private destroyedResult(): ConfigLoadResult {
+        return {
+            ok: false,
+            config: createDefaultConfig(),
+            source: "error",
+            message: "ConfigManager destroyed",
+        };
+    }
 
     private validateOptions(): ValidateOptions {
         return {

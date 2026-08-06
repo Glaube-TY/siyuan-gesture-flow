@@ -1,6 +1,6 @@
 # GestureFlow
 
-GestureFlow is a mouse gesture plugin for SiYuan Notes. Hold the right mouse button, draw a trajectory, and release — the bound action runs immediately. It is designed for desktop right-button usage.
+GestureFlow is a **gesture automation plugin** for SiYuan. Draw a gesture with your mouse and release — the bound action runs immediately.
 
 ## What you can do
 
@@ -9,28 +9,29 @@ GestureFlow is a mouse gesture plugin for SiYuan Notes. Hold the right mouse but
 - Reload the current document.
 - Scroll to the top or bottom of a document.
 - Go back / forward through your navigation history.
-- Bind a gesture to a keyboard shortcut.
+- Bind a gesture to a keyboard shortcut, with a custom action name.
 - Record single or multi-direction gestures of your own.
 - Export, import and reset the configuration.
 
 ## Quick start
 
-1. Install the plugin and enable it in SiYuan.
+1. Install and enable the plugin in SiYuan.
 2. Open **GestureFlow settings** from the plugin menu.
 3. Go to the **Bindings** tab.
 4. Click **New binding**.
 5. Hold the right mouse button and draw the trajectory.
 6. Choose an implementation type (built-in action or keyboard shortcut).
-7. Choose the built-in action, or record a keyboard shortcut.
+7. Choose the built-in action, or enter an action name and record a keyboard shortcut.
 8. Save.
 9. Close the settings window and try the gesture for real.
 
-## How to draw gestures
+## Drawing gestures
 
+- The first release supports **right-button gesture input on desktop**.
 - Hold the right mouse button, move the mouse, then release.
-- Supported directions: **U**, **D**, **L**, **R** and combinations such as `R → D` (draw right, then down).
+- Supported directions: **U**, **D**, **L**, **R** and combinations such as `R → D`.
 - With **8-direction mode** enabled, diagonal directions (e.g. `↖ ↗ ↘ ↙`) are also recognized.
-- If you press the right button and do **not** move, SiYuan's normal context menu still appears.
+- Right-clicking without moving still shows SiYuan's normal context menu.
 - Holding the temporary disable key lets you use the ordinary right-click menu while gestures stay active.
 
 ## Implementation types
@@ -38,7 +39,7 @@ GestureFlow is a mouse gesture plugin for SiYuan Notes. Hold the right mouse but
 | Type | Description |
 | --- | --- |
 | Built-in action | Pick one of the built-in features (see the list below). |
-| Keyboard shortcut | Click the capture box, press the key combination. First enter an **action name** (e.g. "Open Global Search"), then click the capture box and press the combination. Save, close the settings window, and verify with a real gesture. |
+| Keyboard shortcut | Enter an **action name** (e.g. "Open Global Search"), click the capture box, and press the key combination. Save, close the settings window, and verify with a real gesture. |
 | JavaScript | Shown as **in development** — currently not selectable. |
 
 ## Built-in actions
@@ -97,18 +98,17 @@ JavaScript actions are still in development and are disabled for safety.
 
 ## Roadmap
 
-- JavaScript actions
-- Touchpad gestures
-- Mouse side buttons
-- More safe built-in actions
+These are plans, **not** current-version features:
+
+- Bind gestures to JavaScript code snippets;
+- Add laptop touchpad gesture input;
+- Support mouse side buttons and other configurable input buttons.
 
 ## Contributing
 
 Welcome to report issues, suggest features, or submit Pull Requests via [GitHub Issues](https://github.com/Glaube-TY/siyuan-gesture-flow/issues).
 
 Development environment: Node.js 20 and pnpm 10. Run `pnpm release:check` before committing.
-
-Before the first public release, development configuration may be reset: configs saved by earlier development builds are **not** guaranteed to be compatible and may be discarded in favour of the current defaults.
 
 ## License
 

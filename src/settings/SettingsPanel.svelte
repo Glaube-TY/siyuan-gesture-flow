@@ -1,6 +1,7 @@
 <script lang="ts">
     import { onMount, onDestroy } from "svelte";
     import { confirm } from "siyuan";
+import { showSafeConfirm } from "./confirmDialog";
     import type { ConfigManager, ConfigUpdatePatch } from "@/config/ConfigManager";
     import type { GestureFlowConfig } from "@/config/types";
     import type { ConfigBinding } from "@/config/types";
@@ -513,20 +514,24 @@
     }
 
     /**
-     * Delete confirmation through SiYuan's native `confirm` dialog
-     * (styled like the rest of the app, not the browser confirm box).
-     * The actual delete only runs after the user confirms.
+     * Delete confirmation with a safe dialog: the user-entered action
+     * name (and the gesture / key combination) are rendered as literal
+     * text nodes, never parsed as HTML.  SiYuan's plain `confirm(text)`
+     * is NOT used here because it inserts the text into dialog HTML.
      */
     function handleDeleteBinding(binding: ConfigBinding): void {
-        // The user-entered title is passed as plain text to SiYuan's
-        // confirm dialog (which renders it via textContent — never
-        // concatenated into innerHTML).
         const detail = bindingActionDetail(binding);
-        const label = detail
-            ? `${directionsLabel(binding.directions)} — ${bindingActionTitle(binding)} — ${detail}`
-            : `${directionsLabel(binding.directions)} — ${bindingActionTitle(binding)}`;
-        confirm(i18n.bindingDeleteConfirm ?? "Delete binding", label, () => {
-            void doDeleteBinding(binding);
+        const body = detail
+            ? [directionsLabel(binding.directions), bindingActionTitle(binding), detail]
+            : [directionsLabel(binding.directions), bindingActionTitle(binding)];
+        showSafeConfirm({
+            title: i18n.bindingDeleteConfirm ?? "Delete binding",
+            body,
+            confirmLabel: i18n.bindingDelete ?? "Delete",
+            cancelLabel: i18n.bindingCancel ?? "Cancel",
+            onConfirm: () => {
+                void doDeleteBinding(binding);
+            },
         });
     }
 

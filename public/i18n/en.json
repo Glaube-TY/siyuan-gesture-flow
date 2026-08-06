@@ -14,6 +14,7 @@
   "cmdScrollTop": "Scroll to top",
   "cmdScrollBottom": "Scroll to bottom",
   "settingsTitle": "GestureFlow Settings",
+  "settingsLoading": "Loading gesture settings…",
   "settingsTabGeneral": "General",
   "settingsTabRecognition": "Recognition",
   "settingsTabDisplay": "Display",

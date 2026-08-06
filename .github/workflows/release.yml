@@ -5,6 +5,9 @@ on:
     tags:
       - "v*"
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -12,6 +15,32 @@ jobs:
       # Checkout
       - name: Checkout
         uses: actions/checkout@v4
+
+      # Version consistency: package.json.version === plugin.json.version,
+      # the tag must equal "v" + that version, and the version must be
+      # valid SemVer.  Any mismatch fails the workflow before building.
+      - name: Validate version consistency
+        shell: bash
+        run: |
+          set -euo pipefail
+          PKG_VER=$(node -p "require('./package.json').version")
+          PLUGIN_VER=$(node -p "require('./plugin.json').version")
+          echo "package.json version: $PKG_VER"
+          echo "plugin.json version: $PLUGIN_VER"
+          echo "tag: ${{ github.ref_name }}"
+          if [ "$PKG_VER" != "$PLUGIN_VER" ]; then
+            echo "::error::version mismatch: package.json=$PKG_VER plugin.json=$PLUGIN_VER"
+            exit 1
+          fi
+          if [ "v$PLUGIN_VER" != "${{ github.ref_name }}" ]; then
+            echo "::error::tag must equal v$PLUGIN_VER, got ${{ github.ref_name }}"
+            exit 1
+          fi
+          if ! [[ "$PLUGIN_VER" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::invalid SemVer: $PLUGIN_VER"
+            exit 1
+          fi
+          echo "Version consistency OK: v$PLUGIN_VER"
 
       # Install Node.js
       - name: Install Node.js
