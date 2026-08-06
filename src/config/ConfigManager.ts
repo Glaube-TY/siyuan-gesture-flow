@@ -4,8 +4,8 @@ import {
     GestureFlowConfig,
 } from "./types";
 import { createDefaultConfig, deepCloneConfig } from "./defaults";
-import { migrateAndValidate } from "./migrations";
-import { ValidateOptions } from "./validate";
+import { validateConfig } from "./validate";
+import type { ValidateOptions } from "./validate";
 
 /**
  * Stable storage key used with `Plugin.loadData` / `Plugin.saveData`.
@@ -66,7 +66,8 @@ export type ConfigUpdatePatch = {
  *
  * Responsibilities:
  * - Load on-disk data via the injected {@link ConfigPersistenceHost},
- *   run it through {@link migrateAndValidate}, and keep the resulting
+ *   run it through {@link validateConfig} against the single current
+ *   structure, and keep the resulting
  *   snapshot as the source of truth.
  * - Expose {@link getConfig} returning an independent deep copy so
  *   external code can never mutate the internal state.
@@ -175,12 +176,13 @@ export class ConfigManager {
             };
         }
 
-        const result = migrateAndValidate(raw, this.validateOptions());
+        const result = validateConfig(raw, this.validateOptions());
         if (result.status === "invalid") {
-            // Unusable payload — fall back to defaults but persist them
-            // so the next load is clean.  We do NOT notify subscribers
-            // here; the caller (index.ts) will start the runtime after
-            // load completes.
+            // Pre-release policy: incompatible dev-era configs are NOT
+            // migrated or repaired — fall back to the current defaults
+            // and overwrite the old payload so the next load is clean.
+            // A concise message is surfaced via the load result; the
+            // caller (index.ts) logs it in dev mode and starts normally.
             this.config = result.config;
             this.loaded = true;
             void this.persist(this.config).catch(() => {
@@ -191,33 +193,27 @@ export class ConfigManager {
             return {
                 ok: true,
                 config: this.getConfig(),
-                source: "error",
-                message: `config invalid: ${result.errors.join("; ")}`,
+                source: "defaults",
+                message: `incompatible dev config — using defaults: ${result.errors.join("; ")}`,
             };
         }
 
         this.config = result.config;
         this.loaded = true;
 
-        // If a real schema migration ran (v1 → v2), or normalisation
-        // repaired the payload, persist the cleaned-up version so
-        // subsequent loads skip the work.
-        if (result.migrated || result.status === "normalized") {
+        // Normalisation repaired missing fields within the current
+        // structure — persist the cleaned-up version so subsequent
+        // loads skip the work.
+        if (result.status === "normalized") {
             void this.persist(this.config).catch(() => {
                 // Non-fatal — see above.
             });
         }
 
-        const source = result.migrated
-            ? "migrated"
-            : result.status === "valid"
-              ? "loaded"
-              : result.status;
-        const message = result.migrated
-            ? "config migrated to v2"
-            : result.status === "normalized"
-              ? `normalised: ${result.notes.join("; ")}`
-              : "";
+        const source = result.status === "valid" ? "loaded" : result.status;
+        const message = result.status === "normalized"
+            ? `normalised: ${result.notes.join("; ")}`
+            : "";
         return {
             ok: true,
             config: this.getConfig(),
@@ -248,7 +244,8 @@ export class ConfigManager {
     /**
      * Replace the entire configuration with a validated candidate.
      *
-     * The candidate is run through {@link migrateAndValidate} before
+     * The candidate is run through {@link validateConfig} (single current
+     * structure) before
      * being accepted.  On success the new config is persisted and
      * subscribers receive a fresh snapshot.  On failure the previous
      * config is preserved and the error is returned.
@@ -257,7 +254,7 @@ export class ConfigManager {
         if (this.destroyed) {
             return { status: "error", message: "ConfigManager destroyed" };
         }
-        const result = migrateAndValidate(candidate, this.validateOptions());
+        const result = validateConfig(candidate, this.validateOptions());
         if (result.status === "invalid") {
             return {
                 status: "error",
@@ -360,8 +357,10 @@ export class ConfigManager {
      * Import a configuration from an unknown payload (typically the
      * result of `JSON.parse` on a user-selected file).
      *
-     * The payload goes through the full migration + validation
-     * pipeline.  On success the new config is persisted and
+     * The payload goes through the full validation pipeline against the
+     * single current structure.  Incompatible dev-era payloads are
+     * rejected (never migrated).  On success the new config is persisted
+     * and
      * subscribers are notified.  On failure the current config is
      * preserved — the import never overwrites the in-memory state
      * with unusable data.
@@ -370,11 +369,11 @@ export class ConfigManager {
         if (this.destroyed) {
             return { status: "error", message: "ConfigManager destroyed", errors: [] };
         }
-        const result = migrateAndValidate(payload, this.validateOptions());
+        const result = validateConfig(payload, this.validateOptions());
         if (result.status === "invalid") {
             return {
                 status: "error",
-                message: `import rejected: ${result.errors.join("; ")}`,
+                message: "config format is incompatible with the current development version",
                 errors: result.errors,
             };
         }

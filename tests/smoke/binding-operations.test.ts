@@ -1,25 +1,30 @@
 import { describe, it, expect, vi } from "vitest";
 import { createDefaultConfig } from "../../src/config/defaults";
 import { GestureFlowConfig, ConfigBinding } from "../../src/config/types";
+import { validateConfig } from "../../src/config/validate";
 import {
     addBinding,
     updateBinding,
     removeBinding,
     BindingDraft,
+    validateBindingDraft,
 } from "../../src/config/bindingOperations";
 
 /**
  * Binding operations smoke tests.
  *
  * Persistable-binding logic (add / edit / delete / duplicate-direction /
- * id-collision, both builtin and shortcut actions) — a small permanent
- * core suite.  UI flows are verified in real SiYuan.
+ * id-collision / shortcut-title rules, both builtin and shortcut actions)
+ * plus the single current config structure (defaults valid, dev-era
+ * structures rejected) — a small permanent core suite.  UI flows are
+ * verified in real SiYuan.
  */
 
 const opts = {
     maximumSegments: 6,
     directionMode: 4 as const,
     availableCommandIds: new Set(["tabs.previous", "tabs.next", "scroll.top", "scroll.bottom"]),
+    bindings: [] as ConfigBinding[],
 };
 
 function makeConfig(): GestureFlowConfig {
@@ -37,6 +42,7 @@ const shortcutDraft: BindingDraft = {
     directions: ["D", "L"],
     action: {
         type: "shortcut",
+        title: "打开全局搜索",
         shortcut: { key: "p", code: "KeyP", keyCode: 80, ctrlKey: true, altKey: false, shiftKey: false, metaKey: false },
     },
 };
@@ -102,6 +108,37 @@ describe("binding-operations smoke", () => {
         const r2 = addBinding(makeConfig(), shortcutDraft, opts);
         expect(r1.ok).toBe(true);
         expect(r2.ok).toBe(true);
+    });
+
+    it("快捷键动作缺少操作名称时草稿被拒绝", () => {
+        const noTitle = {
+            ...shortcutDraft,
+            action: { type: "shortcut" as const, title: "   ", shortcut: shortcutDraft.action.shortcut },
+        };
+        const r = validateBindingDraft(noTitle, opts);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error).toBe("invalid-shortcut");
+    });
+
+    it("当前默认配置有效（版本 1 单一结构）", () => {
+        const result = validateConfig(createDefaultConfig(), { availableCommandIds: opts.availableCommandIds });
+        expect(result.status).toBe("valid");
+        expect(result.config.version).toBe(1);
+    });
+
+    it("旧开发结构被拒绝（顶层 commandId / 旧版本）", () => {
+        // 仍使用顶层 commandId 的旧绑定结构
+        const legacyTopLevel = {
+            ...createDefaultConfig(),
+            bindings: [
+                { id: "x", enabled: true, directions: ["L"], commandId: "tabs.previous", commandParams: {} },
+            ],
+        };
+        expect(validateConfig(legacyTopLevel, { availableCommandIds: opts.availableCommandIds }).status).toBe("invalid");
+        // 非当前版本（旧 version 2 等）
+        expect(validateConfig({ ...createDefaultConfig(), version: 2 }, { availableCommandIds: opts.availableCommandIds }).status).toBe("invalid");
+        // 缺少 action
+        expect(validateConfig({ ...createDefaultConfig(), bindings: [{ id: "x", enabled: true, directions: ["L"] }] }, { availableCommandIds: opts.availableCommandIds }).status).toBe("invalid");
     });
 });
 

@@ -5,17 +5,15 @@ import type { ShortcutSpec } from "@/shortcuts/types";
 /**
  * Versioned gesture-flow plugin configuration.
  *
- * Stage 5A introduces persistent, validated, versioned configuration.
- * The {@link version} field drives the migration framework in
- * `migrations.ts`.  Only {@link CURRENT_CONFIG_VERSION} is produced by
- * a successful load; older on-disk data is migrated forward before the
- * rest of the plugin ever sees it.
+ * Pre-release policy: there is exactly ONE current config structure
+ * (the first public-release baseline, version 1).  No dev-era migration
+ * chain is maintained — schema changes before the first release keep
+ * version 1, and incompatible dev configs are discarded in favour of
+ * the current defaults.
  *
- * Stage 6A bumps the schema to version 2: bindings no longer carry a
- * top-level `commandId`/`commandParams`.  Instead each binding holds a
- * single {@link BindingAction} — either a built-in command action or a
- * keyboard-shortcut action.  JavaScript actions are NOT a persistent
- * type in this stage (the settings UI shows a disabled "in development"
+ * Bindings carry a single {@link BindingAction} — either a built-in
+ * command action or a shortcut action.  JavaScript actions are NOT a
+ * persistent type (the settings UI shows a disabled "in development"
  * placeholder that can never be saved or imported).
  *
  * All nested structures are plain JSON-serialisable data — no functions,
@@ -23,11 +21,14 @@ import type { ShortcutSpec } from "@/shortcuts/types";
  * safe and deterministic.
  */
 
-/** Current config schema version.  Bump when the shape changes. */
-export const CURRENT_CONFIG_VERSION = 2 as const;
+/**
+ * Current config schema version.  This is the first public-release
+ * baseline: schema changes before the first release keep version 1.
+ */
+export const CURRENT_CONFIG_VERSION = 1 as const;
 
-/** Supported historical config versions (for migration source checks). */
-export type SupportedConfigVersion = 1 | 2;
+/** The only supported config version (first-release baseline). */
+export type SupportedConfigVersion = 1;
 
 /** Trigger (input-layer) configuration. */
 export interface TriggerConfig {
@@ -76,9 +77,18 @@ export interface BuiltinBindingAction {
     commandParams: Record<string, unknown>;
 }
 
-/** Action: dispatch a synthetic keyboard shortcut. */
+/**
+ * Action: dispatch a synthetic keyboard shortcut.
+ *
+ * `title` is a user-entered action name (plain text, trimmed, 1–80
+ * chars); `shortcut` is the structured, serialisable shortcut data
+ * (never a KeyboardEvent).  The title belongs to the action — it is NOT
+ * part of {@link ShortcutSpec}.
+ */
 export interface ShortcutBindingAction {
     readonly type: "shortcut";
+    /** User-defined action name (trimmed, 1–80 characters). */
+    title: string;
     /** Structured, serialisable shortcut data (never a KeyboardEvent). */
     shortcut: ShortcutSpec;
 }
@@ -92,7 +102,7 @@ export interface ShortcutBindingAction {
  */
 export type BindingAction = BuiltinBindingAction | ShortcutBindingAction;
 
-/** A single gesture-to-action binding (config-layer shape, version 2). */
+/** A single gesture-to-action binding (config-layer shape, version 1). */
 export interface ConfigBinding {
     /** Unique binding id. */
     id: string;
@@ -115,22 +125,20 @@ export interface GestureFlowConfig {
 }
 
 /**
- * Outcome of validating an unknown payload.
+ * Outcome of validating an unknown payload against the single current
+ * structure.
  *
- * - `valid`        — payload was already a well-formed current config.
- * - `normalized`   — payload was repaired (missing fields filled, values
- *                    clamped) into a usable current config.
- * - `invalid`      — payload could not be safely used; {@link config}
- *                    holds a fresh default and {@link errors} lists the
- *                    concrete reasons.
- *
- * `migrated` is set when a real schema migration ran (v1 → v2), even if
- * the resulting config validates as `valid` — callers persist the v2
- * payload and report `source: "migrated"` so the next load skips it.
+ * - `valid`      — payload was already a well-formed current config.
+ * - `normalized` — payload was repaired (missing fields filled, values
+ *                  clamped) into a usable current config.
+ * - `invalid`    — payload could not be safely used; {@link config}
+ *                  holds a fresh default and {@link errors} lists the
+ *                  concrete reasons.  Incompatible dev-era data is
+ *                  treated as invalid (no migration).
  */
 export type ValidationResult =
-    | { status: "valid"; config: GestureFlowConfig; migrated?: true }
-    | { status: "normalized"; config: GestureFlowConfig; notes: string[]; migrated?: true }
+    | { status: "valid"; config: GestureFlowConfig }
+    | { status: "normalized"; config: GestureFlowConfig; notes: string[] }
     | { status: "invalid"; config: GestureFlowConfig; errors: string[] };
 
 /**
@@ -143,8 +151,8 @@ export interface ConfigLoadResult {
     ok: boolean;
     /** The current in-memory config (independent snapshot). */
     config: GestureFlowConfig;
-    /** "loaded" | "migrated" | "normalized" | "defaults" | "imported" | "reset" | "error" */
-    source: "loaded" | "migrated" | "normalized" | "defaults" | "imported" | "reset" | "error";
+    /** "loaded" | "normalized" | "defaults" | "imported" | "reset" | "error" */
+    source: "loaded" | "normalized" | "defaults" | "imported" | "reset" | "error";
     /** Human-readable detail (empty on clean loads). */
     message: string;
 }

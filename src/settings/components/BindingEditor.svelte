@@ -9,7 +9,6 @@
     import type { SettingCommandItem } from "../commandCatalog";
     import { directionSymbol } from "../directionLabels";
     import type { ShortcutSpec } from "@/shortcuts/types";
-    import { ShortcutExecutor } from "@/shortcuts/ShortcutExecutor";
 
     /**
      * Binding editor (stage 6A).
@@ -69,17 +68,18 @@
         ? binding.action.type
         : "builtin";
     let commandId = "";
+    /** Draft of the shortcut action title (user-defined name). */
+    let shortcutTitle = "";
     let shortcut: ShortcutSpec | null = null;
     let errorMessage = "";
-    let testMessage = "";
     let saving = false;
-    const shortcutExecutor = new ShortcutExecutor();
 
     // Initialise per-action draft fields from the edited binding.
     if (binding) {
         if (binding.action.type === "builtin") {
             commandId = binding.action.commandId;
         } else {
+            shortcutTitle = binding.action.title;
             shortcut = { ...binding.action.shortcut };
         }
     } else {
@@ -101,8 +101,6 @@
         const target = e.currentTarget as HTMLInputElement;
         implType = target.value as ImplType;
         errorMessage = "";
-        // Clear a stale test result when the implementation type changes.
-        testMessage = "";
         // When switching (back) to builtin, seed the command draft so the
         // visible select and the model never diverge (e.g. editing a
         // shortcut binding leaves commandId empty until now).
@@ -111,27 +109,14 @@
         }
     }
 
+    function onShortcutTitleInput(e: Event): void {
+        shortcutTitle = (e.currentTarget as HTMLInputElement).value;
+        errorMessage = "";
+    }
+
     function onShortcutChange(e: CustomEvent<ShortcutSpec | null>): void {
         shortcut = e.detail;
         errorMessage = "";
-        // Clear a stale test result on re-capture / clear.
-        testMessage = "";
-    }
-
-    function onShortcutTest(e: CustomEvent<ShortcutSpec>): void {
-        // Test only the current draft shortcut — nothing is saved, the
-        // editor stays open, ConfigManager is untouched.  The same
-        // ShortcutExecutor class used by the runtime performs the
-        // dispatch.
-        const spec = e.detail;
-        const result = shortcutExecutor.dispatch(spec);
-        if (result.status === "dispatched") {
-            testMessage = i18n.shortcutTestSent ?? "已发送测试快捷键";
-        } else if (result.status === "unavailable") {
-            testMessage = i18n.shortcutTestFailed ?? "快捷键发送失败";
-        } else {
-            testMessage = `${i18n.shortcutTestFailed ?? "快捷键发送失败"}：${result.reason}`;
-        }
     }
 
     /** Validate the draft against the config constraints (UI mirror). */
@@ -159,6 +144,13 @@
                 return i18n.bindingErrorNoCommand ?? "Choose a command";
             }
         } else if (implType === "shortcut") {
+            // User-defined action name is required (trimmed, ≤ 80).
+            if (shortcutTitle.trim().length === 0) {
+                return i18n.shortcutActionTitleRequired ?? "请输入操作名称";
+            }
+            if (shortcutTitle.trim().length > 80) {
+                return i18n.shortcutActionTitleTooLong ?? "操作名称不能超过 80 个字符";
+            }
             if (!shortcut) {
                 return i18n.shortcutEmptyError ?? "快捷键不能为空";
             }
@@ -174,7 +166,7 @@
             return { type: "builtin", commandId, commandParams: {} };
         }
         if (implType === "shortcut" && shortcut) {
-            return { type: "shortcut", shortcut };
+            return { type: "shortcut", title: shortcutTitle.trim(), shortcut };
         }
         return null;
     }
@@ -314,20 +306,29 @@
             </select>
         </div>
     {:else if implType === "shortcut"}
+        <div class="gf-shortcut-title-row">
+            <label class="gf-shortcut-title-label" for="gf-shortcut-title">
+                {i18n.shortcutActionTitle ?? "操作名称"}
+            </label>
+            <input
+                id="gf-shortcut-title"
+                class="b3-text-field gf-shortcut-title-input"
+                type="text"
+                maxlength="80"
+                placeholder={i18n.shortcutActionTitlePlaceholder ?? "例如：打开全局搜索"}
+                value={shortcutTitle}
+                on:input={onShortcutTitleInput}
+            />
+        </div>
         <ShortcutRecorder
-            bind:value={shortcut}
+            value={shortcut}
             {i18n}
             on:change={onShortcutChange}
-            on:test={onShortcutTest}
         />
     {/if}
 
     {#if errorMessage}
         <p class="gf-binding-editor-error">{errorMessage}</p>
-    {/if}
-
-    {#if testMessage}
-        <p class="gf-binding-editor-test">{testMessage}</p>
     {/if}
 
     <div class="gf-binding-editor-actions">
@@ -392,6 +393,25 @@
         max-width: 280px;
         min-width: 0;
     }
+
+    /* Shortcut action name input (gf- scoped, never global). */
+    .gf-shortcut-title-row {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-bottom: 12px;
+    }
+
+    .gf-shortcut-title-label {
+        font-size: 13px;
+        color: var(--b3-theme-on-background, inherit);
+        opacity: 0.85;
+    }
+
+    .gf-shortcut-title-input {
+        width: 100%;
+        box-sizing: border-box;
+    }
     .gf-binding-type-row {
         align-items: flex-start;
     }
@@ -425,12 +445,6 @@
         font-size: 12px;
         line-height: 1.5;
         color: var(--b3-theme-error, #d23f31);
-    }
-    .gf-binding-editor-test {
-        margin: 0;
-        font-size: 12px;
-        line-height: 1.5;
-        color: var(--b3-theme-on-surface, #1f2329);
     }
     .gf-binding-editor-actions {
         display: flex;

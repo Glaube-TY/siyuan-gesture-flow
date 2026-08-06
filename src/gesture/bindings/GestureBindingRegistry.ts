@@ -203,6 +203,7 @@ export function cloneAction(action: BindingAction): BindingAction {
     if (action.type === "shortcut") {
         return {
             type: "shortcut",
+            title: action.title,
             shortcut: { ...action.shortcut },
         };
     }

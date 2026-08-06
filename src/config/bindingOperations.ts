@@ -174,8 +174,16 @@ export function validateBindingDraft(
             }
         }
     } else if (actionType === "shortcut") {
-        const shortcut = (rawAction as ShortcutBindingAction).shortcut;
-        if (!isValidShortcut(shortcut)) {
+        const sc = rawAction as ShortcutBindingAction;
+        // User-defined action name: required, trimmed, ≤ 80 chars.
+        const title = typeof sc.title === "string" ? sc.title.trim() : "";
+        if (title.length === 0) {
+            return fail("invalid-shortcut", "action title must not be empty");
+        }
+        if (title.length > 80) {
+            return fail("invalid-shortcut", "action title must be at most 80 characters");
+        }
+        if (!isValidShortcut(sc.shortcut)) {
             return fail("invalid-shortcut", "shortcut is invalid or empty");
         }
     } else {
@@ -320,6 +328,7 @@ export function cloneAction(action: BindingAction): BindingAction {
     if (action.type === "shortcut") {
         return {
             type: "shortcut",
+            title: action.title,
             shortcut: { ...action.shortcut },
         };
     }

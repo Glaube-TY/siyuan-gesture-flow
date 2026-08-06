@@ -314,7 +314,11 @@
             if (result.status === "imported") {
                 onStatus(i18n.settingsImportSuccess ?? "Imported", false);
             } else {
-                onStatus(result.message, true);
+                onStatus(
+                    i18n.settingsImportIncompatible ??
+                        (result.status === "error" && "message" in result ? result.message : "Import failed"),
+                    true,
+                );
             }
         } catch (err) {
             const label = err instanceof Error ? err.message : String(err);
@@ -392,10 +396,10 @@
     }
 
     /**
-     * Display name for a binding action (stage 6A): builtin commands
-     * show the localised command title; shortcuts show a badge-style
-     * label with the normalised shortcut text.  Unknown/invalid actions
-     * fall back to the direction sequence only.
+     * Display name for a binding action: builtin commands show the
+     * localised command title; shortcuts show the user-defined action
+     * name.  Unknown/invalid actions fall back to the direction sequence
+     * only.
      */
     function bindingActionTitle(binding: ConfigBinding): string {
         const action = binding.action;
@@ -403,9 +407,21 @@
             return commandTitle(action.commandId);
         }
         if (action.type === "shortcut") {
-            return `${i18n.actionShortcut ?? "快捷键"}：${displayShortcut(action.shortcut, detectShortcutPlatform())}`;
+            return action.title;
         }
         return directionsLabel(binding.directions);
+    }
+
+    /**
+     * Secondary detail line for a binding action: shortcuts show the
+     * actual key combination beneath the action name; builtin actions
+     * have no detail.
+     */
+    function bindingActionDetail(binding: ConfigBinding): string | null {
+        if (binding.action.type === "shortcut") {
+            return displayShortcut(binding.action.shortcut, detectShortcutPlatform());
+        }
+        return null;
     }
 
     /** Badge class for the implementation type. */
@@ -502,7 +518,13 @@
      * The actual delete only runs after the user confirms.
      */
     function handleDeleteBinding(binding: ConfigBinding): void {
-        const label = `${directionsLabel(binding.directions)} — ${bindingActionTitle(binding)}`;
+        // The user-entered title is passed as plain text to SiYuan's
+        // confirm dialog (which renders it via textContent — never
+        // concatenated into innerHTML).
+        const detail = bindingActionDetail(binding);
+        const label = detail
+            ? `${directionsLabel(binding.directions)} — ${bindingActionTitle(binding)} — ${detail}`
+            : `${directionsLabel(binding.directions)} — ${bindingActionTitle(binding)}`;
         confirm(i18n.bindingDeleteConfirm ?? "Delete binding", label, () => {
             void doDeleteBinding(binding);
         });
@@ -788,7 +810,10 @@
                                             {actionBadgeLabel(binding)}
                                         </span>
                                         <span class="gf-binding-cmd">
-                                            {bindingActionTitle(binding)}
+                                            <span class="gf-binding-cmd-main">{bindingActionTitle(binding)}</span>
+                                            {#if bindingActionDetail(binding)}
+                                                <span class="gf-binding-cmd-detail">{bindingActionDetail(binding)}</span>
+                                            {/if}
                                             {#if !binding.enabled}
                                                 <span class="gf-binding-disabled">
                                                     ({i18n.settingsBindingDisabled ?? "disabled"})
@@ -1020,6 +1045,19 @@
         white-space: nowrap;
         overflow: hidden;
         text-overflow: ellipsis;
+    }
+    /* Shortcut bindings: action name (main) + key combination (detail). */
+    .gf-binding-cmd-main {
+        display: inline;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+    .gf-binding-cmd-detail {
+        margin-left: 8px;
+        font-size: 12px;
+        font-weight: 400;
+        color: var(--b3-theme-on-surface, #1f2329);
+        opacity: 0.65;
     }
     .gf-binding-disabled {
         font-size: 12px;

@@ -86,18 +86,14 @@ export function validateConfig(
     const defaults = createDefaultConfig();
 
     // --- version ------------------------------------------------------------
-    // An unknown future version must NOT be force-downgraded.
-    if (root.version === undefined) {
-        // Missing version: treat as normalisable (fill current version).
-        notes.push("missing version — set to current");
-    } else if (typeof root.version !== "number" || !Number.isInteger(root.version)) {
-        errors.push(`version must be an integer, got ${JSON.stringify(root.version)}`);
-    } else if (root.version > CURRENT_CONFIG_VERSION) {
+    // Pre-release policy: there is exactly ONE current structure.  Any
+    // payload whose version is not the fixed current version is invalid
+    // (no dev-era migration, no version inference) and the caller falls
+    // back to defaults.
+    if (root.version !== CURRENT_CONFIG_VERSION) {
         errors.push(
-            `unknown future config version ${root.version} (current is ${CURRENT_CONFIG_VERSION}) — refusing to downgrade`,
+            `unsupported config version ${JSON.stringify(root.version)} (current is ${CURRENT_CONFIG_VERSION})`,
         );
-    } else if (root.version < 1) {
-        errors.push(`invalid config version ${root.version}`);
     }
     if (errors.length > 0) {
         return invalid(errors);
@@ -562,7 +558,7 @@ function validateBindings(
         }
         seenKeys.add(key);
 
-        // action (stage 6A: unified binding action, version 2)
+        // action (unified binding action — single current structure)
         if (o.action === undefined || o.action === null || !isPlainObject(o.action)) {
             errors.push(`bindings[${i}].action must be an object`);
             continue;
@@ -604,6 +600,16 @@ function validateBindings(
         }
 
         if (actionType === "shortcut") {
+            // User-defined action name: required, trimmed, ≤ 80 chars.
+            const rawTitle = rawAction.title;
+            if (typeof rawTitle !== "string" || rawTitle.trim().length === 0) {
+                errors.push(`bindings[${i}].action.title must be a non-empty string`);
+                continue;
+            }
+            if (rawTitle.trim().length > 80) {
+                errors.push(`bindings[${i}].action.title must be at most 80 characters`);
+                continue;
+            }
             const rawShortcut = rawAction.shortcut;
             if (rawShortcut === undefined || rawShortcut === null || !isPlainObject(rawShortcut)) {
                 errors.push(`bindings[${i}].action.shortcut must be an object`);
@@ -640,6 +646,7 @@ function validateBindings(
                 directions,
                 action: {
                     type: "shortcut",
+                    title: rawTitle.trim(),
                     shortcut: candidate,
                 },
             });
@@ -688,6 +695,7 @@ function cloneBindingShallow(b: ConfigBinding): ConfigBinding {
         directions: b.directions.slice(),
         action: {
             type: "shortcut",
+            title: b.action.title,
             shortcut: { ...b.action.shortcut },
         },
     };

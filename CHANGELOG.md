@@ -1,5 +1,37 @@
 # Changelog
 
+## Pre-release finalisation — shortcut labels & single config structure
+
+- **Shortcut action name**: shortcut bindings now carry a user-defined
+  `title` (trimmed, 1–80 chars, required) alongside the structured
+  shortcut.  The title belongs to the action, not to the shortcut data.
+  The bindings list shows the action name as the main line with the key
+  combination beneath it; the overlay prefers the action name.  Delete
+  confirmation shows gesture + action name + key combination (plain
+  text, safe rendering).
+- **Live capture display fix**: the capture field previously computed
+  its text via a plain function, so it could keep showing the stale
+  placeholder after a successful capture.  It now uses a reactive Svelte
+  value (`displayText`) driven by `capturing` / `value` — capturing,
+  captured combination, cleared and Escape/blur-cancelled states all
+  render immediately.  ShortcutRecorder is strictly one-way data flow
+  (parent-owned `value` prop + `change` event).
+- **Test-shortcut button removed** from the settings UI (runtime
+  ShortcutExecutor is unchanged; real gestures still dispatch
+  shortcuts).  Related i18n keys and stale state handling removed.
+- **Single pre-release config structure**: all dev-era migration code
+  was removed (`src/config/migrations.ts`, `migrateAndValidate`,
+  version inference, legacy top-level `commandId` conversion).  There is
+  now exactly one current structure — `version 1` is the fixed first
+  public-release baseline and does not change with pre-release schema
+  edits.  Incompatible dev configs are discarded on load (defaults are
+  used and written back); imports of incompatible payloads are rejected
+  with a short message.  `ConfigLoadResult.source` no longer includes
+  `migrated`.
+- Default bindings unchanged (L/R/U/D); config version fixed at 1; new
+  i18n keys `shortcutActionTitle*`, `settingsImportIncompatible`; the
+  `shortcutTest*` keys were removed.
+
 ## Stage 6B-3 — Simplified shortcut UI, user-facing README, navigation actions
 
 - **Shortcut UI**: the two long tutorial paragraphs (compatibility +
@@ -86,26 +118,26 @@
 - New i18n keys: `cmdTabsClose`, `cmdDocumentReload`, `cmdGroupDocument`
   (zh + en).
 
-## Stage 6A — Shortcut binding actions, config v2, extensible action model
+## Stage 6A — Shortcut binding actions, extensible action model
 
-### Unified binding action model (config version 2)
+> Historical pre-release record.  The action model is now the single
+> current config structure (version 1, fixed first-release baseline): the
+> `v2` numbering, the v1 → v2 migration chain and `migrated` source state
+> described below no longer exist — dev-era migration code was removed in
+> the pre-release finalisation.
 
-- Bumped `CURRENT_CONFIG_VERSION` to 2.  `ConfigBinding` no longer carries
-  top-level `commandId` / `commandParams`; it now holds a single `action`:
+### Unified binding action model
+
+- Bindings carry a single `action` instead of top-level `commandId` /
+  `commandParams`:
   - `BuiltinBindingAction { type: "builtin", commandId, commandParams }`
-  - `ShortcutBindingAction { type: "shortcut", shortcut: ShortcutSpec }`
+  - `ShortcutBindingAction { type: "shortcut", title, shortcut: ShortcutSpec }`
 - JavaScript is deliberately NOT a persistent action type — it exists only
   as a disabled "in development" option in the settings UI and can never be
   saved, imported, or executed.
-- Pure-function v1 → v2 migration: legacy top-level `commandId` /
-  `commandParams` are wrapped into `builtin` actions; binding id / enabled /
-  directions are preserved; empty bindings stay empty; missing `bindings`
-  stays missing (defaults are filled by the validator).  Version-less early
-  dev configs with legacy fields are migrated too; version-less v2-shaped
-  configs are stamped with the current version.
-- Migration is now explicitly recognised: `migrateAndValidate` reports
-  `migrated: true`, `ConfigManager` persists the v2 payload and returns
-  `source: "migrated"`, so the next load skips migration.
+- Dev-era configs that still use the old top-level shape (or any other
+  structure that differs from the current one) are discarded on load:
+  defaults are used and written back; no migration is attempted.
 
 ### Keyboard shortcuts
 

@@ -38,7 +38,7 @@ GestureFlow is a mouse gesture plugin for SiYuan Notes. Hold the right mouse but
 | Type | Description |
 | --- | --- |
 | Built-in action | Pick one of the built-in features (see the list below). |
-| Keyboard shortcut | Click the large capture box, press the key combination, then verify it with a real gesture after saving. |
+| Keyboard shortcut | Click the capture box, press the key combination. First enter an **action name** (e.g. "Open Global Search"), then click the capture box and press the combination. Save, close the settings window, and verify with a real gesture. |
 | JavaScript | Shown as **in development** — currently not selectable. |
 
 ## Built-in actions
@@ -63,7 +63,7 @@ GestureFlow is a mouse gesture plugin for SiYuan Notes. Hold the right mouse but
 - SiYuan's built-in shortcuts usually respond.
 - Whether a shortcut takes effect may depend on the current focus area.
 - A few plugins that actively reject non-trusted keyboard events may not respond.
-- Always close the settings window and verify with a **real gesture** — the test button only checks dispatch.
+- Always close the settings window and verify with a **real gesture** in the context where the shortcut normally works.
 
 ## Settings
 
@@ -80,8 +80,8 @@ GestureFlow is a mouse gesture plugin for SiYuan Notes. Hold the right mouse but
 **Is the normal right-click menu still available?**
 Yes — right-clicking without moving still shows SiYuan's context menu. Hold the temporary disable key to use the ordinary right-click whenever needed.
 
-**Why does a shortcut test do nothing?**
-The shortcut is dispatched to the current focus. Some shortcuts are context-sensitive (e.g. only work inside an editor), and plugins that reject synthetic events will ignore it. Close the settings window and verify with a real gesture.
+**Why is a shortcut not working?**
+The shortcut is dispatched to the current focus. Some shortcuts are context-sensitive (e.g. only work inside an editor), and plugins that reject synthetic events will ignore it. Close the settings window and verify with a real gesture in the context where the shortcut normally works.
 
 **Why is my gesture not recognized?**
 The trajectory may be too short, too long, or drawn too slowly. Check the activation distance and timeout settings, and make sure the direction sequence matches a saved binding (with 8-direction mode off, diagonals are not recognized).
@@ -107,6 +107,8 @@ JavaScript actions are still in development and are disabled for safety.
 Welcome to report issues, suggest features, or submit Pull Requests via [GitHub Issues](https://github.com/Glaube-TY/siyuan-gesture-flow/issues).
 
 Development environment: Node.js 20 and pnpm 10. Run `pnpm release:check` before committing.
+
+Before the first public release, development configuration may be reset: configs saved by earlier development builds are **not** guaranteed to be compatible and may be discarded in favour of the current defaults.
 
 ## License
 

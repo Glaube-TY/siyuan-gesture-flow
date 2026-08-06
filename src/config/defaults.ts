@@ -49,7 +49,7 @@ const DEFAULT_BINDINGS: ConfigBinding[] = [
 ];
 
 const DEFAULT_CONFIG: Readonly<GestureFlowConfig> = Object.freeze({
-    version: 2,
+    version: 1,
     enabled: true,
     trigger: {
         button: 2,
@@ -129,6 +129,7 @@ export function cloneBinding(b: ConfigBinding): ConfigBinding {
         directions: b.directions.slice(),
         action: {
             type: "shortcut",
+            title: b.action.title,
             shortcut: { ...b.action.shortcut },
         },
     };

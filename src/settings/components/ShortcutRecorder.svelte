@@ -9,14 +9,13 @@
     } from "@/shortcuts/shortcutUtils";
 
     /**
-     * Shortcut capture / display / test component (stage 6A).
+     * Shortcut capture / display component (stage 6A).
      *
-     * The component is fully controlled: it never saves bindings, never
-     * touches ConfigManager, and never closes the editor.  It only
-     * reports a captured {@link ShortcutSpec} (or `null` when cleared)
-     * via the `change` event, and requests a live test of the *current
-     * draft* via the `test` event — the parent runs the same
-     * {@link ShortcutExecutor} used at runtime.
+     * The component is fully controlled and follows a strict one-way
+     * data flow: the parent owns the single `value` source of truth,
+     * passes it down via {@link value}, and updates it only in response
+     * to the `change` event.  The component never saves bindings and
+     * never touches ConfigManager.
      *
      * Capture semantics:
      * - Pure Control/Alt/Shift/Meta presses are ignored (never saved).
@@ -35,27 +34,19 @@
 
     const dispatch = createEventDispatcher<{
         change: ShortcutSpec | null;
-        test: ShortcutSpec;
     }>();
 
     let capturing = false;
 
-    /** Display the value with the current platform's modifier style. */
-    function renderShortcut(spec: ShortcutSpec): string {
-        return displayShortcut(spec, detectShortcutPlatform());
-    }
-
-    /** The input's display text for the current state. */
-    function inputText(): string {
-        if (capturing) {
-            return i18n.shortcutCapturing ?? "正在录入…";
-        }
-        if (value) {
-            return renderShortcut(value);
-        }
-        // Empty state is an actionable hint, not a status.
-        return i18n.shortcutCaptureHint ?? "点击后按下组合键";
-    }
+    // Reactive display text — recomputed whenever the capture state or
+    // the value changes, so the input reflects the current state
+    // immediately (capturing, captured combination, or the empty hint).
+    $: platform = detectShortcutPlatform();
+    $: displayText = capturing
+        ? (i18n.shortcutCapturing ?? "正在录入快捷键…")
+        : value
+          ? displayShortcut(value, platform)
+          : (i18n.shortcutCaptureHint ?? "点击后按下组合键");
 
     /**
      * Cancel capture when the input loses focus (e.g. the user clicked
@@ -116,11 +107,6 @@
         dispatch("change", null);
     }
 
-    function testShortcut(): void {
-        if (disabled || !value) return;
-        dispatch("test", value);
-    }
-
     onMount(() => {
         window.addEventListener("keydown", onKeyDown, { capture: true });
     });
@@ -137,7 +123,7 @@
         type="text"
         readonly
         disabled={disabled}
-        value={inputText()}
+        value={displayText}
         on:click={beginCapture}
         on:focus={beginCapture}
         on:blur={onBlur}
@@ -151,13 +137,6 @@
                 aria-label={i18n.shortcutClear ?? "清除快捷键"}
             >
                 {i18n.shortcutClearLabel ?? "清除"}
-            </button>
-            <button
-                class="b3-button b3-button--outline gf-shortcut-btn"
-                on:click={testShortcut}
-                aria-label={i18n.shortcutTest ?? "测试快捷键"}
-            >
-                {i18n.shortcutTest ?? "测试快捷键"}
             </button>
         {/if}
     </div>

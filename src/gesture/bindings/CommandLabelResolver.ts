@@ -69,6 +69,12 @@ export function createCommandLabelResolver(
         }
 
         if (action.type === "shortcut") {
+            // Prefer the user-defined action name; fall back to the key
+            // combination only if the title is somehow missing (valid
+            // current configs never allow an empty title).
+            if (action.title && action.title.trim().length > 0) {
+                return action.title;
+            }
             const prefix = i18n[shortcutPrefixKey] ?? "快捷键：";
             return `${prefix}${displayShortcut(action.shortcut, detectShortcutPlatform())}`;
         }

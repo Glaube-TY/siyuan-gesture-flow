@@ -410,6 +410,7 @@ export class GestureFlowRuntime {
                       }
                     : {
                           type: "shortcut",
+                          title: b.action.title,
                           shortcut: { ...b.action.shortcut },
                       },
         }));
