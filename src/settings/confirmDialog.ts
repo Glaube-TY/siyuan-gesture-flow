@@ -12,7 +12,7 @@ import { Dialog } from "siyuan";
  *
  * Buttons reuse SiYuan's `b3-button` classes.  The dialog is idempotent:
  * whichever path closes it (confirm / cancel / X / Esc / scrim / unload
- * via {@link destroy}), the callback fires at most once.
+ * via {@link closeAllSafeConfirms}), the callback fires at most once.
  */
 
 export interface SafeConfirmOptions {
