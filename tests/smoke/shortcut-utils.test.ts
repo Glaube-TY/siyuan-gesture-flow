@@ -86,6 +86,50 @@ describe("shortcut-utils smoke", () => {
         expect(displayShortcut(ctrlShiftP, "mac")).toBe("⌃⇧P");
     });
 
+    it("Shift+= 捕获规范化为基础键并通过校验", () => {
+        const spec = eventToShortcutSpec(press("+", "Equal", { shiftKey: true }));
+        expect(spec).toEqual({
+            key: "=",
+            code: "Equal",
+            keyCode: 187,
+            ctrlKey: false,
+            altKey: false,
+            shiftKey: true,
+            metaKey: false,
+        });
+        expect(validateShortcutSpec(spec!)).toBe(true);
+    });
+
+    it("Shift+1 捕获规范化为基础键并通过校验", () => {
+        const spec = eventToShortcutSpec(press("!", "Digit1", { shiftKey: true }));
+        expect(spec?.key).toBe("1");
+        expect(spec?.code).toBe("Digit1");
+        expect(spec?.keyCode).toBe(49);
+        expect(spec?.shiftKey).toBe(true);
+        expect(validateShortcutSpec(spec!)).toBe(true);
+    });
+
+    it("Ctrl+P 显示大写 P（Windows/Linux）", () => {
+        const spec = eventToShortcutSpec(press("p", "KeyP", { ctrlKey: true }));
+        expect(displayShortcut(spec!)).toBe("Ctrl+P");
+    });
+
+    it("Win+P 显示 Win（Windows/Linux meta 键）", () => {
+        const spec = eventToShortcutSpec(press("p", "KeyP", { metaKey: true }));
+        expect(displayShortcut(spec!)).toBe("Win+P");
+        expect(spec?.key).toBe("p"); // 存储仍是基础小写
+    });
+
+    it("macOS 显示 ⌘P", () => {
+        const spec = eventToShortcutSpec(press("p", "KeyP", { metaKey: true }));
+        expect(displayShortcut(spec!, "mac")).toBe("⌘P");
+    });
+
+    it("Shift+字母显示大写（macOS ⌃⇧P）", () => {
+        const spec = eventToShortcutSpec(press("p", "KeyP", { ctrlKey: true, shiftKey: true }));
+        expect(displayShortcut(spec!, "mac")).toBe("⌃⇧P");
+    });
+
     it("canonicalKey 小写化字母", () => {
         expect(canonicalKey("P")).toBe("p");
         expect(canonicalKey("F5")).toBe("F5");

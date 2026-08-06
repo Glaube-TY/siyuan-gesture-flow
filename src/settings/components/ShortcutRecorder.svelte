@@ -39,10 +39,29 @@
     }>();
 
     let capturing = false;
+    /** True between pointerdown and the following blur — clicking the
+     * input itself must not flip capture off and on again. */
+    let pointerDownInside = false;
 
     /** Display the value with the current platform's modifier style. */
     function renderShortcut(spec: ShortcutSpec): string {
         return displayShortcut(spec, detectShortcutPlatform());
+    }
+
+    /**
+     * Cancel capture when the input loses focus (e.g. the user clicked
+     * another settings control).  The current shortcut is kept, no
+     * `change` is emitted, and the draft is not cleared.  If the blur
+     * came from clicking the input itself (pointerdown inside), capture
+     * is left running so focus/click do not flicker it off and on.
+     */
+    function onBlur(): void {
+        if (!capturing) return;
+        if (pointerDownInside) {
+            pointerDownInside = false; // re-focus will keep capture on
+            return;
+        }
+        capturing = false;
     }
 
     function onKeyDown(e: KeyboardEvent): void {
@@ -113,6 +132,8 @@
                   : (i18n.shortcutEmpty ?? "")}
             on:click={beginCapture}
             on:focus={beginCapture}
+            on:pointerdown={() => { pointerDownInside = true; }}
+            on:blur={onBlur}
             aria-label={i18n.shortcutCaptureHint ?? "点击后按下组合键"}
         />
         {#if value && !capturing}

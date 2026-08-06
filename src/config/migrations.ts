@@ -197,8 +197,11 @@ export function migrateAndValidate(
             migrated = true;
         } else {
             // v2-shaped data without a version field: stamp the current
-            // version and let the normaliser fill anything else missing.
+            // version and mark the payload as needing persistence so the
+            // repaired v2 config is written back and the next load skips
+            // the stamping.
             payload = { ...raw, version: CURRENT_CONFIG_VERSION };
+            migrated = true;
         }
     } else {
         // Run migrations from detected version up to current.

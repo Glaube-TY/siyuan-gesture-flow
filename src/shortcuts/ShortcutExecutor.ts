@@ -1,4 +1,5 @@
 import type { ShortcutSpec } from "./types";
+import { eventKeyFor } from "./shortcutUtils";
 
 /**
  * Sends synthetic keyboard shortcuts (stage 6A).
@@ -12,7 +13,10 @@ import type { ShortcutSpec } from "./types";
  * - The target is the current `document.activeElement` when available,
  *   falling back to `document` otherwise.
  * - The event is `bubbles: true` and `cancelable: true`.
- * - `key` / `code` / modifier flags come straight from the spec.
+ * - `key` reflects real keyboard semantics rebuilt from the persisted
+ *   base key + modifiers (`1`+Shift → `!`, letters+Shift → uppercase)
+ *   via {@link eventKeyFor}; `code` / `keyCode` stay the physical base
+ *   key's values.
  * - `keyCode` and `which` are set to the spec's numeric key code.  Some
  *   environments drop these read-only fields in the constructor, so a
  *   local, tested compatibility fill is applied — the globals
@@ -81,7 +85,7 @@ export class ShortcutExecutor {
 
     private buildKeydownEvent(spec: ShortcutSpec): KeyboardEvent {
         const event = new KeyboardEvent("keydown", {
-            key: spec.key,
+            key: eventKeyFor(spec),
             code: spec.code,
             bubbles: true,
             cancelable: true,
@@ -110,14 +114,12 @@ export class ShortcutExecutor {
             });
         }
         // Human-readable key for listeners that read e.key.  The stored
-        // canonical key is lowercase for letters; real keyboards report
-        // "P" when Shift+P is pressed, so uppercase letters under Shift.
-        // Everything else (F6, ArrowLeft, Space…) keeps its canonical
-        // form — display-only transformations never leak into the event.
-        const eventKey =
-            spec.key.length === 1 && /^[a-z]$/.test(spec.key) && spec.shiftKey
-                ? spec.key.toUpperCase()
-                : spec.key;
+        // canonical key is the physical base; real keyboards report the
+        // shifted variant under Shift ("!" for 1+Shift, "P" for
+        // p+Shift), so eventKeyFor restores it.  Everything else (F6,
+        // ArrowLeft, Space…) keeps its canonical form — display-only
+        // transformations never leak into the event.
+        const eventKey = eventKeyFor(spec);
         if (event.key !== eventKey) {
             Object.defineProperty(event, "key", {
                 value: eventKey,

@@ -5,18 +5,25 @@ import type { ShortcutSpec } from "./types";
  * (stage 6A).
  *
  * Single source of truth for shortcut keys: `SUPPORTED_KEYS` stores
- * **canonical** forms (single letters lowercase, digits/punctuation
- * as-is, multi-character keys like `F6` / `ArrowLeft` / `Home` /
- * `Enter` / `Tab` in their exact spec names).  Every consumer —
- * capture (`eventToShortcutSpec`), config validation
+ * **physical base keys** (lowercase letters, digits/punctuation base
+ * characters, exact spec names for `F6` / `ArrowLeft` / `Home` /
+ * `Enter` / `Tab`).  Shifted variants (`!`, `+`, `?`, …) are never
+ * persisted: capture maps them back to their base key
+ * ({@link SHIFTED_TO_BASE}) and records the shift in `shiftKey`.
+ * Every consumer — capture (`eventToShortcutSpec`), config validation
  * (`validateShortcutSpec`) and binding-draft validation — goes through
  * the same helpers, so a key accepted at capture time is always
  * accepted at validation time.
  *
  * Capture rules:
  * - Pure modifier keys (Control/Alt/Shift/Meta) are never saved.
- * - Letters are normalised to lowercase; display uppercases them when
- *   Shift is held.
+ * - For a known physical `code`, the persisted key is the base
+ *   character of that key (`Digit1` → `1`, `Equal` → `=`,
+ *   `KeyP` → `p`); Shift state lives in `shiftKey`.
+ * - When `code` is absent, shifted characters (`!`, `+`, `?`, …) are
+ *   mapped back to their base key via {@link SHIFTED_TO_BASE}.
+ * - Letters are normalised to lowercase; display always shows them
+ *   uppercase.
  * - Escape is reserved for cancel-capture; Backspace/Delete for
  *   clear-capture.  None of them is saved as a shortcut.
  * - Modifier display order is always: Control, Alt, Shift, Meta, key.
@@ -34,8 +41,10 @@ export const MODIFIER_KEYS: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * Supported main keys in CANONICAL form: lowercase letters, digits,
- * punctuation as-is, and exact spec names for multi-character keys.
+ * Supported main keys in CANONICAL (physical base) form: lowercase
+ * letters, digits, base punctuation characters, and exact spec names
+ * for multi-character keys.  Shifted variants (`!` `@` `+` `?` …) are
+ * NOT persisted keys — capture converts them to their base key.
  * Multi-character keys are matched exactly — never uppercased.
  */
 export const SUPPORTED_KEYS: ReadonlySet<string> = new Set([
@@ -46,9 +55,9 @@ export const SUPPORTED_KEYS: ReadonlySet<string> = new Set([
     "ArrowLeft", "ArrowUp", "ArrowRight", "ArrowDown",
     "Home", "End", "PageUp", "PageDown",
     " ", "Enter", "Tab",
-    "!", "@", "#", "$", "%", "^", "&", "*", "(", ")",
-    "-", "_", "=", "+", "[", "]", "{", "}", "\\", "|", ";", ":", "'", "\"",
-    ",", "<", ".", ">", "/", "?", "`", "~",
+    // Base punctuation (US layout).  Shifted variants of these keys are
+    // stored as the base key + shiftKey.
+    "-", "=", "[", "]", "\\", ";", "'", ",", ".", "/", "`",
 ]);
 
 /**
@@ -117,6 +126,46 @@ const KEYCODE_BY_KEY: Readonly<Record<string, number>> = {
 };
 
 /**
+ * Shifted (KeyboardEvent.key) variant → physical base key (US layout).
+ * Used at capture time: a pressed `!` is persisted as key `"1"` with
+ * `shiftKey: true`, never as `!`.
+ */
+export const SHIFTED_TO_BASE: Readonly<Record<string, string>> = {
+    "!": "1", "@": "2", "#": "3", "$": "4", "%": "5",
+    "^": "6", "&": "7", "*": "8", "(": "9", ")": "0",
+    "_": "-", "+": "=", "{": "[", "}": "]", "|": "\\",
+    ":": ";", "\"": "'", "<": ",", ">": ".", "?": "/", "~": "`",
+};
+
+/**
+ * Physical base key → shifted KeyboardEvent.key variant (US layout).
+ * The reverse of {@link SHIFTED_TO_BASE}: `ShortcutExecutor` uses it to
+ * rebuild the real `event.key` for a persisted base key + shiftKey.
+ */
+export const BASE_TO_SHIFTED: Readonly<Record<string, string>> = {
+    "1": "!", "2": "@", "3": "#", "4": "$", "5": "%",
+    "6": "^", "7": "&", "8": "*", "9": "(", "0": ")",
+    "-": "_", "=": "+", "[": "{", "]": "}", "\\": "|",
+    ";": ":", "'": "\"", ",": "<", ".": ">", "/": "?", "`": "~",
+};
+
+/**
+ * Resolve the physical base key for a raw `KeyboardEvent.key` + `code`
+ * pair.  When the physical `code` is known its base character wins
+ * (`Equal` → `=`, `Digit1` → `1`, `KeyP` → `p`); otherwise shifted
+ * variants map back through {@link SHIFTED_TO_BASE} and single letters
+ * are canonicalised to lowercase.
+ */
+export function baseKeyFor(rawKey: string, code: string): string {
+    if (code && code in KEY_BY_CODE) {
+        return KEY_BY_CODE[code];
+    }
+    const shifted = SHIFTED_TO_BASE[rawKey];
+    if (shifted !== undefined) return shifted;
+    return canonicalKey(rawKey);
+}
+
+/**
  * Normalise a main key: single characters (letters) are lowercased;
  * everything else (F5, ArrowLeft, Home…) is kept as-is.
  */
@@ -166,7 +215,8 @@ export function keyCodeFor(key: string, code: string): number | null {
 /**
  * Normalise a raw shortcut-ish object into a canonical {@link ShortcutSpec}.
  *
- * - `key` is canonicalised (letters lowercased).
+ * - `key` is resolved to its physical base key (shifted variants like
+ *   `!`/`+`/`?` map to the base key; letters lowercased).
  * - `code` is kept when present (may be empty for code-less keyboards).
  * - `keyCode` is kept when a positive integer is supplied, otherwise
  *   derived from the key/code mapping.
@@ -184,8 +234,8 @@ export function normalizeShortcutSpec(input: {
     shiftKey?: boolean;
     metaKey?: boolean;
 }): ShortcutSpec {
-    const key = canonicalKey(input.key);
     const code = input.code ?? "";
+    const key = baseKeyFor(input.key, code);
     const derived = keyCodeFor(key, code);
     const keyCode =
         typeof input.keyCode === "number" && Number.isInteger(input.keyCode) && input.keyCode > 0
@@ -259,15 +309,18 @@ export function isValidShortcut(spec: ShortcutSpec): boolean {
 /**
  * Build a canonical {@link ShortcutSpec} from a KeyboardEvent.
  *
- * Returns `null` for pure modifier presses and unsupported keys.  The
- * caller decides what to do with Escape/Backspace/Delete (cancel /
- * clear) — this function does not interpret them.
+ * The persisted `key` is the physical base key of the pressed key
+ * (`Digit1` → `1`, `Equal` → `=`, `KeyP` → `p`); Shift state is kept in
+ * `shiftKey`.  Returns `null` for pure modifier presses and unsupported
+ * keys.  The caller decides what to do with Escape/Backspace/Delete
+ * (cancel / clear) — this function does not interpret them.
  */
 export function eventToShortcutSpec(e: KeyboardEvent): ShortcutSpec | null {
     if (isModifierKey(e.key)) return null;
-    if (!isSupportedShortcutKey(e.key)) return null;
+    const base = baseKeyFor(e.key, e.code || "");
+    if (!isSupportedShortcutKey(base)) return null;
     const spec = normalizeShortcutSpec({
-        key: e.key,
+        key: base,
         code: e.code || "",
         ctrlKey: e.ctrlKey,
         altKey: e.altKey,
@@ -278,7 +331,12 @@ export function eventToShortcutSpec(e: KeyboardEvent): ShortcutSpec | null {
     return spec;
 }
 
-/** Display text for a main key (arrows → Left/Up/Right/Down, Space, etc.). */
+/**
+ * Display text for a main key.  Letters ALWAYS render uppercase (with or
+ * without Shift); arrows → Left/Up/Right/Down; Space → Space.  Base
+ * punctuation renders as its own character (`Shift+=` shows `=`, never
+ * `+`).  Display is purely presentational — never parsed back.
+ */
 export function displayKey(spec: ShortcutSpec): string {
     let key = spec.key;
     if (key === " ") return "Space";
@@ -286,8 +344,8 @@ export function displayKey(spec: ShortcutSpec): string {
     if (key === "ArrowUp") return "Up";
     if (key === "ArrowRight") return "Right";
     if (key === "ArrowDown") return "Down";
-    // Letters are stored lowercase; show uppercase when Shift is held.
-    if (key.length === 1 && /^[a-z]$/.test(key) && spec.shiftKey) {
+    // Letters are stored lowercase; always display uppercase.
+    if (key.length === 1 && /^[a-z]$/.test(key)) {
         key = key.toUpperCase();
     }
     return key;
@@ -313,9 +371,10 @@ export function detectShortcutPlatform(): ShortcutPlatform {
 /**
  * Cross-platform shortcut display.
  *
- * Windows/Linux: `Ctrl+Shift+P`, `Alt+Left`, `F6`, `Win+P`.
- * macOS: modifier symbols `⌃` `⌥` `⇧` `⌘` without separators (`⌃⇧P`).
- * Direction keys render as `Left/Up/Right/Down` on every platform.
+ * Windows/Linux: `Ctrl+Shift+P`, `Alt+Left`, `F6`, `Win+P` (meta shows
+ * as `Win`).  macOS: modifier symbols `⌃` `⌥` `⇧` `⌘` without
+ * separators (`⌃⇧P`).  Direction keys render as `Left/Up/Right/Down` on
+ * every platform.
  *
  * This function ONLY reads {@link ShortcutSpec} — the display string is
  * never parsed back into execution data.
@@ -326,9 +385,29 @@ export function displayShortcut(spec: ShortcutSpec, platform: ShortcutPlatform =
     if (spec.ctrlKey) parts.push(isMac ? "⌃" : "Ctrl");
     if (spec.altKey) parts.push(isMac ? "⌥" : "Alt");
     if (spec.shiftKey) parts.push(isMac ? "⇧" : "Shift");
-    if (spec.metaKey) parts.push(isMac ? "⌘" : "Meta");
+    if (spec.metaKey) parts.push(isMac ? "⌘" : "Win");
     parts.push(displayKey(spec));
     // macOS renders modifier symbols without separators (⌃⇧P); Windows /
     // Linux use "+" (Ctrl+Shift+P).
     return parts.join(isMac ? "" : "+");
+}
+
+/**
+ * The real `KeyboardEvent.key` for a persisted base key + modifiers
+ * (used by {@link ShortcutExecutor}).
+ *
+ * Rebuilds the true key semantics: Shift restores the shifted variant
+ * (`1`+Shift → `!`, `=`+Shift → `+`, `/`+Shift → `?`, `[`+Shift → `{`),
+ * Shift+letters produce uppercase, and everything else keeps the base
+ * key.  `code` / `keyCode` are untouched — they already describe the
+ * physical key.
+ */
+export function eventKeyFor(spec: ShortcutSpec): string {
+    const base = spec.key;
+    if (spec.shiftKey) {
+        const shifted = BASE_TO_SHIFTED[base];
+        if (shifted !== undefined) return shifted;
+        if (base.length === 1 && /^[a-z]$/.test(base)) return base.toUpperCase();
+    }
+    return base;
 }

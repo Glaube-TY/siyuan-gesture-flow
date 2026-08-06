@@ -128,13 +128,14 @@ describe("config migration smoke", () => {
         });
     });
 
-    it("缺少 version 的 v2 形状数据补上当前版本", () => {
+    it("缺少 version 的 v2 形状数据补上当前版本并标记 migrated（以便写回）", () => {
         const cfg = createDefaultConfig();
         const { version: _v, ...withoutVersion } = cfg;
         void _v;
         const result = migrateAndValidate(withoutVersion, { availableCommandIds: AVAILABLE_COMMANDS });
-        // 补上版本后即为完整 v2 配置（valid，无需再修复）
+        // 补上版本后即为完整 v2 配置，且必须标记 migrated 供 ConfigManager 写回
         expect(result.status).toBe("valid");
+        expect(result.migrated).toBe(true);
         expect(result.config.version).toBe(2);
         expect(result.config.bindings.length).toBe(4);
     });

@@ -63,8 +63,8 @@ GestureFlow is under active development. The following is **done**:
   `Plugin.saveData`, and notifies subscribers with independent deep copies.
   Imports go through the same migration + validation pipeline as the initial
   load; invalid payloads fall back to defaults.
-- **Settings page** — a Svelte-based settings dialog hosted in a custom
-  full-screen SiYuan `Dialog` (not `Setting.addItem`).  Tabs for General
+- **Settings page** — a Svelte-based settings dialog hosted in a
+  full-width standalone SiYuan `Dialog` (not `Setting.addItem`).  Tabs for General
   (enable, suppression key, activation distance, timeout), Recognition
   (direction mode, sampling, simplification, segment limits), Display
   (trail/hint toggles, line width), Bindings (full gesture recording +
@@ -145,7 +145,7 @@ src/
   runtime/
     GestureFlowRuntime.ts       Lifecycle manager — start/stop/restart all components
   settings/
-    SettingsDialog.ts           Custom full-screen Dialog wrapper
+    SettingsDialog.ts           Full-width standalone settings dialog wrapper
     SettingsPanel.svelte        Svelte settings dialog (tabs: general/recognition/display/bindings/data)
     settingsHelpers.ts          Pure helpers (parseNumber, DebouncedPatchScheduler)
   index.ts                      Plugin entry — config manager, runtime, settings, unload

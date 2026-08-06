@@ -47,7 +47,7 @@ GestureFlow 正在开发中。以下功能**已完成**：
   `migrated`）。`ConfigManager` 持有内存快照，通过 `Plugin.loadData` /
   `Plugin.saveData` 串行持久化，向订阅者推送独立深拷贝。导入走与首次加载相同
   的迁移 + 校验管线；无效数据回退默认配置。
-- **设置页面** — 基于自定义全屏思源 `Dialog` 承载的 Svelte 设置对话框
+- **设置页面** — 基于完整宽度的独立思源 `Dialog` 承载的 Svelte 设置对话框
   （非 `Setting.addItem`）。包含常规（启用、临时禁用键、激活距离、超时）、识别
   （方向模式、采样、简化、段限制）、显示（轨迹/提示开关、线宽）、绑定（完整手势
   录制 + 新增/编辑/删除/启停；每个绑定可绑定到**内置功能**或**快捷键**；
@@ -117,13 +117,9 @@ src/
   runtime/
     GestureFlowRuntime.ts       生命周期管理器 — 启动/停止/重启全部组件
   settings/
-    SettingsDialog.ts           自定义全屏 Dialog 封装
+    SettingsDialog.ts           完整宽度的独立设置对话框封装（非全屏窗口）
     SettingsPanel.svelte        Svelte 设置对话框（常规/识别/显示/绑定/数据）
     settingsHelpers.ts          纯工具函数（parseNumber, DebouncedPatchScheduler）
-  index.ts                      插件入口 — 配置管理器、运行时、设置、卸载    GestureFlowRuntime.ts       生命周期管理器 — start/stop/restart 全部组件
-  settings/
-    SettingsPanel.svelte        Svelte 设置对话框（标签页：常规/识别/显示/绑定/数据）
-    settingsHelpers.ts          纯辅助函数（parseNumber、DebouncedPatchScheduler）
   index.ts                      插件入口 — 配置管理器、运行时、设置、卸载
 ```
 
