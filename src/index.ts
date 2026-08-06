@@ -1,7 +1,8 @@
-import { Plugin, getFrontend, getBackend, showMessage, globalCommand } from "siyuan";
+import { Plugin, showMessage, globalCommand } from "siyuan";
 import "./index.scss";
 import { SettingsDialog } from "@/settings/SettingsDialog";
 import { closeAllSafeConfirms } from "@/settings/confirmDialog";
+import pluginMeta from "../plugin.json";
 import { ConfigManager, CONFIG_STORAGE_NAME } from "@/config/ConfigManager";
 import type { ConfigPersistenceHost } from "@/config/ConfigManager";
 import type { ConfigLoadResult } from "@/config/types";
@@ -14,7 +15,11 @@ import type { SettingCommandItem } from "@/settings/commandCatalog";
 import { OverlayI18n } from "@/gesture/overlay/types";
 
 /** Whether the plugin is running in development mode (concise debug logs). */
-const IS_DEV = process.env.DEV_MODE === "true" || process.env.NODE_ENV === "development";
+/**
+ * Runtime is intentionally quiet: normal plugin operation logs nothing.
+ * Only genuine failures emit `console.error` / `console.warn` with the
+ * `[GestureFlow]` prefix (and never user data, tokens, paths or DOM).
+ */
 
 /**
  * GestureFlow plugin entry.
@@ -94,10 +99,6 @@ export default class GestureFlowPlugin extends Plugin {
         // pending from a previous load/unload cycle.
         const token = ++this.lifecycleToken;
 
-        if (IS_DEV) {
-            console.log(`[${this.name}] loading (frontend: ${getFrontend()}, backend: ${getBackend()})`);
-        }
-
         if (typeof document === "undefined") {
             return; // non-DOM environment, nothing to attach
         }
@@ -145,11 +146,6 @@ export default class GestureFlowPlugin extends Plugin {
             overlayI18n,
             i18n: this.i18n ?? {},
             app: this.gfApp,
-            onLog: (message) => {
-                if (IS_DEV) {
-                    console.debug(`[${this.name}] ${message}`);
-                }
-            },
         });
         this.runtime = runtime;
 
@@ -168,9 +164,6 @@ export default class GestureFlowPlugin extends Plugin {
                 return; // replaced by a newer lifecycle
             }
 
-            if (IS_DEV) {
-                console.log(`[${this.name}] config loaded (source: ${result.source})`);
-            }
             runtime.start(result.config);
 
             // Subscribe to config changes so the runtime restarts when
@@ -193,11 +186,10 @@ export default class GestureFlowPlugin extends Plugin {
                         // Non-fatal — the runtime keeps running the
                         // working config regardless.
                     });
-                    if (IS_DEV) {
-                        console.warn(
-                            `[${this.name}] ${this.i18n?.settingsRollback ?? "Restart failed; previous configuration restored"}: ${restartResult.error}`,
-                        );
-                    }
+                    // Genuine failure: warn concisely (no config data).
+                    console.warn(
+                        `[GestureFlow] ${this.i18n?.settingsRollback ?? "Restart failed; previous configuration restored"}: ${restartResult.error}`,
+                    );
                 }
             });
         });
@@ -248,6 +240,7 @@ export default class GestureFlowPlugin extends Plugin {
             configManager: this.configManager,
             i18n: this.i18n ?? {},
             commandCatalog,
+            version: pluginMeta.version,
             onStatus: (message: string, isError: boolean) => {
                 showMessage(message, 2000, isError ? "error" : "info");
             },
@@ -275,8 +268,5 @@ export default class GestureFlowPlugin extends Plugin {
         this.runtime = null;
         this.configManager?.destroy();
         this.configManager = null;
-        if (IS_DEV) {
-            console.log(`[${this.name}] unloading`);
-        }
     }
 }

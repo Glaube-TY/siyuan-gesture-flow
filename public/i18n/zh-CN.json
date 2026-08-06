@@ -1,7 +1,5 @@
 {
   "pluginName": "手势流",
-  "loadingPlugin": "正在加载手势流",
-  "unloadingPlugin": "正在卸载手势流",
   "gestureTooLong": "手势过长",
   "gestureUnrecognised": "未识别",
   "cmdTabsPrevious": "上一个标签页",
@@ -20,6 +18,7 @@
   "settingsTabDisplay": "显示",
   "settingsTabBindings": "绑定",
   "settingsTabData": "数据",
+  "settingsTabAbout": "关于插件",
   "settingsSectionBasic": "基础",
   "settingsSectionTrigger": "触发方式",
   "settingsSectionDirection": "方向识别",
@@ -128,5 +127,14 @@
   "bindingErrorDiagonal4Enable": "4 方向模式下不能启用斜向绑定",
   "bindingErrorDuplicate": "已有绑定使用相同手势",
   "bindingErrorInvalidParams": "命令参数无效",
+    "aboutVersion": "版本",
+  "aboutIntro": "GestureFlow 是思源笔记的手势操作插件，可以通过自定义手势执行标签页、文档操作或快捷键。当前版本支持桌面端鼠标右键输入，未来将继续扩展触控板和其他自定义按键。",
+  "aboutWebsite": "个人网站",
+  "aboutIssues": "问题反馈",
+  "aboutSupportTitle": "支持与打赏",
+  "aboutSupportText": "欢迎支持，为爱发电。你的支持会帮助插件持续维护和改进。",
+  "aboutSupportAction": "前往支持",
+  "aboutWechatQr": "微信打赏二维码",
+  "aboutAlipayQr": "支付宝打赏二维码",
   "cmdGroupScrolling": "滚动"
 }

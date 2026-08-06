@@ -7,6 +7,10 @@
   "homepage": "https://github.com/Glaube-TY/siyuan-gesture-flow",
   "author": "Glaube-TY",
   "license": "MIT",
+  "funding": {
+    "type": "custom",
+    "url": "https://glaube-ty.top/da-shang/"
+  },
   "packageManager": "pnpm@10.14.0",
   "scripts": {
     "dev": "cross-env NODE_ENV=development VITE_SOURCEMAP=inline vite build --watch",

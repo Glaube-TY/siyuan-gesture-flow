@@ -110,6 +110,17 @@ JavaScript 功能正在开发中，为安全起见当前不可用。
 
 开发环境需要 Node.js 20 和 pnpm 10。提交前运行 `pnpm release:check`。
 
+## 支持与打赏
+
+欢迎支持，为爱发电。如果 GestureFlow 对你有帮助，可以通过下方页面支持插件的持续维护。扫描下方二维码，或前往[打赏页面](https://glaube-ty.top/da-shang/)。
+
+<a href="https://glaube-ty.top/da-shang/" target="_blank" rel="noopener noreferrer">
+  <img src="https://glaube-ty.top/uploads/attachments/halo/8b772b15-f542-4157-a251-e3985f37f84a.png" alt="微信打赏二维码" width="160" loading="lazy" />
+</a>
+<a href="https://glaube-ty.top/da-shang/" target="_blank" rel="noopener noreferrer">
+  <img src="https://glaube-ty.top/uploads/attachments/halo/f3d25e23-333e-4356-99d0-d0fda69d11ad.jpg" alt="支付宝打赏二维码" width="160" loading="lazy" />
+</a>
+
 ## 许可证
 
 MIT — 见 [LICENSE](LICENSE)。

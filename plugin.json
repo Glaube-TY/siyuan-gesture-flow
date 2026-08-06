@@ -32,10 +32,9 @@
     "zh-CN": "README.zh-CN.md"
   },
   "funding": {
-    "openCollective": "",
-    "patreon": "",
-    "github": "",
-    "custom": []
+    "custom": [
+      "https://glaube-ty.top/da-shang/"
+    ]
   },
   "keywords": [
     "gesture",

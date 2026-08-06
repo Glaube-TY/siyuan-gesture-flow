@@ -557,8 +557,7 @@ function verifyAssets(source) {
 }
 
 /** package.json.version === plugin.json.version, and valid SemVer. */
-function verifyVersions() {
-    let pkg, plugin;
+function verifyVersions() {    let pkg, plugin;
     try {
         pkg = JSON.parse(fs.readFileSync(path.join(ROOT, "package.json"), "utf-8"));
         plugin = JSON.parse(fs.readFileSync(path.join(ROOT, "plugin.json"), "utf-8"));
@@ -597,6 +596,85 @@ function verifyVersions() {
     }
 }
 
+/**
+ * Quiet-runtime check: the shipped plugin must not log normal-operation
+ * chatter.  Scans src/ production code (and dist/index.js when present)
+ * for console.log / console.info / console.debug, and verifies that any
+ * console.warn / console.error only appear inside the allowed files.
+ *
+ * Allowed (genuine failures only, [GestureFlow] prefix):
+ * - src/index.ts                — restart rollback warn
+ * - src/gesture/GestureFeedbackController.ts — async callback error
+ */
+function verifyQuietRuntime() {
+    const BANNED = [
+        ["console.log(", "console.log"],
+        ["console.info(", "console.info"],
+        ["console.debug(", "console.debug"],
+    ];
+    const ALLOWED_WARN_ERROR = new Set([
+        "src/index.ts",
+        "src/gesture/GestureFeedbackController.ts",
+    ]);
+    const srcDir = path.join(ROOT, "src");
+
+    const files = [];
+    (function walk(dir) {
+        for (const name of fs.readdirSync(dir)) {
+            const p = path.join(dir, name);
+            if (fs.statSync(p).isDirectory()) {
+                walk(p);
+            } else if (p.endsWith(".ts") || p.endsWith(".svelte")) {
+                files.push(p);
+            }
+        }
+    })(srcDir);
+
+    let problems = 0;
+    for (const file of files) {
+        const rel = path.relative(ROOT, file).replace(/\\/g, "/");
+        const content = fs.readFileSync(file, "utf-8");
+        for (const [needle, label] of BANNED) {
+            if (content.includes(needle)) {
+                fail(`src/${rel} — banned ${label} in runtime code`);
+                problems++;
+            }
+        }
+        // warn/error must be inside the whitelisted files only.
+        if (!ALLOWED_WARN_ERROR.has(rel)) {
+            for (const needle of ["console.warn(", "console.error("]) {
+                if (content.includes(needle)) {
+                    fail(`src/${rel} — console.${needle.slice(8, -1)} outside whitelist`);
+                    problems++;
+                }
+            }
+        }
+    }
+
+    // Final bundle sanity: no leftover normal-log fragments.
+    const bundle = path.join(DIST_DIR, "index.js");
+    if (fs.existsSync(bundle)) {
+        const js = fs.readFileSync(bundle, "utf-8");
+        const fragments = [
+            "loading (frontend:",
+            "config loaded (source:",
+            "unloading",
+            "state ->",
+            "gesture cancelled",
+        ];
+        for (const frag of fragments) {
+            if (js.includes(frag)) {
+                fail(`dist/index.js contains normal-log fragment: ${frag}`);
+                problems++;
+            }
+        }
+    }
+
+    if (problems === 0) {
+        ok(`quiet runtime: no console.log/info/debug in src; warn/error whitelisted (${files.length} files)`);
+    }
+}
+
 // --------------------------------------------------------------- main
 
 console.log("=== Build Artifact Verification ===");
@@ -606,6 +684,7 @@ verifyZip();
 verifyAssets("dist");
 verifyAssets("zip");
 verifyStyles(path.join(DIST_DIR, "index.css"));
+verifyQuietRuntime();
 
 console.log("");
 if (errors === 0) {

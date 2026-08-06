@@ -10,6 +10,7 @@ import { showSafeConfirm } from "./confirmDialog";
     import { parseNumber, DebouncedPatchScheduler } from "./settingsHelpers";
     import SettingSection from "./components/SettingSection.svelte";
     import SettingRow from "./components/SettingRow.svelte";
+    import AboutPlugin from "./components/AboutPlugin.svelte";
     import BindingEditor from "./components/BindingEditor.svelte";
     import type { SettingCommandItem } from "./commandCatalog";
     import { catalogCommandIds } from "./commandCatalog";
@@ -39,9 +40,10 @@ import { showSafeConfirm } from "./confirmDialog";
     export let i18n: Record<string, string>;
     export let commandCatalog: SettingCommandItem[] = [];
     export let onStatus: (message: string, isError: boolean) => void = () => {};
+    export let version = "";
 
     let config: GestureFlowConfig = configManager.getConfig();
-    let activeTab: "general" | "recognition" | "display" | "bindings" | "data" = "general";
+    let activeTab: "general" | "recognition" | "display" | "bindings" | "data" | "about" = "general";
 
     /** Debounced patch scheduler — merges rapid edits into a single save. */
     let scheduler: DebouncedPatchScheduler | null = null;
@@ -351,6 +353,7 @@ import { showSafeConfirm } from "./confirmDialog";
         { key: "display", label: () => i18n.settingsTabDisplay ?? "Display" },
         { key: "bindings", label: () => i18n.settingsTabBindings ?? "Bindings" },
         { key: "data", label: () => i18n.settingsTabData ?? "Data" },
+        { key: "about", label: () => i18n.settingsTabAbout ?? "About" },
     ] as const;
 
     // ------------------------------------------------------- bindings (5B)
@@ -892,6 +895,10 @@ import { showSafeConfirm } from "./confirmDialog";
                     </button>
                 </SettingRow>
             </SettingSection>
+        {/if}
+
+        {#if activeTab === "about"}
+            <AboutPlugin {i18n} {version} />
         {/if}
     </main>
 </div>

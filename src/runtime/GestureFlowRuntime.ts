@@ -18,9 +18,6 @@ import { GestureBinding } from "@/gesture/bindings/types";
 import { GestureSession } from "@/gesture/GestureSession";
 import { RecognitionResult } from "@/gesture/GestureEngine";
 
-/** Whether the plugin is running in development mode (concise debug logs). */
-const IS_DEV = process.env.DEV_MODE === "true" || process.env.NODE_ENV === "development";
-
 /**
  * Runtime state.
  *
@@ -79,13 +76,6 @@ export interface GestureFlowRuntimeOptions {
      * real gesture commands.
      */
     shouldIgnoreTarget?: (target: EventTarget | null) => boolean;
-    /**
-     * Optional dev-mode logger.  Defaults to a no-op in production and
-     * `console.debug` in dev mode.  Receives concise outcome lines
-     * (sessionId, commandId, status) — never full session points, DOM
-     * objects, or credentials.
-     */
-    onLog?: (message: string) => void;
 }
 
 /**
@@ -135,7 +125,6 @@ export class GestureFlowRuntime {
     private readonly target: EventTarget;
     private readonly overlayI18n: OverlayI18n;
     private readonly i18n: Record<string, string>;
-    private readonly onLog: (message: string) => void;
     private readonly shouldIgnoreTarget: (target: EventTarget | null) => boolean;
     /** App provider forwarded to the action bridge (may be null). */
     private readonly app: Parameters<typeof globalCommand>[1] | null;
@@ -154,7 +143,6 @@ export class GestureFlowRuntime {
         this.target = opts.target;
         this.overlayI18n = opts.overlayI18n;
         this.i18n = opts.i18n;
-        this.onLog = opts.onLog ?? defaultLog;
         this.shouldIgnoreTarget = opts.shouldIgnoreTarget ?? defaultGestureIgnoreTarget;
         this.app = opts.app ?? null;
     }
@@ -322,7 +310,6 @@ export class GestureFlowRuntime {
             },
             {
                 onStateChange: (session) => {
-                    this.onLog(`state -> ${session.state}`);
                     controller.onStateChange(session);
                 },
                 onUpdate: (session) => {
@@ -333,7 +320,6 @@ export class GestureFlowRuntime {
                 },
                 onCancel: (session) => {
                     controller.onCancel(session);
-                    this.onLog(`gesture cancelled (${session.cancelReason})`);
                 },
             },
             {
@@ -430,30 +416,7 @@ export class GestureFlowRuntime {
         const dispatcher = this.dispatcher;
         if (!dispatcher) return;
 
-        const dispatchResult = await dispatcher.dispatch(session, result);
-
-        if (dispatchResult.status === "executed") {
-            const detail =
-                dispatchResult.actionType === "builtin"
-                    ? dispatchResult.commandId
-                    : "shortcut";
-            this.onLog(
-                `session ${session.id} → ${detail} → ${dispatchResult.result.status}`,
-            );
-        } else {
-            this.onLog(
-                `session ${session.id} skipped: ${dispatchResult.reason}`,
-            );
-        }
-    }
-}
-
-/**
- * Default dev-mode logger.  In production IS_DEV is false so this is a
- * no-op; in dev mode it routes concise outcome lines to `console.debug`.
- */
-function defaultLog(message: string): void {
-    if (IS_DEV) {
-        console.debug(`[GestureFlow] ${message}`);
+        // Dispatch only — no per-gesture logging (quiet runtime).
+        await dispatcher.dispatch(session, result);
     }
 }

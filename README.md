@@ -110,6 +110,17 @@ Welcome to report issues, suggest features, or submit Pull Requests via [GitHub 
 
 Development environment: Node.js 20 and pnpm 10. Run `pnpm release:check` before committing.
 
+## Support the Project
+
+Support the project if GestureFlow helps you — your contribution keeps it maintained and improved. Scan one of the QR codes below, or visit the [donation page](https://glaube-ty.top/da-shang/).
+
+<a href="https://glaube-ty.top/da-shang/" target="_blank" rel="noopener noreferrer">
+  <img src="https://glaube-ty.top/uploads/attachments/halo/8b772b15-f542-4157-a251-e3985f37f84a.png" alt="WeChat Pay QR code" width="160" loading="lazy" />
+</a>
+<a href="https://glaube-ty.top/da-shang/" target="_blank" rel="noopener noreferrer">
+  <img src="https://glaube-ty.top/uploads/attachments/halo/f3d25e23-333e-4356-99d0-d0fda69d11ad.jpg" alt="Alipay QR code" width="160" loading="lazy" />
+</a>
+
 ## License
 
 MIT — see [LICENSE](LICENSE).
