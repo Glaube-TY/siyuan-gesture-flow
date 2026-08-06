@@ -1,5 +1,31 @@
 # Changelog
 
+## Stage 6B-2 — Restore recently closed tab
+
+- **`tabs.restoreRecent` — Restore Recently Closed Tab** (group **Tabs**):
+  delegates to SiYuan's public plugin API `globalCommand("recentClosed",
+  app)` — the official implementation pops the last entry of
+  `window.siyuan.storage[Constants.LOCAL_CLOSED_TABS]`, persists the
+  updated list and reopens the tab by its stored type.  GestureFlow never
+  reads or writes the closed-tabs storage, never copies the restore logic,
+  never polls the DOM, and never retries.  `executed` only means the
+  restore command was handed to SiYuan; with an empty history SiYuan
+  accepts the command with no visible change.
+- **App injection**: `GestureFlowPlugin` captures `options.app` in an
+  explicit constructor (`ConstructorParameters<typeof Plugin>[0]`, verified
+  against the official loader `new pluginClass({ app, name, displayName,
+  i18n })`), forwards it to `GestureFlowRuntime`, which passes it to
+  `SiyuanActionBridge` as a nullable provider.  Probe/test bridges simply
+  omit it and restore returns `unavailable`.  No private field access, no
+  `window.siyuan` storage probing.
+- No default gesture (users bind their own trajectory); config version
+  stays **2**; the six existing command ids are unchanged.
+- New i18n key: `cmdTabsRestoreRecent` (zh + en).
+- Documentation accuracy pass: the 6B-1 claims that `tabs.close` only
+  closes "normal document tabs" and that `document.reload` always returns
+  `unavailable` for non-document tabs were removed — neither method applies
+  model-type filtering.
+
 ## Stage 6B-1 — Close tab & reload document actions
 
 - **ShortcutRecorder focus fix**: capture now ends immediately on input
@@ -7,16 +33,20 @@
   first blur after clicking another control).  Blur never modifies the
   shortcut, emits `change`, or clears the draft; `disabled` also exits
   capture and sets the real `disabled` attribute on the input.
-- **`tabs.close` — Close Current Tab** (group **Tabs**): closes only the
-  currently active normal tab in the active window via the official
+- **`tabs.close` — Close Current Tab** (group **Tabs**): closes the tab
+  `getActiveTab(true)` resolves to in the active window via the official
   public chain `getActiveTab(true)` → `tab.parent.removeTab(tab.id)`.
-  Non-normal-tab contexts return `unavailable`; no tab DOM is touched, no
-  close-button click or shortcut is simulated.
+  Dock panels, block popovers and floating layers outside the active
+  Wnd's tab system are never handled; **no model-type filtering is
+  applied** (the tab may or may not be an Editor).  No tab DOM is
+  touched, no close-button click or shortcut is simulated.
 - **`document.reload` — Reload Current Document** (group **Document**):
-  reloads only the currently active document editor via
-  `getActiveEditor(true)` → `editor.reload(false)` (the official Protyle
-  wrapper; `focus=false` avoids stealing editor focus).  Non-document
-  tabs return `unavailable`; no HTTP API, no window reload.
+  reloads the Protyle `getActiveEditor(true)` resolves to (mainly the
+  current document editor; embedded-Protyle contexts may resolve
+  elsewhere — no model-type filtering) via `editor.reload(false)` (the
+  official Protyle wrapper; `focus=false` avoids stealing editor focus).
+  Returns `unavailable` when there is no active Protyle; no HTTP API, no
+  window reload.
 - Both new commands have **no default gestures** — users bind them
   manually in the Bindings tab.  Config version stays **2** (no schema
   change); the four original commands and default bindings are

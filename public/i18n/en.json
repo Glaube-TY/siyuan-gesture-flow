@@ -7,6 +7,7 @@
   "cmdTabsPrevious": "Previous tab",
   "cmdTabsNext": "Next tab",
   "cmdTabsClose": "Close Current Tab",
+  "cmdTabsRestoreRecent": "Restore Recently Closed Tab",
   "cmdDocumentReload": "Reload Current Document",
   "cmdScrollTop": "Scroll to top",
   "cmdScrollBottom": "Scroll to bottom",

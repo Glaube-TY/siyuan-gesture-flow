@@ -7,6 +7,7 @@ import { OverlayI18n } from "@/gesture/overlay/types";
 import { CommandRegistry } from "@/commands/CommandRegistry";
 import { CommandExecutor } from "@/commands/CommandExecutor";
 import { SiyuanActionBridge } from "@/commands/SiyuanActionBridge";
+import { globalCommand } from "siyuan";
 import { GestureActionExecutor } from "@/actions/GestureActionExecutor";
 import { ShortcutExecutor } from "@/shortcuts/ShortcutExecutor";
 import { registerBuiltinCommands } from "@/commands/registerBuiltinCommands";
@@ -63,6 +64,13 @@ export interface GestureFlowRuntimeOptions {
     overlayI18n: OverlayI18n;
     /** i18n map used by the command label resolver. */
     i18n: Record<string, string>;
+    /**
+     * Optional SiYuan `App` provider forwarded to the
+     * {@link SiyuanActionBridge} for `globalCommand`-based actions
+     * (e.g. restore recently closed tab).  May be absent for probe/
+     * test environments — app-dependent actions return `unavailable`.
+     */
+    app?: Parameters<typeof globalCommand>[1] | null;
     /**
      * Override the input-target exclusion predicate passed to the mouse
      * adapter.  Defaults to {@link defaultGestureIgnoreTarget}: elements
@@ -129,6 +137,8 @@ export class GestureFlowRuntime {
     private readonly i18n: Record<string, string>;
     private readonly onLog: (message: string) => void;
     private readonly shouldIgnoreTarget: (target: EventTarget | null) => boolean;
+    /** App provider forwarded to the action bridge (may be null). */
+    private readonly app: Parameters<typeof globalCommand>[1] | null;
 
     private state: RuntimeState = "stopped";
     private config: GestureFlowConfig | null = null;
@@ -146,6 +156,7 @@ export class GestureFlowRuntime {
         this.i18n = opts.i18n;
         this.onLog = opts.onLog ?? defaultLog;
         this.shouldIgnoreTarget = opts.shouldIgnoreTarget ?? defaultGestureIgnoreTarget;
+        this.app = opts.app ?? null;
     }
 
     /** Current runtime state. */
@@ -248,7 +259,7 @@ export class GestureFlowRuntime {
         }
 
         // --- Command system ---
-        const bridge = new SiyuanActionBridge();
+        const bridge = new SiyuanActionBridge(this.app);
 
         const commandRegistry = new CommandRegistry();
         registerBuiltinCommands(commandRegistry, bridge);

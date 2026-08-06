@@ -46,3 +46,22 @@ export function createTabsCloseCommand(bridge: SiyuanActionBridge): CommandDefin
         execute: () => bridge.closeActiveTab(),
     };
 }
+
+/**
+ * Restore the most recently closed tab.
+ *
+ * Delegates to {@link SiyuanActionBridge.restoreRecentlyClosedTab},
+ * which calls SiYuan's public `globalCommand("recentClosed", app)` — the
+ * restore logic and closed-tab history belong to SiYuan itself.  No
+ * default gesture is registered; with no closed history SiYuan accepts
+ * the command with no visible change.
+ * i18n key: `cmdTabsRestoreRecent`
+ */
+export function createTabsRestoreRecentCommand(bridge: SiyuanActionBridge): CommandDefinition {
+    return {
+        id: "tabs.restoreRecent",
+        title: "cmdTabsRestoreRecent",
+        group: "Tabs",
+        execute: () => bridge.restoreRecentlyClosedTab(),
+    };
+}

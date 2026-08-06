@@ -5,6 +5,7 @@ import {
     createTabsPreviousCommand,
     createTabsNextCommand,
     createTabsCloseCommand,
+    createTabsRestoreRecentCommand,
 } from "./builtin/tabs";
 import { createDocumentReloadCommand } from "./builtin/document";
 
@@ -15,9 +16,9 @@ import { createDocumentReloadCommand } from "./builtin/document";
  * API/DOM access.  Commands are pure declarations — they contain no
  * selectors or DOM queries of their own.
  *
- * The four original command ids are stable; stage 6B-1 adds
- * `tabs.close` (Tabs group) and `document.reload` (Document group) —
- * both intentionally without default gestures.
+ * The four original command ids are stable; stage 6B-1 added
+ * `tabs.close` and `document.reload`, stage 6B-2 adds
+ * `tabs.restoreRecent` — all without default gestures.
  */
 export function registerBuiltinCommands(
     registry: CommandRegistry,
@@ -27,6 +28,7 @@ export function registerBuiltinCommands(
         createTabsPreviousCommand(bridge),
         createTabsNextCommand(bridge),
         createTabsCloseCommand(bridge),
+        createTabsRestoreRecentCommand(bridge),
         createDocumentReloadCommand(bridge),
         createScrollTopCommand(bridge),
         createScrollBottomCommand(bridge),

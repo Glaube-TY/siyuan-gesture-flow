@@ -1,4 +1,13 @@
-import { getActiveTab, getActiveEditor, Tab, Protyle } from "siyuan";
+import { getActiveTab, getActiveEditor, Tab, Protyle, globalCommand } from "siyuan";
+
+/**
+ * The SiYuan `App` instance type as required by the plugin API's
+ * `globalCommand(command, app)` second parameter — derived from the
+ * exported function signature so it never depends on unexposed App
+ * internals.  `undefined` when the type resolves to a non-callable
+ * (treated as "no app available").
+ */
+export type GfApp = Parameters<typeof globalCommand>[1];
 
 /** Result of a scroll action. */
 export type ScrollResult =
@@ -57,6 +66,28 @@ export type TabOperationResult =
  *   user-initiated tab clicks pass `pushBack=true` (Wnd.ts click handler).
  * - `Wnd.children: Tab[]` — all tabs in the same split
  *   (types/layout/Wnd.d.ts, line 11).
+ * - `Wnd.removeTab(id, isBatchClose?, animate?, isSaveLayout?): void`
+ *   (types/layout/Wnd.d.ts, line 27).  The official `removeDoc` /
+ *   `closeBox` handlers and `closeTabByType` (app/src/index.ts,
+ *   app/src/layout/tabUtil.ts) all close tabs via
+ *   `tab.parent.removeTab(tab.id)`.
+ * - `Protyle.reload(focus, updateReadonly?): void`
+ *   (types/protyle.d.ts, line 302) — public wrapper around the official
+ *   `reloadProtyle(protyle, focus, updateReadonly)`; the official code
+ *   itself uses `this.reload(false)` after transactions.
+ * - `globalCommand(command: string, app: App): void` — publicly exported
+ *   by the plugin API (siyuan.d.ts, line 419).  The official
+ *   implementation (app/src/boot/globalEvent/command/global.ts) handles
+ *   `recentClosed` using SiYuan's own recently-closed-tab storage and
+ *   restore flow (pop + `setStorageVal` + openFile by tab type).  This
+ *   bridge **never reads or writes that storage itself**.
+ *
+ * The App instance is injected via the plugin constructor (the official
+ * loader calls `new pluginClass({ app, name, displayName, i18n })`,
+ * app/src/plugin/loader.ts) and forwarded to this bridge as a provider.
+ * The provider may be absent (settings-catalog probe bridge, tests,
+ * incomplete environments) — in that case app-dependent actions return
+ * `unavailable`.
  *
  * **Scroll strategy**: the bridge prefers reusing SiYuan's official
  * `protyle-scroll__up` / `protyle-scroll__down` buttons (which internally
@@ -68,8 +99,21 @@ export type TabOperationResult =
  * when the required elements are missing or operations error.  It never
  * dispatches synthetic mouse events (except `click()` on the official
  * scroll buttons), simulates keyboard shortcuts, or modifies SiYuan DOM.
+ * It does not guess tab/doc identity via constructor names, DOM class
+ * names, private `model` fields, or unverified instanceof checks.
  */
 export class SiyuanActionBridge {
+    /** The injected App provider (may be null — see class docs). */
+    private readonly app: GfApp | null;
+
+    /**
+     * @param app The SiYuan App instance (or a provider resolving to one)
+     *   injected by the plugin.  Omit for probe bridges / tests.
+     */
+    constructor(app?: GfApp | null) {
+        this.app = app ?? null;
+    }
+
     /**
      * Scroll the active document to the top or bottom.
      *
@@ -185,11 +229,13 @@ export class SiyuanActionBridge {
      * getActiveTab(true) → tab.parent (Wnd) → wnd.removeTab(tab.id)
      * ```
      *
-     * `wndActive=true` restricts the lookup to the **active Wnd**, so a
-     * normal tab bar is required — Dock panels, block popovers, search
-     * popups etc. never qualify and return `unavailable`.  No tab DOM is
-     * queried, no close-button click is simulated, no private function is
-     * called.
+     * `wndActive=true` restricts the lookup to the **active Wnd**, so the
+     * target is whatever normal tab bar belongs to that window.  Dock
+     * panels, block popovers and floating layers outside the active Wnd's
+     * tab system are never handled.  **No claim is made about the tab's
+     * model type** — it may or may not be an Editor; this method does not
+     * guess.  No tab DOM is queried, no close-button click is simulated,
+     * no private function is called.
      *
      * The official `Wnd.removeTab` handles the animation, layout save and
      * "last tab" behaviour itself; we never compensate for it.
@@ -223,11 +269,14 @@ export class SiyuanActionBridge {
      * origin, matching how the official code reloads after transactions
      * (`this.reload(false)`).
      *
-     * - Only the active **document** editor qualifies; non-document tabs
-     *   (search, file tree, settings…) return `unavailable`.
-     * - Never imports `app/src/protyle/util/reload.ts`, never copies its
-     *   internals, never calls HTTP APIs, never re-requests document
-     *   data, never reloads the whole SiYuan window.
+     * `getActiveEditor` resolves whatever Protyle the active interface
+     * currently holds — primarily the current document editor, but in
+     * embedded-Protyle contexts it may resolve to another editor.  No
+     * model-type filtering is applied; when there is no active Protyle
+     * the result is `unavailable`.  This method never imports
+     * `app/src/protyle/util/reload.ts`, never copies its internals, never
+     * calls HTTP APIs, never re-requests document data, and never reloads
+     * the whole SiYuan window.
      */
     reloadActiveDocument(): TabOperationResult {
         const editor = this.getActiveEditorSafe();
@@ -242,6 +291,47 @@ export class SiyuanActionBridge {
             return { status: "executed" };
         } catch (err) {
             return this.toFailedResult(err, "reloadActiveDocument failed");
+        }
+    }
+
+    /**
+     * Restore the most recently closed tab.
+     *
+     * Delegates entirely to SiYuan's own public plugin API
+     * `globalCommand("recentClosed", app)` — the official implementation
+     * (app/src/boot/globalEvent/command/global.ts) pops the last entry of
+     * `window.siyuan.storage[Constants.LOCAL_CLOSED_TABS]`, persists the
+     * updated list, and reopens the tab by its stored type.  This bridge
+     * **never reads or writes the closed-tabs storage**, never copies the
+     * restore logic, and never calls openFile/fetchPost/setStorageVal on
+     * its own.
+     *
+     * `executed` only means the restore command was handed to SiYuan; the
+     * actual tab content may load asynchronously.  We never wait for or
+     * poll the DOM, never call the command twice, and never retry on
+     * failure.  With an empty closed-tabs list SiYuan still accepts the
+     * command (the UI simply shows no change) — we do not probe the
+     * storage to detect emptiness.
+     */
+    restoreRecentlyClosedTab(): TabOperationResult {
+        if (!this.app) {
+            return { status: "unavailable", reason: "no app instance" };
+        }
+        if (typeof globalCommand !== "function") {
+            return { status: "unavailable", reason: "globalCommand unavailable" };
+        }
+        try {
+            // The public type declares `void`, but the official
+            // implementation returns boolean — treat the result as
+            // unknown and only special-case an explicit `false`.
+            const accepted: unknown = globalCommand("recentClosed", this.app);
+            if (accepted === false) {
+                // Unknown/unhandled command per the official implementation.
+                return { status: "unavailable", reason: "command not handled" };
+            }
+            return { status: "executed" };
+        } catch (err) {
+            return this.toFailedResult(err, "restoreRecentlyClosedTab failed");
         }
     }
 

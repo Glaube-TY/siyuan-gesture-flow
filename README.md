@@ -41,8 +41,10 @@ GestureFlow is under active development. The following is **done**:
 - **SiYuan action bridge** — `SiyuanActionBridge` centralises all SiYuan API
   access (no HTTP, no token).  Implements adjacent tab switching
   (`getActiveTab` → `Wnd.switchTab`), closing the active tab
-  (`getActiveTab(true)` → `tab.parent.removeTab(tab.id)`), document scroll
-  to top/bottom, and reloading the active document
+  (`getActiveTab(true)` → `tab.parent.removeTab(tab.id)`), restoring the
+  most recently closed tab (public `globalCommand("recentClosed", app)` —
+  SiYuan's own restore flow; the bridge never reads the closed-tabs
+  storage), document scroll to top/bottom, and reloading the active editor
   (`getActiveEditor(true)` → `editor.reload(false)`).
   Scrolling prefers reusing SiYuan's official `protyle-scroll__up` /
   `protyle-scroll__down` buttons (which internally call `goHome` / `goEnd`
@@ -52,6 +54,21 @@ GestureFlow is under active development. The following is **done**:
   (`protyle-scroll__bar`), not a scroll container — the bridge never calls
   `scrollTo` / `scrollTop` on it; it is used only to locate the official
   scroll control via `parentElement`.
+- **Built-in actions** — seven commands, grouped in the settings UI
+  (auto-built from the live `CommandRegistry`):
+  - `tabs.previous` / `tabs.next` / `tabs.close` / `tabs.restoreRecent`
+    (group **Tabs**)
+  - `document.reload` (group **Document**)
+  - `scroll.top` / `scroll.bottom` (group **Scrolling**)
+
+  `tabs.close` closes whatever `getActiveTab(true)` resolves to in the
+  active window (no model-type filtering); `document.reload` reloads
+  whatever Protyle `getActiveEditor(true)` resolves to (mainly the current
+  document editor); `tabs.restoreRecent` delegates to SiYuan's public
+  `globalCommand("recentClosed", app)` — with no closed history SiYuan
+  accepts the command with no visible change.  None of the 6B-1/6B-2
+  commands has a default gesture: they must be bound manually in the
+  Bindings tab.
 - **Action dispatcher** — `GestureActionExecutor` (replacing the old
   `GestureCommandDispatcher`) validates session state, recognition result,
   and binding existence, then dispatches by `action.type`: builtin commands
@@ -95,20 +112,9 @@ GestureFlow is under active development. The following is **done**:
 
 The following is **not yet implemented**:
 
-- **Built-in actions** — six commands, grouped in the settings UI:
-  - `tabs.previous` / `tabs.next` / `tabs.close` (group **Tabs**)
-  - `document.reload` (group **Document**)
-  - `scroll.top` / `scroll.bottom` (group **Scrolling**)
-
-  `tabs.close` closes only the currently active normal tab (in the active
-  window); `document.reload` reloads only the currently active document
-  editor — neither is a browser-style tab reload and neither affects other
-  tabs.  The new 6B-1 commands have **no default gestures**: they must be
-  bound manually in the Bindings tab.
-
 - JavaScript actions (settings placeholder only)
 - Delete doc, new doc, locate in doc tree
-- Restore recently closed tabs, close other/all tabs
+- Close other tabs / close all tabs
 - Back / forward navigation, global search
 - Touchpad / touch input support
 - Scroll-wheel gestures, Rocker gestures, super drag
@@ -124,7 +130,8 @@ src/
     CommandRegistry.ts          Atomic command registration
     CommandExecutor.ts          Uniform execution + de-duplication + error containment
     SiyuanActionBridge.ts       All SiYuan API/DOM access (tab switch, tab
-                               close, document scroll, document reload)
+                               close, restore recent tab, document scroll,
+                               editor reload)
     registerBuiltinCommands.ts  Default tab/scroll commands
     types.ts                    Command / context / result types
   actions/

@@ -1,4 +1,4 @@
-import { Plugin, getFrontend, getBackend, showMessage } from "siyuan";
+import { Plugin, getFrontend, getBackend, showMessage, globalCommand } from "siyuan";
 import "./index.scss";
 import { SettingsDialog } from "@/settings/SettingsDialog";
 import { ConfigManager, CONFIG_STORAGE_NAME } from "@/config/ConfigManager";
@@ -31,10 +31,31 @@ const IS_DEV = process.env.DEV_MODE === "true" || process.env.NODE_ENV === "deve
  * file does not inspect session state or recognition results directly.
  */
 export default class GestureFlowPlugin extends Plugin {
+    /**
+     * The SiYuan `App` instance, captured from the plugin constructor
+     * options (the official loader calls
+     * `new pluginClass({ app, name, displayName, i18n })` —
+     * app/src/plugin/loader.ts).  Kept in a private read-only field; the
+     * base class field is never read directly.  Type is derived from the
+     * public `globalCommand` signature (no private App type dependency).
+     */
+    private readonly gfApp: Parameters<typeof globalCommand>[1];
+
     private configManager: ConfigManager | null = null;
     private runtime: GestureFlowRuntime | null = null;
     private unsubscribeConfig: (() => void) | null = null;
     private settingsDialog: SettingsDialog | null = null;
+
+    /**
+     * Receive the same options object the official plugin loader passes
+     * to every plugin subclass constructor, forward it to the base class,
+     * then keep the App instance for runtime wiring.  The parameter type
+     * is derived from the base class constructor rather than hand-written.
+     */
+    constructor(options: ConstructorParameters<typeof Plugin>[0]) {
+        super(options);
+        this.gfApp = options.app;
+    }
 
     /**
      * Source of the settings command catalog (stage 5B).
@@ -100,6 +121,7 @@ export default class GestureFlowPlugin extends Plugin {
             target: document,
             overlayI18n,
             i18n: this.i18n ?? {},
+            app: this.gfApp,
             onLog: (message) => {
                 if (IS_DEV) {
                     console.debug(`[${this.name}] ${message}`);
