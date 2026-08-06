@@ -38,16 +38,26 @@ GestureFlow 正在开发中。以下功能**已完成**：
   `editor.protyle.scroll.element` 是**块索引滑杆**（`protyle-scroll__bar`），
   不是滚动容器 — 桥接绝不对其调用 `scrollTo` / `scrollTop`，仅通过
   `parentElement` 定位官方滚动控件。
-- **命令派发器** — `GestureCommandDispatcher` 在执行前验证会话状态、识别结果
-  和绑定存在性，确保每个会话最多执行一次命令。
-- **版本化配置** — 严格类型的配置模型，包含版本字段、深拷贝默认值、统一校验/
-  规范化和迁移框架（当前版本 1）。`ConfigManager` 持有内存快照，通过
-  `Plugin.loadData` / `Plugin.saveData` 串行持久化，向订阅者推送独立深拷贝。
-  导入走与首次加载相同的迁移 + 校验管线；无效数据回退默认配置。
-- **设置页面** — 基于思源官方 `Setting` 类挂载的 Svelte 设置对话框。包含
-  常规（启用、临时禁用键、激活距离、超时）、识别（方向模式、采样、简化、段限制）、
-  显示（轨迹/提示开关、线宽）、绑定（启停四个默认绑定）、数据（导出、导入、恢复默认）
-  五个标签页。所有用户文本来自 i18n；快速连续编辑经防抖合并，不会每个按键重启运行时。
+- **动作派发器** — `GestureActionExecutor`（取代旧的 `GestureCommandDispatcher`）
+  在执行前验证会话状态、识别结果和绑定存在性，并按 `action.type` 派发：内置命令
+  走 `CommandExecutor`，键盘快捷键走 `ShortcutExecutor`，每个会话最多执行一次。
+- **版本化配置** — 严格类型的配置模型，包含版本字段（当前 **版本 2**）、深拷贝
+  默认值、统一校验/规范化和迁移框架（v1 → v2 将旧的顶层 `commandId`/
+  `commandParams` 包装为 `builtin` action；迁移结果会写回存储并报告为
+  `migrated`）。`ConfigManager` 持有内存快照，通过 `Plugin.loadData` /
+  `Plugin.saveData` 串行持久化，向订阅者推送独立深拷贝。导入走与首次加载相同
+  的迁移 + 校验管线；无效数据回退默认配置。
+- **设置页面** — 基于自定义全屏思源 `Dialog` 承载的 Svelte 设置对话框
+  （非 `Setting.addItem`）。包含常规（启用、临时禁用键、激活距离、超时）、识别
+  （方向模式、采样、简化、段限制）、显示（轨迹/提示开关、线宽）、绑定（完整手势
+  录制 + 新增/编辑/删除/启停；每个绑定可绑定到**内置功能**或**快捷键**；
+  JavaScript 仅为"开发中"占位不可选）、数据（导出、导入、恢复默认）五个标签页。
+  所有用户文本来自 i18n；快速连续编辑经防抖合并，不会每个按键重启运行时。
+- **键盘快捷键** — `ShortcutSpec`（key/code/keyCode + 四个修饰键的严格可序列化
+  结构）由 `ShortcutRecorder` 录入，统一经 `validateShortcutSpec` 校验，按平台
+  `detectShortcutPlatform` 展示（Windows/Linux `Ctrl+Shift+P`，macOS `⌃⇧P`），
+  由 `ShortcutExecutor` 以合成 `keydown` 派发到当前焦点。合成事件永不
+  `isTrusted`，因此主动拒绝非真实键盘事件的插件无法被触发。
 - **运行时管理器** — `GestureFlowRuntime` 封装 Adapter、Engine、Overlay、命令和
   绑定的完整生命周期。`restart` 先完整停止旧运行时（detach adapter、销毁 overlay、
   清除计时器和重放 token），再用新配置启动。`enabled = false` 时不挂载任何输入
@@ -55,10 +65,12 @@ GestureFlow 正在开发中。以下功能**已完成**：
 
 以下功能**尚未实现**：
 
-- 自定义手势录制器与完整绑定编辑器（修改方向、新增绑定、拖拽排序、自定义命令参数）
+- JavaScript 动作（设置界面仅"开发中"占位）
 - 破坏性动作（关闭标签页、删除文档、新建文档、定位文档树）
 - 触控板 / 触摸输入
 - 滚轮手势、Rocker 手势、超级拖拽
+- 跨插件快捷键激活协议（拒绝合成 `isTrusted: false` 事件的插件，
+  如 siyuan-homepage 的自定义快捷键，无法被 GestureFlow 快捷键触发）
 
 ## 架构
 
@@ -67,15 +79,20 @@ src/
   commands/
     CommandRegistry.ts          原子命令注册
     CommandExecutor.ts          统一执行 + 去重 + 错误捕获
-    GestureCommandDispatcher.ts 会话 → 绑定 → 命令派发
     SiyuanActionBridge.ts       所有思源 API/DOM 访问（标签页、滚动）
     registerBuiltinCommands.ts  默认标签页/滚动命令
     types.ts                    命令 / 上下文 / 结果类型
+  actions/
+    GestureActionExecutor.ts    会话 → 绑定 → 动作派发（builtin/shortcut）
+  shortcuts/
+    types.ts                    严格可序列化 ShortcutSpec
+    shortcutUtils.ts            捕获 / 规范化 / 校验 / 展示 / 平台检测
+    ShortcutExecutor.ts         合成 keydown 派发
   config/
-    types.ts                    版本化配置 schema（严格类型）
+    types.ts                    版本化配置 schema（版本 2，严格类型）
     defaults.ts                 默认配置 + 深拷贝工具
     validate.ts                 校验 + 规范化（范围钳制、类型检查）
-    migrations.ts               版本检测 + 迁移框架
+    migrations.ts               版本检测 + 迁移框架（v1 → v2）
     ConfigManager.ts            持久化所有者（load/save/import/export/reset/subscribe）
   gesture/
     input/
@@ -90,15 +107,20 @@ src/
       GestureOverlay.ts         Canvas 轨迹 + 提示元素（配置驱动）
       types.ts                  Overlay 专用类型
     bindings/
-      GestureBindingRegistry.ts 方向 → 命令绑定（不可变，ID 索引）
-      defaultBindings.ts        L/R/U/D → tabs.previous/next, scroll.top/bottom
-      CommandLabelResolver.ts   为 Overlay 解析命令标签
+      GestureBindingRegistry.ts 方向 → 绑定查找（动作无关，不可变）
+      defaultBindings.ts        默认 L/R/U/D 内置绑定
+      CommandLabelResolver.ts   为 Overlay 解析动作标签
     GestureEngine.ts            管线编排
     GestureSession.ts           单次手势状态 + 点累积
     GestureFeedbackController.ts  RAF 合并 + 实时识别 + 异步回调
     types.ts                    共享类型和枚举
   runtime/
-    GestureFlowRuntime.ts       生命周期管理器 — start/stop/restart 全部组件
+    GestureFlowRuntime.ts       生命周期管理器 — 启动/停止/重启全部组件
+  settings/
+    SettingsDialog.ts           自定义全屏 Dialog 封装
+    SettingsPanel.svelte        Svelte 设置对话框（常规/识别/显示/绑定/数据）
+    settingsHelpers.ts          纯工具函数（parseNumber, DebouncedPatchScheduler）
+  index.ts                      插件入口 — 配置管理器、运行时、设置、卸载    GestureFlowRuntime.ts       生命周期管理器 — start/stop/restart 全部组件
   settings/
     SettingsPanel.svelte        Svelte 设置对话框（标签页：常规/识别/显示/绑定/数据）
     settingsHelpers.ts          纯辅助函数（parseNumber、DebouncedPatchScheduler）

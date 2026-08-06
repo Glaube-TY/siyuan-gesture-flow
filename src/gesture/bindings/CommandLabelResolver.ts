@@ -1,6 +1,6 @@
 import { Direction } from "@/gesture/recognition/DirectionVectorizer";
 import { GestureBindingRegistry } from "./GestureBindingRegistry";
-import { displayShortcut } from "@/shortcuts/shortcutUtils";
+import { displayShortcut, detectShortcutPlatform } from "@/shortcuts/shortcutUtils";
 
 /**
  * A function that resolves a direction sequence to a displayable action
@@ -70,7 +70,7 @@ export function createCommandLabelResolver(
 
         if (action.type === "shortcut") {
             const prefix = i18n[shortcutPrefixKey] ?? "快捷键：";
-            return `${prefix}${displayShortcut(action.shortcut)}`;
+            return `${prefix}${displayShortcut(action.shortcut, detectShortcutPlatform())}`;
         }
 
         // Unknown / invalid action: never expose internal fields — the

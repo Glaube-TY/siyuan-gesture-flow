@@ -123,10 +123,14 @@ export interface GestureFlowConfig {
  * - `invalid`      — payload could not be safely used; {@link config}
  *                    holds a fresh default and {@link errors} lists the
  *                    concrete reasons.
+ *
+ * `migrated` is set when a real schema migration ran (v1 → v2), even if
+ * the resulting config validates as `valid` — callers persist the v2
+ * payload and report `source: "migrated"` so the next load skips it.
  */
 export type ValidationResult =
-    | { status: "valid"; config: GestureFlowConfig }
-    | { status: "normalized"; config: GestureFlowConfig; notes: string[] }
+    | { status: "valid"; config: GestureFlowConfig; migrated?: true }
+    | { status: "normalized"; config: GestureFlowConfig; notes: string[]; migrated?: true }
     | { status: "invalid"; config: GestureFlowConfig; errors: string[] };
 
 /**

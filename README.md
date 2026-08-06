@@ -49,36 +49,56 @@ GestureFlow is under active development. The following is **done**:
   (`protyle-scroll__bar`), not a scroll container — the bridge never calls
   `scrollTo` / `scrollTop` on it; it is used only to locate the official
   scroll control via `parentElement`.
-- **Command dispatcher** — `GestureCommandDispatcher` validates session state,
-  recognition result, and binding existence before executing the bound command
-  exactly once per session.
+- **Action dispatcher** — `GestureActionExecutor` (replacing the old
+  `GestureCommandDispatcher`) validates session state, recognition result,
+  and binding existence, then dispatches by `action.type`: builtin commands
+  via `CommandExecutor`, keyboard shortcuts via `ShortcutExecutor` — each
+  executed exactly once per session.
 - **Versioned configuration** — a strictly-typed config model with version
-  field, deep-cloned defaults, unified validation/normalisation, and a
-  migration framework (currently version 1).  `ConfigManager` owns the
+  field (currently **version 2**), deep-cloned defaults, unified
+  validation/normalisation, and a migration framework (v1 → v2 wraps legacy
+  `commandId`/`commandParams` into `builtin` actions; migrations are
+  persisted back and reported as `migrated`).  `ConfigManager` owns the
   in-memory snapshot, serialises all persistence via `Plugin.loadData` /
   `Plugin.saveData`, and notifies subscribers with independent deep copies.
   Imports go through the same migration + validation pipeline as the initial
   load; invalid payloads fall back to defaults.
-- **Settings page** — a Svelte-based settings dialog mounted via the official
-  SiYuan `Setting` class.  Tabs for General (enable, suppression key,
-  activation distance, timeout), Recognition (direction mode, sampling,
-  simplification, segment limits), Display (trail/hint toggles, line width),
-  Bindings (enable/disable the four default bindings), and Data (export,
-  import, reset).  All user-facing strings come from i18n; rapid edits are
-  debounced and merged so the runtime is not restarted on every keystroke.
+- **Settings page** — a Svelte-based settings dialog hosted in a custom
+  full-screen SiYuan `Dialog` (not `Setting.addItem`).  Tabs for General
+  (enable, suppression key, activation distance, timeout), Recognition
+  (direction mode, sampling, simplification, segment limits), Display
+  (trail/hint toggles, line width), Bindings (full gesture recording +
+  add/edit/delete/toggle; each binding runs a **builtin** command or a
+  **keyboard shortcut**; JavaScript is a disabled "in development"
+  placeholder), and Data (export, import, reset).  All user-facing strings
+  come from i18n; rapid edits are debounced and merged so the runtime is not
+  restarted on every keystroke.
 - **Runtime manager** — `GestureFlowRuntime` encapsulates the full lifecycle
   of Adapter, Engine, Overlay, commands, and bindings.  `restart` fully stops
   the old runtime (detach adapter, destroy overlay, clear timers and replay
   tokens) before starting with the new config.  `enabled = false` skips
   mounting any input listener or overlay.
 
+- **Keyboard shortcuts** — `ShortcutSpec` (strict serialisable key/code/
+  keyCode + modifiers) captured by `ShortcutRecorder`, validated by one
+  shared `validateShortcutSpec`, displayed cross-platform via
+  `detectShortcutPlatform` (Windows/Linux `Ctrl+Shift+P`, macOS `⌃⇧P`), and
+  dispatched by `ShortcutExecutor` as a synthetic `keydown` to the current
+  focus.  Synthetic events are never `isTrusted`, so plugins that reject
+  non-trusted keyboard events cannot be activated this way.
+- **Binding labels** — `CommandLabelResolver` renders localised command
+  titles for builtin actions and `快捷键：Ctrl+Shift+P`-style labels for
+  shortcut actions in the overlay.
+
 The following is **not yet implemented**:
 
-- Custom gesture recorder and full binding editor (editing directions, adding
-  new bindings, drag-and-drop reordering, custom command params)
+- JavaScript actions (settings placeholder only)
 - Destructive actions (close tab, delete doc, new doc, locate in doc tree)
 - Touchpad / touch input support
 - Scroll-wheel gestures, Rocker gestures, super drag
+- Cross-plugin shortcut activation protocol (plugins that reject synthetic
+  `isTrusted: false` events, e.g. siyuan-homepage custom shortcuts, cannot
+  be triggered by GestureFlow shortcuts)
 
 ## Architecture
 
@@ -87,15 +107,20 @@ src/
   commands/
     CommandRegistry.ts          Atomic command registration
     CommandExecutor.ts          Uniform execution + de-duplication + error containment
-    GestureCommandDispatcher.ts Session → binding → command dispatch
     SiyuanActionBridge.ts       All SiYuan API/DOM access (tabs, scroll)
     registerBuiltinCommands.ts  Default tab/scroll commands
     types.ts                    Command / context / result types
+  actions/
+    GestureActionExecutor.ts    Session → binding → action dispatch (builtin/shortcut)
+  shortcuts/
+    types.ts                    Strict serialisable ShortcutSpec
+    shortcutUtils.ts            Capture / normalise / validate / display / platform detection
+    ShortcutExecutor.ts         Synthetic keydown dispatch
   config/
-    types.ts                    Versioned config schema (strict types)
+    types.ts                    Versioned config schema (version 2, strict types)
     defaults.ts                 Default config + deep-clone utilities
     validate.ts                 Validation + normalisation (range clamping, type checks)
-    migrations.ts               Version detection + migration framework
+    migrations.ts               Version detection + migration framework (v1 → v2)
     ConfigManager.ts            Persistence owner (load/save/import/export/reset/subscribe)
   gesture/
     input/
@@ -110,9 +135,9 @@ src/
       GestureOverlay.ts         Canvas trail + hint element (config-driven)
       types.ts                  Overlay-specific types
     bindings/
-      GestureBindingRegistry.ts Direction → command bindings (immutable, ID-indexed)
-      defaultBindings.ts        L/R/U/D → tabs.previous/next, scroll.top/bottom
-      CommandLabelResolver.ts   Resolve command labels for overlay display
+      GestureBindingRegistry.ts Direction → binding lookup (action-agnostic, immutable)
+      defaultBindings.ts        Default L/R/U/D builtin bindings
+      CommandLabelResolver.ts   Resolve action labels for overlay display
     GestureEngine.ts            Orchestrates the full pipeline
     GestureSession.ts           Per-gesture state + point accumulation
     GestureFeedbackController.ts  RAF coalescing + live recognition + async callback
@@ -120,6 +145,7 @@ src/
   runtime/
     GestureFlowRuntime.ts       Lifecycle manager — start/stop/restart all components
   settings/
+    SettingsDialog.ts           Custom full-screen Dialog wrapper
     SettingsPanel.svelte        Svelte settings dialog (tabs: general/recognition/display/bindings/data)
     settingsHelpers.ts          Pure helpers (parseNumber, DebouncedPatchScheduler)
   index.ts                      Plugin entry — config manager, runtime, settings, unload

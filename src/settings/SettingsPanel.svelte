@@ -13,7 +13,7 @@
     import type { SettingCommandItem } from "./commandCatalog";
     import { catalogCommandIds } from "./commandCatalog";
     import { directionSymbol } from "./directionLabels";
-    import { displayShortcut } from "@/shortcuts/shortcutUtils";
+    import { displayShortcut, detectShortcutPlatform } from "@/shortcuts/shortcutUtils";
     import type { BindingAction } from "@/config/types";
     import {
         addBinding,
@@ -403,7 +403,7 @@
             return commandTitle(action.commandId);
         }
         if (action.type === "shortcut") {
-            return `${i18n.actionShortcut ?? "快捷键"}：${displayShortcut(action.shortcut)}`;
+            return `${i18n.actionShortcut ?? "快捷键"}：${displayShortcut(action.shortcut, detectShortcutPlatform())}`;
         }
         return directionsLabel(binding.directions);
     }

@@ -106,4 +106,53 @@ describe("config migration smoke", () => {
         expect(detectVersion({ version: 999 })).toBe("future");
         expect(detectVersion({ version: 1.5 })).toBe("invalid");
     });
+
+    it("v1 迁移结果可识别为迁移（migrated: true）", () => {
+        const result = migrateAndValidate(makeV1Config(), { availableCommandIds: AVAILABLE_COMMANDS });
+        expect(result.status).toBe("valid");
+        expect(result.migrated).toBe(true);
+        expect(result.config.version).toBe(2);
+    });
+
+    it("缺少 version 的旧 v1 绑定仍可迁移", () => {
+        const v1 = makeV1Config();
+        const { version: _v, ...withoutVersion } = v1;
+        void _v;
+        const result = migrateAndValidate(withoutVersion, { availableCommandIds: AVAILABLE_COMMANDS });
+        expect(result.status).toBe("valid");
+        expect(result.migrated).toBe(true);
+        expect(result.config.bindings[0].action).toEqual({
+            type: "builtin",
+            commandId: "tabs.previous",
+            commandParams: {},
+        });
+    });
+
+    it("缺少 version 的 v2 形状数据补上当前版本", () => {
+        const cfg = createDefaultConfig();
+        const { version: _v, ...withoutVersion } = cfg;
+        void _v;
+        const result = migrateAndValidate(withoutVersion, { availableCommandIds: AVAILABLE_COMMANDS });
+        // 补上版本后即为完整 v2 配置（valid，无需再修复）
+        expect(result.status).toBe("valid");
+        expect(result.config.version).toBe(2);
+        expect(result.config.bindings.length).toBe(4);
+    });
+
+    it("bindings 字段缺失不会变成空 bindings", () => {
+        const v1 = makeV1Config();
+        const { bindings: _b, ...withoutBindings } = v1;
+        void _b;
+        const result = migrateAndValidate(withoutBindings, { availableCommandIds: AVAILABLE_COMMANDS });
+        // 校验器用默认绑定补齐，而非空数组
+        expect(result.config.bindings.length).toBeGreaterThan(0);
+        expect(result.config.bindings[0].id).toBe("default-L");
+    });
+
+    it("明确空 bindings 仍然保持为空", () => {
+        const v1 = { ...makeV1Config(), bindings: [] };
+        const result = migrateAndValidate(v1, { availableCommandIds: AVAILABLE_COMMANDS });
+        expect(result.status).toBe("valid");
+        expect(result.config.bindings).toEqual([]);
+    });
 });

@@ -199,20 +199,25 @@ export class ConfigManager {
         this.config = result.config;
         this.loaded = true;
 
-        // If normalisation changed the payload, persist the cleaned-up
-        // version so subsequent loads skip the work.  (Migrations in the
-        // current framework produce a `normalized` result, so this single
-        // check covers both cases.)
-        if (result.status === "normalized") {
+        // If a real schema migration ran (v1 → v2), or normalisation
+        // repaired the payload, persist the cleaned-up version so
+        // subsequent loads skip the work.
+        if (result.migrated || result.status === "normalized") {
             void this.persist(this.config).catch(() => {
                 // Non-fatal — see above.
             });
         }
 
-        const source = result.status === "valid" ? "loaded" : result.status;
-        const message = result.status === "normalized"
-            ? `normalised: ${result.notes.join("; ")}`
-            : "";
+        const source = result.migrated
+            ? "migrated"
+            : result.status === "valid"
+              ? "loaded"
+              : result.status;
+        const message = result.migrated
+            ? "config migrated to v2"
+            : result.status === "normalized"
+              ? `normalised: ${result.notes.join("; ")}`
+              : "";
         return {
             ok: true,
             config: this.getConfig(),

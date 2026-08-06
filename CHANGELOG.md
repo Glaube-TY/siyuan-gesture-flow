@@ -1,6 +1,78 @@
 # Changelog
 
+## Stage 6A — Shortcut binding actions, config v2, extensible action model
+
+### Unified binding action model (config version 2)
+
+- Bumped `CURRENT_CONFIG_VERSION` to 2.  `ConfigBinding` no longer carries
+  top-level `commandId` / `commandParams`; it now holds a single `action`:
+  - `BuiltinBindingAction { type: "builtin", commandId, commandParams }`
+  - `ShortcutBindingAction { type: "shortcut", shortcut: ShortcutSpec }`
+- JavaScript is deliberately NOT a persistent action type — it exists only
+  as a disabled "in development" option in the settings UI and can never be
+  saved, imported, or executed.
+- Pure-function v1 → v2 migration: legacy top-level `commandId` /
+  `commandParams` are wrapped into `builtin` actions; binding id / enabled /
+  directions are preserved; empty bindings stay empty; missing `bindings`
+  stays missing (defaults are filled by the validator).  Version-less early
+  dev configs with legacy fields are migrated too; version-less v2-shaped
+  configs are stamped with the current version.
+- Migration is now explicitly recognised: `migrateAndValidate` reports
+  `migrated: true`, `ConfigManager` persists the v2 payload and returns
+  `source: "migrated"`, so the next load skips migration.
+
+### Keyboard shortcuts
+
+- `src/shortcuts/` — strict serialisable `ShortcutSpec` (key / code /
+  keyCode + four modifier flags; no events, DOM nodes or functions).
+- Single source of truth for shortcut keys: canonical forms (lowercase
+  letters, exact spec names for `F6` / `ArrowLeft` / `Home` / `Enter` /
+  `Tab` / …), with `isSupportedShortcutKey`, `normalizeShortcutSpec` and
+  `validateShortcutSpec` shared by capture, config validation and
+  binding-draft validation.  Conflicting key/code/keyCode triples and
+  `keyCode: 0` are rejected; `keyCode` must match the key/code mapping.
+- `ShortcutExecutor` dispatches a synthetic `keydown` to the current
+  `activeElement` (falling back to `document`); `keyCode`/`which` are filled
+  on the instance only (never the prototype); `isTrusted` is never forged.
+  Results: `dispatched` / `unavailable` / `failed`.  Synthetic events cannot
+  activate plugins that reject non-trusted events (documented limitation).
+- `ShortcutRecorder` captures shortcuts (pure modifiers ignored, Escape
+  cancels, Backspace/Delete clear), and a test button dispatches the draft
+  through the same executor without saving.
+- Cross-platform display via `detectShortcutPlatform()`: Windows/Linux
+  `Ctrl+Shift+P` / `Alt+Left`; macOS `⌃⇧P` / `⌥Left`.
+
+### Architecture
+
+- `GestureBindingRegistry` is action-agnostic (direction matching only).
+- `GestureCommandDispatcher` was replaced by `GestureActionExecutor` —
+  dispatch by `action.type` (builtin → CommandExecutor, shortcut →
+  ShortcutExecutor), with cross-type per-session de-duplication.
+- `CommandLabelResolver` shows localised command titles / shortcut strings;
+  the overlay renders the correct action label.
+- Settings dialog destroy is now per-instance idempotent (wrapped instance
+  `destroy`, stale-callback safe) — no double `Dialog.destroy()` /
+  `SettingsPanel.$destroy()`.
+
+### Testing & release process
+
+- Test suite reduced from 26 files / ~10.8k lines to a small permanent
+  smoke suite under `tests/smoke/` (pure logic only: recognition, config
+  migration, shortcut utils, binding operations).
+- `pnpm check` type-checks production code only (tsconfig excludes tests);
+  `pnpm build` and `pnpm verify` (incl. `dist/index.css` style isolation)
+  come before `pnpm test:smoke`.  Real SiYuan manual testing covers UI /
+  pointer / lifecycle behaviour.
+
+---
+
 ## Stage 5A — Versioned configuration, persistence, settings page, and runtime reload
+
+> Historical stage record.  Superseded by Stage 6A: the config version is now
+> **2**, the settings page runs in a custom Dialog (not `Setting.addItem`),
+> bindings support add/edit/delete/toggle + recording with builtin **and**
+> shortcut actions, and the test suite was reduced to the `tests/smoke/`
+> suites.  The notes below describe the 5A-era shape.
 
 ### Versioned configuration model
 
@@ -36,8 +108,8 @@
   migration framework (`registerMigration`), and `migrateAndValidate` that
   runs detect → migrate → normalise → validate in sequence.  Unknown future
   versions are refused (no forced downgrade).  Migration functions are pure;
-  they never call `saveData`.  Currently version 1 with no real migrations,
-  but the upgrade path is in place.
+  they never call `saveData`.  *(Historical 5A note: version 1 had no real
+  migrations — Stage 6A added the v1 → v2 migration.)*
 
 ### ConfigManager and persistence
 
@@ -97,13 +169,15 @@
 
 ### Settings page
 
-- Added `src/settings/SettingsPanel.svelte` — Svelte settings dialog mounted
-  via the official SiYuan `Setting` class with a custom HTMLElement.
+- Added `src/settings/SettingsPanel.svelte` — Svelte settings dialog.  In 5A
+  it was mounted via the official SiYuan `Setting` class with a custom
+  HTMLElement; **Stage 6A runs it in a custom full-screen Dialog** instead.
   - Tabs: General (enable, suppression key, activation distance, timeout),
     Recognition (direction mode, sample distance, simplify tolerance,
     minimum segment length, turn angle threshold, maximum segments),
-    Display (show trail, show hint, line width), Bindings (enable/disable
-    the four default bindings — no editing directions or adding bindings),
+    Display (show trail, show hint, line width), Bindings (5A-era: only
+    enable/disable the four default bindings; **Stage 6A adds full
+    add/edit/delete/toggle + gesture recording + builtin/shortcut actions**),
     Data (export, import, reset).
   - All user-facing strings come from i18n (`en.json` / `zh-CN.json`); no
     hardcoded Chinese in TypeScript or Svelte logic.
@@ -139,7 +213,9 @@
   basic/merge/destroy/flush (30).
 - Overlay tests extended for config-driven behaviour (showTrail, showHint,
   lineWidth, updateConfig) (54).
-- Total: 495 tests passing across 17 test files.
+- Total: 495 tests passing across 17 test files.  *(Historical count — the
+  Stage 6A cleanup reduced the suite to the permanent `tests/smoke/`
+  pure-logic suites; these per-stage counts no longer reflect the repo.)*
 
 ## Stage 4 stabilization — contextmenu coordination and document scrolling fix
 

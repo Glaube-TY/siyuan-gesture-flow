@@ -11,7 +11,7 @@ import {
     ValidationResult,
 } from "./types";
 import { createDefaultConfig, deepCloneConfig } from "./defaults";
-import { MODIFIER_KEYS, SUPPORTED_KEYS } from "@/shortcuts/shortcutUtils";
+import { validateShortcutSpec } from "@/shortcuts/shortcutUtils";
 
 /**
  * Options for {@link validateConfig}.
@@ -618,24 +618,19 @@ function validateBindings(
             }
             const key = typeof s.key === "string" ? s.key : "";
             const code = typeof s.code === "string" ? s.code : "";
-            const keyCodeRaw = s.keyCode;
-            const keyCode = typeof keyCodeRaw === "number" ? keyCodeRaw : NaN;
-            const ctrl = s.ctrlKey;
-            const alt = s.altKey;
-            const shift = s.shiftKey;
-            const meta = s.metaKey;
-            const ok =
-                key.length > 0 &&
-                !MODIFIER_KEYS.has(key) &&
-                SUPPORTED_KEYS.has(key.toUpperCase()) &&
-                typeof code === "string" &&
-                Number.isInteger(keyCode) &&
-                keyCode >= 0 &&
-                typeof ctrl === "boolean" &&
-                typeof alt === "boolean" &&
-                typeof shift === "boolean" &&
-                typeof meta === "boolean";
-            if (!ok) {
+            const keyCode = typeof s.keyCode === "number" ? s.keyCode : 0;
+            const candidate = {
+                key,
+                code,
+                keyCode,
+                ctrlKey: s.ctrlKey === true,
+                altKey: s.altKey === true,
+                shiftKey: s.shiftKey === true,
+                metaKey: s.metaKey === true,
+            };
+            // Same strict key/code/keyCode consistency check as capture
+            // and binding-draft validation — single source of truth.
+            if (!validateShortcutSpec(candidate)) {
                 errors.push(`bindings[${i}].action.shortcut is invalid`);
                 continue;
             }
@@ -645,7 +640,7 @@ function validateBindings(
                 directions,
                 action: {
                     type: "shortcut",
-                    shortcut: { key, code, keyCode, ctrlKey: ctrl, altKey: alt, shiftKey: shift, metaKey: meta },
+                    shortcut: candidate,
                 },
             });
             continue;

@@ -60,6 +60,7 @@
   "actionBuiltinSelect": "选择内置功能",
   "shortcutCaptureHint": "点击后按下组合键",
   "shortcutCapturing": "正在录入…",
+  "shortcutEmpty": "未设置快捷键",
   "shortcutClear": "清除快捷键",
   "shortcutClearLabel": "清除",
   "shortcutTest": "测试快捷键",

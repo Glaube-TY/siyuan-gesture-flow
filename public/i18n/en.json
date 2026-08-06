@@ -60,6 +60,7 @@
   "actionBuiltinSelect": "Choose a built-in action",
   "shortcutCaptureHint": "Click, then press a key combination",
   "shortcutCapturing": "Recording…",
+  "shortcutEmpty": "No shortcut set",
   "shortcutClear": "Clear shortcut",
   "shortcutClearLabel": "Clear",
   "shortcutTest": "Test shortcut",

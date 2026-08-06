@@ -3,6 +3,7 @@ import {
     eventToShortcutSpec,
     displayShortcut,
     canonicalKey,
+    validateShortcutSpec,
 } from "../../src/shortcuts/shortcutUtils";
 
 /**
@@ -88,5 +89,28 @@ describe("shortcut-utils smoke", () => {
     it("canonicalKey 小写化字母", () => {
         expect(canonicalKey("P")).toBe("p");
         expect(canonicalKey("F5")).toBe("F5");
+    });
+
+    it("统一校验通过：Alt+ArrowLeft / Ctrl+Home / PageDown", () => {
+        expect(validateShortcutSpec({ key: "ArrowLeft", code: "ArrowLeft", keyCode: 37, ctrlKey: false, altKey: true, shiftKey: false, metaKey: false })).toBe(true);
+        expect(validateShortcutSpec({ key: "Home", code: "Home", keyCode: 36, ctrlKey: true, altKey: false, shiftKey: false, metaKey: false })).toBe(true);
+        expect(validateShortcutSpec({ key: "PageDown", code: "PageDown", keyCode: 34, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false })).toBe(true);
+    });
+
+    it("统一校验拒绝冲突的 key/code/keyCode 组合", () => {
+        // key 为 ArrowLeft、code 为 KeyP、keyCode 为 1 — 互相冲突
+        expect(validateShortcutSpec({ key: "ArrowLeft", code: "KeyP", keyCode: 1, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false })).toBe(false);
+        // keyCode 为 0
+        expect(validateShortcutSpec({ key: "p", code: "KeyP", keyCode: 0, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false })).toBe(false);
+        // keyCode 与 key/code 不一致
+        expect(validateShortcutSpec({ key: "p", code: "KeyP", keyCode: 37, ctrlKey: false, altKey: false, shiftKey: false, metaKey: false })).toBe(false);
+        // 纯修饰键无效
+        expect(validateShortcutSpec({ key: "Control", code: "ControlLeft", keyCode: 17, ctrlKey: true, altKey: false, shiftKey: false, metaKey: false })).toBe(false);
+    });
+
+    it("macOS 显示方向键与其他平台一致（Left 系列）", () => {
+        const altLeft = { key: "ArrowLeft", code: "ArrowLeft", keyCode: 37, ctrlKey: false, altKey: true, shiftKey: false, metaKey: false };
+        expect(displayShortcut(altLeft)).toBe("Alt+Left");
+        expect(displayShortcut(altLeft, "mac")).toBe("⌥Left");
     });
 });

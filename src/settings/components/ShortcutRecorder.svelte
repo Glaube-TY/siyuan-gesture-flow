@@ -5,6 +5,7 @@
         displayShortcut,
         eventToShortcutSpec,
         isModifierKey,
+        detectShortcutPlatform,
     } from "@/shortcuts/shortcutUtils";
 
     /**
@@ -38,6 +39,11 @@
     }>();
 
     let capturing = false;
+
+    /** Display the value with the current platform's modifier style. */
+    function renderShortcut(spec: ShortcutSpec): string {
+        return displayShortcut(spec, detectShortcutPlatform());
+    }
 
     function onKeyDown(e: KeyboardEvent): void {
         if (!capturing) return;
@@ -103,7 +109,7 @@
             value={capturing
                 ? (i18n.shortcutCapturing ?? "正在录入…")
                 : value
-                  ? displayShortcut(value)
+                  ? renderShortcut(value)
                   : (i18n.shortcutEmpty ?? "")}
             on:click={beginCapture}
             on:focus={beginCapture}

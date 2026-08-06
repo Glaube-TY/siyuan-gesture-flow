@@ -78,12 +78,25 @@ const MIGRATIONS = new Map<number, MigrationStep>();
  * id / enabled / directions are preserved untouched; empty bindings
  * stay empty; unknown or malformed bindings are left for the v2
  * validator to reject.
+ *
+ * Deliberate `bindings` handling:
+ * - `bindings` **missing** → stays missing (the validator fills the
+ *   default bindings — never read "user deleted all bindings" from an
+ *   absent field).
+ * - `bindings: []` → stays `[]` (user really deleted every binding).
+ * - `bindings` an array → each item is migrated individually.
+ * - `bindings` NOT an array → kept as-is; the validator rejects it.
  */
 function migrateV1ToV2(input: Record<string, unknown>): Record<string, unknown> | MigrationFailure {
-    const rawBindings = input.bindings;
-    let bindings: unknown[] = [];
-    if (Array.isArray(rawBindings)) {
-        bindings = rawBindings.map((raw) => {
+    if (input.bindings === undefined) {
+        return { ...input };
+    }
+    if (!Array.isArray(input.bindings)) {
+        return { ...input };
+    }
+    return {
+        ...input,
+        bindings: input.bindings.map((raw) => {
             if (!isPlainObject(raw)) return raw;
             const b = raw as Record<string, unknown>;
             // Already migrated (a v2-shaped binding inside a v1 payload):
@@ -105,11 +118,7 @@ function migrateV1ToV2(input: Record<string, unknown>): Record<string, unknown> 
                 ...rest,
                 action: { type: "builtin", commandId, commandParams },
             };
-        });
-    }
-    return {
-        ...input,
-        bindings,
+        }),
     };
 }
 
@@ -173,11 +182,24 @@ export function migrateAndValidate(
     // Step 2: run migration chain from the detected version up to the
     // current one (currently v1 → v2 for the stage 6A schema bump).
     let payload: unknown = input;
+    let migrated = false;
     if (detected === null) {
-        // Missing version — the validator will fill in defaults for
-        // every missing field.  No migration steps to run because the
-        // starting version is unknown; we let the normaliser handle it.
-        payload = input;
+        // Missing version.  Early dev builds shipped a v1-shaped payload
+        // without a version field; if the bindings still carry top-level
+        // commandId / commandParams, treat them as v1 and migrate.
+        const raw = input as Record<string, unknown>;
+        if (hasLegacyV1Bindings(raw)) {
+            const result = migrateV1ToV2(raw);
+            if (isMigrationFailure(result)) {
+                return invalidResult([result.error]);
+            }
+            payload = { ...result, version: 2 };
+            migrated = true;
+        } else {
+            // v2-shaped data without a version field: stamp the current
+            // version and let the normaliser fill anything else missing.
+            payload = { ...raw, version: CURRENT_CONFIG_VERSION };
+        }
     } else {
         // Run migrations from detected version up to current.
         let current = input as Record<string, unknown>;
@@ -197,12 +219,17 @@ export function migrateAndValidate(
             version++;
             // Bump the version field so subsequent steps see the new shape.
             current = { ...current, version };
+            migrated = true;
         }
         payload = current;
     }
 
     // Step 3: validate + normalise.
-    return validateConfig(payload, options);
+    const result = validateConfig(payload, options);
+    if (migrated && (result.status === "valid" || result.status === "normalized")) {
+        return { ...result, migrated: true };
+    }
+    return result;
 }
 
 /**
@@ -232,6 +259,24 @@ export function hasMigrations(): boolean {
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
     return typeof v === "object" && v !== null && !Array.isArray(v);
+}
+
+/**
+ * Whether an unknown payload looks like a legacy v1 shape: its
+ * `bindings` array contains at least one plain object carrying top-level
+ * `commandId` / `commandParams` and no `action`.  Used to migrate
+ * version-less early-dev configs instead of rejecting them.
+ */
+function hasLegacyV1Bindings(input: Record<string, unknown>): boolean {
+    if (!Array.isArray(input.bindings)) return false;
+    return input.bindings.some((raw) => {
+        if (!isPlainObject(raw)) return false;
+        const b = raw as Record<string, unknown>;
+        return (
+            b.action === undefined &&
+            (typeof b.commandId === "string" || isPlainObject(b.commandParams))
+        );
+    });
 }
 
 function isMigrationFailure(
