@@ -24,8 +24,8 @@
     "zh-CN": "手势流"
   },
   "description": {
-    "default": "Mouse gesture plugin for SiYuan. Navigate tabs, scroll and trigger commands with right-button mouse gestures.",
-    "zh-CN": "思源笔记鼠标手势插件。通过右键手势切换标签页、滚动和触发命令。"
+    "default": "Draw right-button mouse gestures to run tab actions, document actions, or keyboard shortcuts.",
+    "zh-CN": "通过鼠标右键绘制手势，执行标签页、文档操作或快捷键。"
   },
   "readme": {
     "default": "README.md",

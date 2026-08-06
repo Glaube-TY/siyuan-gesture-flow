@@ -2,7 +2,7 @@
   "name": "siyuan-gesture-flow",
   "version": "0.1.0",
   "type": "module",
-  "description": "鼠标手势插件 / Mouse gesture plugin for SiYuan",
+  "description": "通过鼠标右键绘制手势，执行标签页、文档操作或快捷键 / Draw right-button mouse gestures to run tab actions, document actions, or keyboard shortcuts",
   "repository": "https://github.com/Glaube-TY/siyuan-gesture-flow",
   "homepage": "https://github.com/Glaube-TY/siyuan-gesture-flow",
   "author": "Glaube-TY",

@@ -314,6 +314,42 @@ export class SiyuanActionBridge {
      * storage to detect emptiness.
      */
     restoreRecentlyClosedTab(): TabOperationResult {
+        return this.runGlobalCommand("recentClosed", "restoreRecentlyClosedTab failed");
+    }
+
+    /**
+     * Go back one step in SiYuan's navigation history.
+     *
+     * Delegates to the public plugin API `globalCommand("goBack", app)`
+     * — the official implementation (app/src/boot/globalEvent/command/
+     * global.ts) drives SiYuan's own back/forward stack.  This bridge
+     * never copies that logic, never reads the internal history stack,
+     * never touches `window.siyuan` history data, never simulates
+     * browser history or button clicks.  With no history SiYuan may
+     * accept the command with no visible change — we do not probe the
+     * history to detect emptiness.
+     */
+    navigateBack(): TabOperationResult {
+        return this.runGlobalCommand("goBack", "navigateBack failed");
+    }
+
+    /**
+     * Go forward one step in SiYuan's navigation history.
+     *
+     * Same delegation model as {@link navigateBack} via the public
+     * `globalCommand("goForward", app)`.
+     */
+    navigateForward(): TabOperationResult {
+        return this.runGlobalCommand("goForward", "navigateForward failed");
+    }
+
+    // --------------------------------------------------------------- internals
+
+    /**
+     * Run a `globalCommand` action, mapping the outcome to a
+     * {@link TabOperationResult}.  Shared by restore/navigate actions.
+     */
+    private runGlobalCommand(command: string, failureLabel: string): TabOperationResult {
         if (!this.app) {
             return { status: "unavailable", reason: "no app instance" };
         }
@@ -322,20 +358,17 @@ export class SiyuanActionBridge {
         }
         try {
             // The public type declares `void`, but the official
-            // implementation returns boolean — treat the result as
-            // unknown and only special-case an explicit `false`.
-            const accepted: unknown = globalCommand("recentClosed", this.app);
+            // implementation returns boolean — only an explicit `false`
+            // (unhandled command) is treated as unavailable.
+            const accepted: unknown = globalCommand(command, this.app);
             if (accepted === false) {
-                // Unknown/unhandled command per the official implementation.
                 return { status: "unavailable", reason: "command not handled" };
             }
             return { status: "executed" };
         } catch (err) {
-            return this.toFailedResult(err, "restoreRecentlyClosedTab failed");
+            return this.toFailedResult(err, failureLabel);
         }
     }
-
-    // --------------------------------------------------------------- internals
 
     /**
      * Get the active editor wrapper, or null if unavailable.

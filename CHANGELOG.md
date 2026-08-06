@@ -1,5 +1,37 @@
 # Changelog
 
+## Stage 6B-3 — Simplified shortcut UI, user-facing README, navigation actions
+
+- **Shortcut UI**: the two long tutorial paragraphs (compatibility +
+  context hints) were removed from the settings screen; the bindings
+  description was trimmed to one line; the capture field now takes a
+  full row (100 % width, ~52 px, centered, 16 px, slightly heavier
+  weight) with a theme-primary capturing state (`gf-shortcut-input--
+  capturing`), and Clear / Test buttons moved to a right-aligned second
+  row so they never squeeze the input.  Empty state shows "Click, then
+  press a key combination" instead of "No shortcut set".  All styles are
+  component-scoped with `gf-` classes — no global overrides.  A stale
+  test-result message is cleared on re-capture, clear, and
+  implementation-type switch.  The compatibility explanation moved to
+  README "Shortcut compatibility".
+- **README**: both README.md and README.zh-CN.md were rewritten as
+  user-oriented documentation (intro, capabilities, quick start, how to
+  draw, implementation types, built-in actions table, shortcut
+  compatibility, settings, FAQ, roadmap, contributing, license).  All
+  developer-oriented content (state machines, class wiring, architecture
+  tree, migration internals, stage numbering) was removed from the README
+  body.
+- **`navigation.back` / `navigation.forward`** (group **Navigation**):
+  delegate to the public `globalCommand("goBack" | "goForward", app)`;
+  no default gestures, no reading of SiYuan's internal history, no
+  browser-history simulation.
+- No config version change (stays **2**); default bindings unchanged
+  (L/R/U/D); plugin.json / package.json descriptions updated to
+  user-facing text.
+- New i18n keys: `cmdNavigationBack`, `cmdNavigationForward`,
+  `cmdGroupNavigation` (zh + en); removed `shortcutEmpty`,
+  `shortcutCompatibilityHint`, `shortcutContextHint`.
+
 ## Stage 6B-2 — Restore recently closed tab
 
 - **`tabs.restoreRecent` — Restore Recently Closed Tab** (group **Tabs**):

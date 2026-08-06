@@ -101,6 +101,8 @@
         const target = e.currentTarget as HTMLInputElement;
         implType = target.value as ImplType;
         errorMessage = "";
+        // Clear a stale test result when the implementation type changes.
+        testMessage = "";
         // When switching (back) to builtin, seed the command draft so the
         // visible select and the model never diverge (e.g. editing a
         // shortcut binding leaves commandId empty until now).
@@ -112,6 +114,8 @@
     function onShortcutChange(e: CustomEvent<ShortcutSpec | null>): void {
         shortcut = e.detail;
         errorMessage = "";
+        // Clear a stale test result on re-capture / clear.
+        testMessage = "";
     }
 
     function onShortcutTest(e: CustomEvent<ShortcutSpec>): void {

@@ -45,6 +45,18 @@
         return displayShortcut(spec, detectShortcutPlatform());
     }
 
+    /** The input's display text for the current state. */
+    function inputText(): string {
+        if (capturing) {
+            return i18n.shortcutCapturing ?? "正在录入…";
+        }
+        if (value) {
+            return renderShortcut(value);
+        }
+        // Empty state is an actionable hint, not a status.
+        return i18n.shortcutCaptureHint ?? "点击后按下组合键";
+    }
+
     /**
      * Cancel capture when the input loses focus (e.g. the user clicked
      * another settings control).  The current shortcut is kept, no
@@ -119,22 +131,19 @@
 </script>
 
 <div class="gf-shortcut-recorder">
-    <div class="gf-shortcut-field">
-        <input
-            class="b3-text-field gf-shortcut-input"
-            type="text"
-            readonly
-            disabled={disabled}
-            value={capturing
-                ? (i18n.shortcutCapturing ?? "正在录入…")
-                : value
-                  ? renderShortcut(value)
-                  : (i18n.shortcutEmpty ?? "")}
-            on:click={beginCapture}
-            on:focus={beginCapture}
-            on:blur={onBlur}
-            aria-label={i18n.shortcutCaptureHint ?? "点击后按下组合键"}
-        />
+    <input
+        class="b3-text-field gf-shortcut-input"
+        class:gf-shortcut-input--capturing={capturing}
+        type="text"
+        readonly
+        disabled={disabled}
+        value={inputText()}
+        on:click={beginCapture}
+        on:focus={beginCapture}
+        on:blur={onBlur}
+        aria-label={i18n.shortcutCaptureHint ?? "点击后按下组合键"}
+    />
+    <div class="gf-shortcut-actions">
         {#if value && !capturing}
             <button
                 class="b3-button b3-button--outline gf-shortcut-btn"
@@ -143,10 +152,6 @@
             >
                 {i18n.shortcutClearLabel ?? "清除"}
             </button>
-        {/if}
-    </div>
-    <div class="gf-shortcut-actions">
-        {#if value && !capturing}
             <button
                 class="b3-button b3-button--outline gf-shortcut-btn"
                 on:click={testShortcut}
@@ -156,11 +161,56 @@
             </button>
         {/if}
     </div>
-    <p class="gf-shortcut-hint">
-        {i18n.shortcutCompatibilityHint ??
-            "快捷键会作为合成键盘事件发送。思源内置快捷键和多数插件快捷键可以响应；主动拒绝非真实键盘事件的少数插件可能不兼容；测试结果可能受当前焦点区域影响。"}
-    </p>
-    <p class="gf-shortcut-hint gf-shortcut-hint--context">
-        {i18n.shortcutContextHint ?? "上下文相关快捷键请关闭设置窗口后用真实手势验证。"}
-    </p>
 </div>
+
+<style>
+    /* All styles are component-scoped (Svelte scopes every class with a
+       data-svelte attribute); only gf- prefixed classes are styled and
+       only b3- classes from SiYuan are reused for base appearance. */
+
+    .gf-shortcut-recorder {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        width: 100%;
+        box-sizing: border-box;
+    }
+
+    /* Row 1: the capture field takes the full width of its row. */
+    .gf-shortcut-input {
+        width: 100%;
+        height: 52px;
+        box-sizing: border-box;
+        font-size: 16px;
+        font-weight: 500;
+        text-align: center;
+        cursor: pointer;
+        border-radius: 8px;
+    }
+
+    /* Capturing state: theme primary border + light translucent tint.
+       Colors come from theme variables with fallbacks — never hard-coded
+       light-theme values.  No animation. */
+    .gf-shortcut-input--capturing {
+        border-color: var(--b3-theme-primary, #3b82f6);
+        background-color: color-mix(in srgb, var(--b3-theme-primary, #3b82f6) 10%, transparent);
+    }
+
+    .gf-shortcut-input:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+    }
+
+    /* Row 2: right-aligned action buttons (never squeeze the input). */
+    .gf-shortcut-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 8px;
+        min-height: 32px;
+    }
+
+    .gf-shortcut-btn {
+        /* Reuses b3-button base appearance; extra spacing only. */
+        padding: 4px 14px;
+    }
+</style>

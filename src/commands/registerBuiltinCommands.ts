@@ -8,6 +8,10 @@ import {
     createTabsRestoreRecentCommand,
 } from "./builtin/tabs";
 import { createDocumentReloadCommand } from "./builtin/document";
+import {
+    createNavigationBackCommand,
+    createNavigationForwardCommand,
+} from "./builtin/navigation";
 
 /**
  * Register all built-in commands with the given registry.
@@ -18,7 +22,8 @@ import { createDocumentReloadCommand } from "./builtin/document";
  *
  * The four original command ids are stable; stage 6B-1 added
  * `tabs.close` and `document.reload`, stage 6B-2 adds
- * `tabs.restoreRecent` — all without default gestures.
+ * `tabs.restoreRecent` — all without default gestures.  Stage 6B-3 adds
+ * `navigation.back` / `navigation.forward` (Navigation group).
  */
 export function registerBuiltinCommands(
     registry: CommandRegistry,
@@ -30,6 +35,8 @@ export function registerBuiltinCommands(
         createTabsCloseCommand(bridge),
         createTabsRestoreRecentCommand(bridge),
         createDocumentReloadCommand(bridge),
+        createNavigationBackCommand(bridge),
+        createNavigationForwardCommand(bridge),
         createScrollTopCommand(bridge),
         createScrollBottomCommand(bridge),
     ]);
