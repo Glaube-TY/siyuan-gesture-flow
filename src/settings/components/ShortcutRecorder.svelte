@@ -39,9 +39,6 @@
     }>();
 
     let capturing = false;
-    /** True between pointerdown and the following blur — clicking the
-     * input itself must not flip capture off and on again. */
-    let pointerDownInside = false;
 
     /** Display the value with the current platform's modifier style. */
     function renderShortcut(spec: ShortcutSpec): string {
@@ -51,16 +48,18 @@
     /**
      * Cancel capture when the input loses focus (e.g. the user clicked
      * another settings control).  The current shortcut is kept, no
-     * `change` is emitted, and the draft is not cleared.  If the blur
-     * came from clicking the input itself (pointerdown inside), capture
-     * is left running so focus/click do not flicker it off and on.
+     * `change` is emitted, and the draft is not cleared.  Clicking an
+     * already-focused input never fires blur, so no pointer-state guard
+     * is needed — a blur always means focus left the input.
      */
     function onBlur(): void {
         if (!capturing) return;
-        if (pointerDownInside) {
-            pointerDownInside = false; // re-focus will keep capture on
-            return;
-        }
+        capturing = false;
+    }
+
+    // If `disabled` becomes true mid-capture, leave capturing
+    // immediately so no further keys are intercepted.
+    $: if (disabled) {
         capturing = false;
     }
 
@@ -125,6 +124,7 @@
             class="b3-text-field gf-shortcut-input"
             type="text"
             readonly
+            disabled={disabled}
             value={capturing
                 ? (i18n.shortcutCapturing ?? "正在录入…")
                 : value
@@ -132,7 +132,6 @@
                   : (i18n.shortcutEmpty ?? "")}
             on:click={beginCapture}
             on:focus={beginCapture}
-            on:pointerdown={() => { pointerDownInside = true; }}
             on:blur={onBlur}
             aria-label={i18n.shortcutCaptureHint ?? "点击后按下组合键"}
         />

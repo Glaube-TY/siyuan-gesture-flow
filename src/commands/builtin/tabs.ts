@@ -30,3 +30,19 @@ export function createTabsNextCommand(bridge: SiyuanActionBridge): CommandDefini
         execute: () => bridge.switchAdjacentTab("next"),
     };
 }
+
+/**
+ * Close the currently active tab in the active window.
+ *
+ * Delegates to {@link SiyuanActionBridge.closeActiveTab}.  No default
+ * gesture is registered — users bind their own trajectory.
+ * i18n key: `cmdTabsClose`
+ */
+export function createTabsCloseCommand(bridge: SiyuanActionBridge): CommandDefinition {
+    return {
+        id: "tabs.close",
+        title: "cmdTabsClose",
+        group: "Tabs",
+        execute: () => bridge.closeActiveTab(),
+    };
+}

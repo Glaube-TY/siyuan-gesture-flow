@@ -40,7 +40,10 @@ GestureFlow is under active development. The following is **done**:
   per-direction / per-ID enable/disable.
 - **SiYuan action bridge** — `SiyuanActionBridge` centralises all SiYuan API
   access (no HTTP, no token).  Implements adjacent tab switching
-  (`getActiveTab` → `Wnd.switchTab`) and document scroll to top/bottom.
+  (`getActiveTab` → `Wnd.switchTab`), closing the active tab
+  (`getActiveTab(true)` → `tab.parent.removeTab(tab.id)`), document scroll
+  to top/bottom, and reloading the active document
+  (`getActiveEditor(true)` → `editor.reload(false)`).
   Scrolling prefers reusing SiYuan's official `protyle-scroll__up` /
   `protyle-scroll__down` buttons (which internally call `goHome` / `goEnd`
   and handle dynamic block loading); if those are unavailable, it falls back
@@ -92,8 +95,21 @@ GestureFlow is under active development. The following is **done**:
 
 The following is **not yet implemented**:
 
+- **Built-in actions** — six commands, grouped in the settings UI:
+  - `tabs.previous` / `tabs.next` / `tabs.close` (group **Tabs**)
+  - `document.reload` (group **Document**)
+  - `scroll.top` / `scroll.bottom` (group **Scrolling**)
+
+  `tabs.close` closes only the currently active normal tab (in the active
+  window); `document.reload` reloads only the currently active document
+  editor — neither is a browser-style tab reload and neither affects other
+  tabs.  The new 6B-1 commands have **no default gestures**: they must be
+  bound manually in the Bindings tab.
+
 - JavaScript actions (settings placeholder only)
-- Destructive actions (close tab, delete doc, new doc, locate in doc tree)
+- Delete doc, new doc, locate in doc tree
+- Restore recently closed tabs, close other/all tabs
+- Back / forward navigation, global search
 - Touchpad / touch input support
 - Scroll-wheel gestures, Rocker gestures, super drag
 - Cross-plugin shortcut activation protocol (plugins that reject synthetic
@@ -107,7 +123,8 @@ src/
   commands/
     CommandRegistry.ts          Atomic command registration
     CommandExecutor.ts          Uniform execution + de-duplication + error containment
-    SiyuanActionBridge.ts       All SiYuan API/DOM access (tabs, scroll)
+    SiyuanActionBridge.ts       All SiYuan API/DOM access (tab switch, tab
+                               close, document scroll, document reload)
     registerBuiltinCommands.ts  Default tab/scroll commands
     types.ts                    Command / context / result types
   actions/

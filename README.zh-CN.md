@@ -31,6 +31,9 @@ GestureFlow 正在开发中。以下功能**已完成**：
 - **内存手势绑定** — `GestureBindingRegistry` 将方向序列映射到命令，
   支持 ID 唯一性、深拷贝不可变性、按方向 / 按 ID 启停。
 - **思源动作桥接** — `SiyuanActionBridge` 集中所有思源 API 访问（无 HTTP、无 Token）。
+  实现相邻标签切换（`getActiveTab` → `Wnd.switchTab`）、关闭当前标签页
+  （`getActiveTab(true)` → `tab.parent.removeTab(tab.id)`）、文档滚动到顶/底部，
+  以及重新加载当前文档（`getActiveEditor(true)` → `editor.reload(false)`）。
   实现相邻标签页切换（`getActiveTab` → `Wnd.switchTab`）和文档滚动到顶部/底部。
   滚动优先复用思源官方 `protyle-scroll__up` / `protyle-scroll__down` 按钮
   （内部调用 `goHome` / `goEnd`，可处理动态加载文档）；若不可用，则回退到设置
@@ -38,6 +41,11 @@ GestureFlow 正在开发中。以下功能**已完成**：
   `editor.protyle.scroll.element` 是**块索引滑杆**（`protyle-scroll__bar`），
   不是滚动容器 — 桥接绝不对其调用 `scrollTo` / `scrollTop`，仅通过
   `parentElement` 定位官方滚动控件。
+- **内置功能** — 六个命令，按分组显示在设置界面：`tabs.previous` / `tabs.next` /
+  `tabs.close`（分组**标签页**）、`document.reload`（分组**文档**）、`scroll.top` /
+  `scroll.bottom`（分组**滚动**）。`tabs.close` 仅关闭当前活动 Wnd 中的普通标签页；
+  `document.reload` 仅重新加载当前活动文档编辑器，两者都不是浏览器式标签刷新，
+  也不影响其他标签页。6B-1 新增的两个命令**没有默认手势**，需在绑定页手动选择绑定。
 - **动作派发器** — `GestureActionExecutor`（取代旧的 `GestureCommandDispatcher`）
   在执行前验证会话状态、识别结果和绑定存在性，并按 `action.type` 派发：内置命令
   走 `CommandExecutor`，键盘快捷键走 `ShortcutExecutor`，每个会话最多执行一次。
@@ -66,7 +74,9 @@ GestureFlow 正在开发中。以下功能**已完成**：
 以下功能**尚未实现**：
 
 - JavaScript 动作（设置界面仅"开发中"占位）
-- 破坏性动作（关闭标签页、删除文档、新建文档、定位文档树）
+- 删除文档、新建文档、定位文档树
+- 恢复最近关闭标签页、关闭其他/全部标签页
+- 后退 / 前进导航、全局搜索
 - 触控板 / 触摸输入
 - 滚轮手势、Rocker 手势、超级拖拽
 - 跨插件快捷键激活协议（拒绝合成 `isTrusted: false` 事件的插件，
@@ -79,7 +89,8 @@ src/
   commands/
     CommandRegistry.ts          原子命令注册
     CommandExecutor.ts          统一执行 + 去重 + 错误捕获
-    SiyuanActionBridge.ts       所有思源 API/DOM 访问（标签页、滚动）
+    SiyuanActionBridge.ts       所有思源 API/DOM 访问（标签切换、标签关闭、
+                              文档滚动、文档重新加载）
     registerBuiltinCommands.ts  默认标签页/滚动命令
     types.ts                    命令 / 上下文 / 结果类型
   actions/

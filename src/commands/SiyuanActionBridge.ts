@@ -13,6 +13,17 @@ export type SwitchTabResult =
     | { status: "noop"; reason: string };
 
 /**
+ * Result of a tab-level operation (close current tab, reload active
+ * document).  `noop` is reserved for cases where the operation has no
+ * work to do by design; exceptions are never reported as `executed`.
+ */
+export type TabOperationResult =
+    | { status: "executed" }
+    | { status: "unavailable"; reason: string }
+    | { status: "noop"; reason: string }
+    | { status: "failed"; reason: string; error?: string };
+
+/**
  * Bridge between GestureFlow commands and the SiYuan API/DOM.
  *
  * **All** SiYuan DOM selectors and API calls are centralised here.  No
@@ -164,6 +175,76 @@ export class SiyuanActionBridge {
         return { status: "executed" };
     }
 
+    /**
+     * Close the currently active tab in the active window.
+     *
+     * Uses the same public object chain the official source uses for
+     * `removeDoc` / `closeBox` / `closeTabByType`:
+     *
+     * ```ts
+     * getActiveTab(true) → tab.parent (Wnd) → wnd.removeTab(tab.id)
+     * ```
+     *
+     * `wndActive=true` restricts the lookup to the **active Wnd**, so a
+     * normal tab bar is required — Dock panels, block popovers, search
+     * popups etc. never qualify and return `unavailable`.  No tab DOM is
+     * queried, no close-button click is simulated, no private function is
+     * called.
+     *
+     * The official `Wnd.removeTab` handles the animation, layout save and
+     * "last tab" behaviour itself; we never compensate for it.
+     */
+    closeActiveTab(): TabOperationResult {
+        const tab = this.getActiveTabSafe();
+        if (!tab) {
+            return { status: "unavailable", reason: "no active tab" };
+        }
+        const wnd = tab.parent;
+        if (!wnd || typeof wnd.removeTab !== "function") {
+            return { status: "unavailable", reason: "tab has no removable parent" };
+        }
+        if (typeof tab.id !== "string" || tab.id.length === 0) {
+            return { status: "unavailable", reason: "tab id unavailable" };
+        }
+        try {
+            wnd.removeTab(tab.id);
+            return { status: "executed" };
+        } catch (err) {
+            return this.toFailedResult(err, "closeActiveTab failed");
+        }
+    }
+
+    /**
+     * Reload the currently active document editor.
+     *
+     * Uses the public Protyle wrapper returned by `getActiveEditor(true)`:
+     * `editor.reload(false)` → official `reloadProtyle(protyle, false)`.
+     * `focus=false` avoids stealing editor focus back to the gesture
+     * origin, matching how the official code reloads after transactions
+     * (`this.reload(false)`).
+     *
+     * - Only the active **document** editor qualifies; non-document tabs
+     *   (search, file tree, settings…) return `unavailable`.
+     * - Never imports `app/src/protyle/util/reload.ts`, never copies its
+     *   internals, never calls HTTP APIs, never re-requests document
+     *   data, never reloads the whole SiYuan window.
+     */
+    reloadActiveDocument(): TabOperationResult {
+        const editor = this.getActiveEditorSafe();
+        if (!editor) {
+            return { status: "unavailable", reason: "no active editor" };
+        }
+        if (typeof editor.reload !== "function") {
+            return { status: "unavailable", reason: "editor has no reload" };
+        }
+        try {
+            editor.reload(false);
+            return { status: "executed" };
+        } catch (err) {
+            return this.toFailedResult(err, "reloadActiveDocument failed");
+        }
+    }
+
     // --------------------------------------------------------------- internals
 
     /**
@@ -197,6 +278,12 @@ export class SiyuanActionBridge {
         } catch {
             return null;
         }
+    }
+
+    /** Build a `failed` result from a runtime exception (never throws). */
+    private toFailedResult(err: unknown, fallback: string): TabOperationResult {
+        const error = err instanceof Error ? err.message : String(err);
+        return { status: "failed", reason: fallback, error };
     }
 
     /**

@@ -1,5 +1,29 @@
 # Changelog
 
+## Stage 6B-1 — Close tab & reload document actions
+
+- **ShortcutRecorder focus fix**: capture now ends immediately on input
+  blur (previously a stale `pointerDownInside` flag could swallow the
+  first blur after clicking another control).  Blur never modifies the
+  shortcut, emits `change`, or clears the draft; `disabled` also exits
+  capture and sets the real `disabled` attribute on the input.
+- **`tabs.close` — Close Current Tab** (group **Tabs**): closes only the
+  currently active normal tab in the active window via the official
+  public chain `getActiveTab(true)` → `tab.parent.removeTab(tab.id)`.
+  Non-normal-tab contexts return `unavailable`; no tab DOM is touched, no
+  close-button click or shortcut is simulated.
+- **`document.reload` — Reload Current Document** (group **Document**):
+  reloads only the currently active document editor via
+  `getActiveEditor(true)` → `editor.reload(false)` (the official Protyle
+  wrapper; `focus=false` avoids stealing editor focus).  Non-document
+  tabs return `unavailable`; no HTTP API, no window reload.
+- Both new commands have **no default gestures** — users bind them
+  manually in the Bindings tab.  Config version stays **2** (no schema
+  change); the four original commands and default bindings are
+  unchanged.
+- New i18n keys: `cmdTabsClose`, `cmdDocumentReload`, `cmdGroupDocument`
+  (zh + en).
+
 ## Stage 6A — Shortcut binding actions, config v2, extensible action model
 
 ### Unified binding action model (config version 2)
