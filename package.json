@@ -1,6 +1,6 @@
 {
   "name": "siyuan-gesture-flow",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "type": "module",
   "description": "通过自定义手势执行标签页、文档操作或快捷键 / Run tab actions, document actions, or keyboard shortcuts with custom gestures",
   "repository": "https://github.com/Glaube-TY/siyuan-gesture-flow",
@@ -24,6 +24,7 @@
     "make-link": "node --no-warnings ./scripts/make_dev_link.js",
     "make-link-win": "pnpm dev:setup",
     "update-version": "node --no-warnings ./scripts/update_version.js",
+    "release": "node --no-warnings ./scripts/release.js",
     "make-install": "pnpm run build && node --no-warnings ./scripts/make_install.js",
     "verify": "node --no-warnings ./scripts/verify_build.js"
   },

@@ -13,3 +13,4 @@ tmp
 .siyuan-api-token.*
 .siyuan-dev-target.json
 .reasonix
+.release_answers.txt
