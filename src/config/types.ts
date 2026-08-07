@@ -5,11 +5,11 @@ import type { ShortcutSpec } from "@/shortcuts/types";
 /**
  * Versioned gesture-flow plugin configuration.
  *
- * Pre-release policy: there is exactly ONE current config structure
- * (the first public-release baseline, version 1).  No dev-era migration
- * chain is maintained — schema changes before the first release keep
- * version 1, and incompatible dev configs are discarded in favour of
- * the current defaults.
+ * Version 1 is the first released config schema (shipped with v0.1.0).
+ * v0.2.0 only adds selectable built-in commands and does not change the
+ * persisted structure, so it continues to use version 1.  The version is
+ * raised only when the persisted structure itself changes, and a
+ * migration is then provided.
  *
  * Bindings carry a single {@link BindingAction} — either a built-in
  * command action or a shortcut action.  JavaScript actions are NOT a
@@ -22,17 +22,18 @@ import type { ShortcutSpec } from "@/shortcuts/types";
  */
 
 /**
- * Current config schema version.  This is the first public-release
- * baseline: schema changes before the first release keep version 1.
+ * Current config schema version.  Version 1 is the schema first released
+ * with v0.1.0; v0.2.0 keeps it because the persisted structure is
+ * unchanged.
  */
 export const CURRENT_CONFIG_VERSION = 1 as const;
 
-/** The only supported config version (first-release baseline). */
+/** The only supported config version (the v0.1.0 released schema). */
 export type SupportedConfigVersion = 1;
 
 /** Trigger (input-layer) configuration. */
 export interface TriggerConfig {
-    /** Pointer button that starts a gesture. Stage 5A only allows 2 (right). */
+    /** Pointer button that starts a gesture. Only button 2 (right) is allowed. */
     button: number;
     /** Movement in px required to transition PENDING -> TRACKING. */
     activationDistance: number;
@@ -94,7 +95,7 @@ export interface ShortcutBindingAction {
 }
 
 /**
- * The union of persistent binding actions (stage 6A).
+ * The union of persistent binding actions.
  *
  * JavaScript is deliberately NOT a member: it exists only as a disabled
  * "in development" option in the settings UI and can never be saved,
@@ -133,8 +134,9 @@ export interface GestureFlowConfig {
  *                  clamped) into a usable current config.
  * - `invalid`    — payload could not be safely used; {@link config}
  *                  holds a fresh default and {@link errors} lists the
- *                  concrete reasons.  Incompatible dev-era data is
- *                  treated as invalid (no migration).
+ *                  concrete reasons.  Corrupt, unknown or future-version
+ *                  data is treated as invalid — the caller must not
+ *                  overwrite the original payload.
  */
 export type ValidationResult =
     | { status: "valid"; config: GestureFlowConfig }
@@ -151,8 +153,18 @@ export interface ConfigLoadResult {
     ok: boolean;
     /** The current in-memory config (independent snapshot). */
     config: GestureFlowConfig;
-    /** "loaded" | "normalized" | "defaults" | "imported" | "reset" | "error" */
-    source: "loaded" | "normalized" | "defaults" | "imported" | "reset" | "error";
+    /**
+     * How the config was produced:
+     * - `loaded` / `normalized` — read from disk (`normalized` = the
+     *   current structure was repaired and the cleaned version persisted).
+     * - `defaults` — no config on disk yet (first run) or a read error.
+     * - `fallback` — a config exists on disk but this version cannot use
+     *   it; defaults are used temporarily and the original data is left
+     *   untouched on disk.
+     * - `imported` / `reset` — produced by those explicit user actions.
+     * - `error` — the manager was destroyed.
+     */
+    source: "loaded" | "normalized" | "defaults" | "fallback" | "imported" | "reset" | "error";
     /** Human-readable detail (empty on clean loads). */
     message: string;
 }

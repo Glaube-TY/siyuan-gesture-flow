@@ -69,6 +69,9 @@ export type ConfigUpdatePatch = {
  *   run it through {@link validateConfig} against the single current
  *   structure, and keep the resulting
  *   snapshot as the source of truth.
+ * - When the saved data cannot be used (corrupt, unknown/future version,
+ *   otherwise incompatible), leave the on-disk data untouched and run
+ *   temporarily on the defaults, reporting `source: "fallback"`.
  * - Expose {@link getConfig} returning an independent deep copy so
  *   external code can never mutate the internal state.
  * - Provide {@link replaceConfig} / {@link updateConfig} for atomic
@@ -76,7 +79,7 @@ export type ConfigUpdatePatch = {
  * - Notify subscribers with independent snapshots on every successful
  *   change.
  * - Support {@link exportJson} / {@link importJson} for user-driven
- *   backup/restore.  Imports go through the same migration + validation
+ *   backup/restore.  Imports go through the same validation
  *   pipeline as the initial load.
  * - {@link reset} restores the default config and persists it.
  * - {@link destroy} tears down subscriptions and rejects any pending
@@ -121,10 +124,11 @@ export class ConfigManager {
      * snapshot is always a fresh deep copy — callers can mutate it
      * freely without affecting the internal state.
      *
-     * On any failure (read error, invalid schema, unknown future version)
-     * the manager falls back to a fresh default config and reports the
-     * outcome via {@link ConfigLoadResult.source} = `"defaults"` or
-     * `"error"`.
+     * On any failure the manager falls back to a fresh default config
+     * and reports the outcome via {@link ConfigLoadResult.source}: a
+     * read error yields `"defaults"`, a present-but-unusable config
+     * (corrupt / unknown or future version) yields `"fallback"` without
+     * touching the disk, and a destroyed manager yields `"error"`.
      */
     load(): Promise<ConfigLoadResult> {
         if (this.destroyed) {
@@ -191,23 +195,22 @@ export class ConfigManager {
             return this.destroyedResult();
         }
         if (result.status === "invalid") {
-            // Pre-release policy: incompatible dev-era configs are NOT
-            // migrated or repaired — fall back to the current defaults
-            // and overwrite the old payload so the next load is clean.
-            // A concise message is surfaced via the load result; the
-            // caller (index.ts) logs it in dev mode and starts normally.
-            this.config = result.config;
+            // A released plugin must never overwrite data it cannot
+            // understand.  An existing config that is corrupt, from a
+            // future / unknown version, or otherwise incompatible stays
+            // untouched on disk — no saveData, no removeData, no reset.
+            // The runtime still starts, temporarily using the defaults,
+            // and the load result reports `fallback` so the caller can
+            // show a one-time hint.  When the user upgrades back to the
+            // version that wrote that config, it is still there.
+            this.config = createDefaultConfig();
             this.loaded = true;
-            void this.persist(this.config).catch(() => {
-                // Persistence failure on the recovery write is non-fatal;
-                // the in-memory state is still usable.  The next save
-                // attempt will retry.
-            });
             return {
                 ok: true,
                 config: this.getConfig(),
-                source: "defaults",
-                message: `incompatible dev config — using defaults: ${result.errors.join("; ")}`,
+                source: "fallback",
+                message:
+                    "saved configuration is not readable by this version — defaults used temporarily, original data preserved",
             };
         }
 
@@ -371,9 +374,9 @@ export class ConfigManager {
      * result of `JSON.parse` on a user-selected file).
      *
      * The payload goes through the full validation pipeline against the
-     * single current structure.  Incompatible dev-era payloads are
-     * rejected (never migrated).  On success the new config is persisted
-     * and
+     * single current structure.  Incompatible payloads are rejected —
+     * never migrated, never written to disk.  On success the new config
+     * is persisted and
      * subscribers are notified.  On failure the current config is
      * preserved — the import never overwrites the in-memory state
      * with unusable data.
@@ -386,7 +389,7 @@ export class ConfigManager {
         if (result.status === "invalid") {
             return {
                 status: "error",
-                message: "config format is incompatible with the current development version",
+                message: "config format is not compatible with this version",
                 errors: result.errors,
             };
         }

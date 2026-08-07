@@ -21,12 +21,11 @@ import { createOfficialGlobalCommands } from "./builtin/global";
  * API/DOM access.  Commands are pure declarations — they contain no
  * selectors or DOM queries of their own.
  *
- * The four original command ids are stable; stage 6B-1 added
- * `tabs.close` and `document.reload`, stage 6B-2 adds
- * `tabs.restoreRecent`, stage 6B-3 adds `navigation.back` /
- * `navigation.forward`.  v0.2.0 adds the pure-global-command actions
- * declared in `OFFICIAL_GLOBAL_ACTIONS` (search, documents, panels &
- * views, layout, application & system, plus the tab close actions).
+ * The base commands (tab switching, closing, restoring, document reload,
+ * navigation, scrolling) are registered here; v0.2.0 adds the
+ * pure-global-command actions declared in `OFFICIAL_GLOBAL_ACTIONS`
+ * (search, documents, panels & views, layout, application & system,
+ * plus the tab close actions).
  *
  * Registration order also drives the settings command picker (each
  * group and its actions appear in this order).  The global-command

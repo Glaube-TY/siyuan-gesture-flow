@@ -30,7 +30,7 @@ GestureFlow is a **gesture automation plugin** for SiYuan. Draw a gesture with y
 
 ## Drawing gestures
 
-- The first release supports **right-button gesture input on desktop**.
+- The current version supports **right-button gesture input on desktop**.
 - Hold the right mouse button, move the mouse, then release.
 - Supported directions: **U**, **D**, **L**, **R** and combinations such as `R → D`.
 - With **8-direction mode** enabled, diagonal directions (e.g. `↖ ↗ ↘ ↙`) are also recognized.

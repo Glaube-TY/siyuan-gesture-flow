@@ -23,7 +23,6 @@ import { OverlayI18n } from "@/gesture/overlay/types";
 /**
  * GestureFlow plugin entry.
  *
- * Stage 5A replaces the hard-coded wiring with a config-driven runtime.
  * Responsibilities kept in this file:
  * - Construct the {@link ConfigManager} and load the persisted config.
  * - Construct the {@link GestureFlowRuntime} and start it with the
@@ -82,10 +81,10 @@ export default class GestureFlowPlugin extends Plugin {
     }
 
     /**
-     * Source of the settings command catalog (stage 5B).
+     * Source of the settings command catalog.
      *
      * The runtime rebuilds its own CommandRegistry on every start; the
-     * built-in command set is static in this stage, so this registry —
+     * built-in command set is static, so this registry —
      * populated once at load with the exact same
      * `registerBuiltinCommands` call — is used to build the read-only
      * catalog the settings UI displays.  Only metadata (id / i18n key /
@@ -164,6 +163,21 @@ export default class GestureFlowPlugin extends Plugin {
             }
 
             runtime.start(result.config);
+
+            // A saved configuration exists on disk but this version
+            // cannot read it.  Show a one-time hint; the original data
+            // is preserved (see ConfigManager.doLoad) so the user can
+            // recover it by upgrading back.  The hint appears once per
+            // load — never on repeated gestures — and never contains
+            // config content.
+            if (result.source === "fallback") {
+                showMessage(
+                    this.i18n?.settingsIncompatibleFallback ??
+                        "This version could not read the saved configuration. Defaults are being used temporarily and the original configuration was preserved.",
+                    5000,
+                    "error",
+                );
+            }
 
             // Subscribe to config changes so the runtime restarts when
             // the settings UI saves a new config.  The subscription is

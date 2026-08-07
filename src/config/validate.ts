@@ -86,10 +86,10 @@ export function validateConfig(
     const defaults = createDefaultConfig();
 
     // --- version ------------------------------------------------------------
-    // Pre-release policy: there is exactly ONE current structure.  Any
+    // The validator understands exactly one current structure.  Any
     // payload whose version is not the fixed current version is invalid
-    // (no dev-era migration, no version inference) and the caller falls
-    // back to defaults.
+    // (no version inference, no migration); the caller decides whether to
+    // discard it (import) or preserve it untouched (load fallback).
     if (root.version !== CURRENT_CONFIG_VERSION) {
         errors.push(
             `unsupported config version ${JSON.stringify(root.version)} (current is ${CURRENT_CONFIG_VERSION})`,

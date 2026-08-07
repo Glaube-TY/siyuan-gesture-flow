@@ -79,4 +79,34 @@ describe("v0.1.0 -> v0.2.0 upgrade simulation", () => {
         const result = validateConfig(config, { availableCommandIds: commandIds });
         expect(result.status).toBe("valid");
     });
+
+    it("never overwrites an incompatible (future-version) config on disk", async () => {
+        // A future v0.3.0 config (version 2) the current version cannot read.
+        const future = { ...JSON.parse(JSON.stringify(v010)), version: 2 };
+        let saveCalls = 0;
+        let removeCalls = 0;
+        const manager = new ConfigManager({
+            host: {
+                loadData: async () => future,
+                saveData: async () => {
+                    saveCalls++;
+                    return undefined;
+                },
+                removeData: async () => {
+                    removeCalls++;
+                    return undefined;
+                },
+            },
+            availableCommandIds: () => commandIds,
+        });
+        const result = await manager.load();
+        // Reported as a fallback, not a clean defaults load.
+        expect(result.source).toBe("fallback");
+        expect(result.ok).toBe(true);
+        // The runtime may run on defaults temporarily…
+        expect(result.config.version).toBe(1);
+        // …but the disk data is preserved: no save, no remove.
+        expect(saveCalls).toBe(0);
+        expect(removeCalls).toBe(0);
+    });
 });

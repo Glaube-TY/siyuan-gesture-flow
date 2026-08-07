@@ -12,9 +12,10 @@ import type { SiyuanActionBridge } from "../SiyuanActionBridge";
  * entry here (registration is automatic via
  * {@link createOfficialGlobalCommands}) and add its i18n keys.
  *
- * All command names were verified against the current official SiYuan
- * source `app/src/boot/globalEvent/command/global.ts` (master).  The
- * installed `siyuan` type package (v1.2.3) declares the public
+ * All command names were verified against the official SiYuan v3.7.0
+ * source `app/src/boot/globalEvent/command/global.ts` — the version
+ * declared by the plugin's `minAppVersion`.  The installed `siyuan` type
+ * package (v1.2.3) declares the public
  * `globalCommand(command, app)` entry the bridge calls.
  *
  * Entries are ordered for the settings command picker: within each
