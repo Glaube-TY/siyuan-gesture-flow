@@ -13,19 +13,6 @@ import {
 import { createDefaultConfig, deepCloneConfig } from "./defaults";
 import { validateShortcutSpec } from "@/shortcuts/shortcutUtils";
 
-/**
- * Options for {@link validateConfig}.
- *
- * {@link availableCommandIds} lets the caller inject the current
- * {@link CommandRegistry}'s command id set without the validator depending
- * on the registry directly.  When omitted, binding `commandId` existence is
- * not checked (used by pure-logic tests and by the migration path before the
- * runtime is available).
- */
-export interface ValidateOptions {
-    availableCommandIds?: Set<string>;
-}
-
 const ALLOWED_SUPPRESSION_KEYS: readonly SuppressionKey[] = [
     "Alt",
     "Control",
@@ -56,24 +43,27 @@ const DIAGONALS: readonly Direction[] = ["UL", "UR", "DL", "DR"];
  *
  * - `valid`      — input was already a clean current-version config.
  * - `normalized` — input was repairable (missing fields filled, values
- *                  clamped into range, unknown commandIds disabled).  The
- *                  returned config is safe to use; {@link notes} lists
- *                  every repair so the UI can inform the user.
+ *                  clamped into range).  The returned config is safe to
+ *                  use; {@link notes} lists every repair so the UI can
+ *                  inform the user.
  * - `invalid`    — input could not be safely used (wrong root type,
  *                  duplicate binding ids, duplicate direction sequences,
  *                  unknown future version).  {@link config} is a fresh
  *                  default and {@link errors} lists the concrete reasons.
  *
- * Range clamping follows the spec in the stage 5A task:
+ * A builtin binding whose `commandId` is not registered by the current
+ * version is NOT structural damage: it is preserved as-is (id, enabled,
+ * directions, commandId, commandParams) and simply reports `unavailable`
+ * at runtime.  Whether a command exists is a runtime capability, not part
+ * of the persisted schema.
+ *
+ * Range clamping:
  *   activationDistance 4–100, timeoutMs 0–10000, sampleDistance > 0,
  *   simplifyTolerance >= 0, minimumSegmentLength > 0,
  *   turnAngleThreshold 1–89, maximumSegments positive integer,
  *   directionMode 4|8, lineWidth 1–20, button === 2.
  */
-export function validateConfig(
-    input: unknown,
-    options: ValidateOptions = {},
-): ValidationResult {
+export function validateConfig(input: unknown): ValidationResult {
     const notes: string[] = [];
     const errors: string[] = [];
 
@@ -129,7 +119,6 @@ export function validateConfig(
         defaults.bindings,
         notes,
         errors,
-        options.availableCommandIds,
         recognizerResult.directionMode,
     );
 
@@ -224,7 +213,7 @@ function validateButton(
         errors.push(`trigger.button must be an integer, got ${JSON.stringify(v)}`);
         return def;
     }
-    // Stage 5A: only the right button (2) is allowed.
+    // Only mouse button 2 (right button) is currently supported.
     if (v !== 2) {
         errors.push(`trigger.button must be 2 (right), got ${v}`);
         return def;
@@ -451,7 +440,6 @@ function validateBindings(
     defaults: ConfigBinding[],
     notes: string[],
     errors: string[],
-    availableCommandIds?: Set<string>,
     directionMode: DirectionMode = 4,
 ): ConfigBinding[] {
     if (input === undefined || input === null) {
@@ -463,10 +451,10 @@ function validateBindings(
         return defaults.map(cloneBindingShallow);
     }
     if (input.length === 0) {
-        // Stage 5B: an explicitly empty array is a VALID user choice —
-        // the user deleted every binding.  It must NOT be replaced with
-        // the default bindings.  (Only a *missing* `bindings` field
-        // falls back to defaults, handled above.)
+        // An explicitly empty array is a VALID user choice — the user
+        // deleted every binding.  It must NOT be replaced with the default
+        // bindings.  (Only a *missing* `bindings` field falls back to
+        // defaults, handled above.)
         return [];
     }
 
@@ -536,12 +524,10 @@ function validateBindings(
             errors.push(`bindings[${i}].directions must not be empty`);
             continue;
         }
-        // Stage 5B stabilization: 4-direction mode must not silently run
-        // ENABLED diagonal bindings — reject them loudly so the UI can
-        // tell the user to edit or disable them.  A *disabled* diagonal
-        // binding is allowed to stay (it can be re-enabled after
-        // switching back to 8-direction mode), and the runtime never
-        // resolves disabled bindings, so it cannot crash on them.
+        // In 4-direction mode, enabled diagonal bindings are invalid;
+        // disabled diagonal bindings may remain for later reuse in
+        // 8-direction mode (the runtime never resolves disabled bindings,
+        // so they cannot crash on load).
         if (directionMode === 4 && enabled && directions.some((d) => DIAGONALS.includes(d))) {
             errors.push(
                 `bindings[${i}].directions contains enabled diagonals not allowed in 4-direction mode: ${directions.join("-")}`,
@@ -576,12 +562,10 @@ function validateBindings(
                 errors.push(`bindings[${i}].action.commandId must not be empty`);
                 continue;
             }
-            if (availableCommandIds && !availableCommandIds.has(commandId)) {
-                // Unknown command: disable and report (do not silently
-                // execute a wrong command, do not drop the binding).
-                notes.push(`bindings[${i}].action.commandId "${commandId}" unknown — disabled`);
-                enabled = false;
-            }
+            // A commandId the current version does not register is kept
+            // unchanged (id, enabled, directions, commandId, commandParams).
+            // Whether the command exists is a runtime capability, not a
+            // schema problem — the executor returns `unavailable`.
             let commandParams: Record<string, unknown> = {};
             if (rawAction.commandParams !== undefined) {
                 if (!isPlainObject(rawAction.commandParams)) {
@@ -654,9 +638,9 @@ function validateBindings(
         }
 
         if (actionType === "javascript") {
-            // JavaScript actions are NOT a persistent type in stage 6A —
-            // reject them so imports can never bypass the disabled
-            // "in development" state.
+            // JavaScript actions are NOT a persistent type — reject them
+            // so imports can never bypass the disabled "in development"
+            // state.
             errors.push(`bindings[${i}].action.type "javascript" is not available in this version`);
             continue;
         }

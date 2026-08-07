@@ -3,11 +3,12 @@ import { ConfigManager } from "../../src/config/ConfigManager";
 import { registerBuiltinCommands } from "../../src/commands/registerBuiltinCommands";
 import { CommandRegistry } from "../../src/commands/CommandRegistry";
 import { SiyuanActionBridge } from "../../src/commands/SiyuanActionBridge";
+import { CommandExecutor } from "../../src/commands/CommandExecutor";
+import type { CommandContext } from "../../src/commands/types";
 import { validateConfig } from "../../src/config/validate";
 
 const registry = new CommandRegistry();
 registerBuiltinCommands(registry, new SiyuanActionBridge());
-const commandIds = new Set(registry.list().map((c) => c.id));
 
 // A realistic v0.1.0 released user config persisted on disk:
 // default L/R/U/D bindings + a custom builtin binding + a shortcut
@@ -44,7 +45,6 @@ describe("v0.1.0 -> v0.2.0 upgrade simulation", () => {
                 saveData: async () => undefined,
                 removeData: async () => undefined,
             },
-            availableCommandIds: () => commandIds,
         });
         const result = await manager.load();
         expect(result.ok).toBe(true);
@@ -76,7 +76,7 @@ describe("v0.1.0 -> v0.2.0 upgrade simulation", () => {
             { id: "custom-search", enabled: true, directions: ["L", "D"], action: { type: "builtin", commandId: "search.global", commandParams: {} } },
             { id: "custom-split", enabled: true, directions: ["R", "U"], action: { type: "builtin", commandId: "layout.splitHorizontal", commandParams: {} } },
         );
-        const result = validateConfig(config, { availableCommandIds: commandIds });
+        const result = validateConfig(config);
         expect(result.status).toBe("valid");
     });
 
@@ -97,7 +97,6 @@ describe("v0.1.0 -> v0.2.0 upgrade simulation", () => {
                     return undefined;
                 },
             },
-            availableCommandIds: () => commandIds,
         });
         const result = await manager.load();
         // Reported as a fallback, not a clean defaults load.
@@ -108,5 +107,71 @@ describe("v0.1.0 -> v0.2.0 upgrade simulation", () => {
         // …but the disk data is preserved: no save, no remove.
         expect(saveCalls).toBe(0);
         expect(removeCalls).toBe(0);
+    });
+
+    it("preserves bindings to commands unknown to the current version (downgrade compat)", async () => {
+        // A v0.3.0 config (same schema version 1) that binds a command
+        // this version does not register.  The structure is understood:
+        // the binding must load unchanged and the disk must not be
+        // rewritten because of the unknown commandId.
+        const future = JSON.parse(JSON.stringify(v010)) as typeof v010;
+        future.bindings.push({
+            id: "future-binding",
+            enabled: true,
+            directions: ["L", "R"],
+            action: { type: "builtin", commandId: "future.newAction", commandParams: { mark: true } },
+        });
+        let saveCalls = 0;
+        let removeCalls = 0;
+        const manager = new ConfigManager({
+            host: {
+                loadData: async () => future,
+                saveData: async () => {
+                    saveCalls++;
+                    return undefined;
+                },
+                removeData: async () => {
+                    removeCalls++;
+                    return undefined;
+                },
+            },
+        });
+        const result = await manager.load();
+        // Normal load — the structure is understood, no fallback to defaults.
+        expect(result.ok).toBe(true);
+        expect(result.source).toBe("loaded");
+        // The unknown binding survives intact.
+        const binding = result.config.bindings.find((b) => b.id === "future-binding");
+        expect(binding).toBeDefined();
+        expect(binding?.enabled).toBe(true);
+        expect(binding?.directions).toEqual(["L", "R"]);
+        if (binding && binding.action.type === "builtin") {
+            expect(binding.action.commandId).toBe("future.newAction");
+            expect(binding.action.commandParams).toEqual({ mark: true });
+        }
+        // The unknown commandId caused no write-back and no removal.
+        expect(saveCalls).toBe(0);
+        expect(removeCalls).toBe(0);
+    });
+
+    it("executing a command unknown to the registry returns unavailable", async () => {
+        const executor = new CommandExecutor(registry);
+        const context: CommandContext = {
+            sessionId: 999,
+            directions: ["L", "R"],
+            start: { x: 0, y: 0 },
+            end: { x: 2, y: 2 },
+            points: [],
+            durationMs: 100,
+            recognition: {
+                valid: true,
+                invalidReason: null,
+                rawPointCount: 0,
+                sampledPointCount: 0,
+                simplifiedPointCount: 0,
+            },
+        };
+        const result = await executor.execute("future.newAction", context);
+        expect(result.status).toBe("unavailable");
     });
 });

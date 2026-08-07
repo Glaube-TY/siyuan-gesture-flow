@@ -121,7 +121,7 @@ describe("binding-operations smoke", () => {
     });
 
     it("当前默认配置有效（版本 1 单一结构）", () => {
-        const result = validateConfig(createDefaultConfig(), { availableCommandIds: opts.availableCommandIds });
+        const result = validateConfig(createDefaultConfig());
         expect(result.status).toBe("valid");
         expect(result.config.version).toBe(1);
     });
@@ -134,11 +134,11 @@ describe("binding-operations smoke", () => {
                 { id: "x", enabled: true, directions: ["L"], commandId: "tabs.previous", commandParams: {} },
             ],
         };
-        expect(validateConfig(legacyTopLevel, { availableCommandIds: opts.availableCommandIds }).status).toBe("invalid");
+        expect(validateConfig(legacyTopLevel).status).toBe("invalid");
         // 非当前版本（旧 version 2 等）
-        expect(validateConfig({ ...createDefaultConfig(), version: 2 }, { availableCommandIds: opts.availableCommandIds }).status).toBe("invalid");
+        expect(validateConfig({ ...createDefaultConfig(), version: 2 }).status).toBe("invalid");
         // 缺少 action
-        expect(validateConfig({ ...createDefaultConfig(), bindings: [{ id: "x", enabled: true, directions: ["L"] }] }, { availableCommandIds: opts.availableCommandIds }).status).toBe("invalid");
+        expect(validateConfig({ ...createDefaultConfig(), bindings: [{ id: "x", enabled: true, directions: ["L"] }] }).status).toBe("invalid");
     });
 });
 

@@ -160,6 +160,7 @@
   "bindingErrorDiagonal4Enable": "Diagonal bindings cannot be enabled in 4-direction mode",
   "bindingErrorDuplicate": "Another binding already uses this gesture",
   "bindingErrorInvalidParams": "Invalid command parameters",
+  "bindingUnavailableInThisVersion": "Unavailable in this version",
     "aboutIntro": "GestureFlow is a gesture automation plugin for SiYuan. Run tab actions, document actions, or keyboard shortcuts with custom gestures. The current release supports right-button mouse input on desktop; touchpad and other configurable input buttons are planned.",
   "aboutWebsite": "Website",
   "aboutIssues": "Feedback",

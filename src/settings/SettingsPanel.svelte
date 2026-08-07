@@ -143,9 +143,9 @@ import { showSafeConfirm } from "./confirmDialog";
     }
 
     function setDirectionMode(value: 4 | 8): void {
-        // Stage 5B: switching to 4-direction mode with enabled diagonal
-        // bindings is refused up-front — nothing is written, no local
-        // state changes, and the user gets a clear localised hint.
+        // Switching to 4-direction mode with enabled diagonal bindings is
+        // refused up-front — nothing is written, no local state changes,
+        // and the user gets a clear localised hint.
         if (value === 4) {
             const incompatible = findIncompatibleBindings(config.bindings, 4);
             if (incompatible.length > 0) {
@@ -284,7 +284,7 @@ import { showSafeConfirm } from "./confirmDialog";
         scheduleSave();
     }
 
-    // --------------------------------------------------------------- bindings tab (stage 5B: see editor/handlers below)
+    // --------------------------------------------------------------- bindings tab (see editor/handlers below)
 
     // --------------------------------------------------------------- data tab
 
@@ -355,7 +355,7 @@ import { showSafeConfirm } from "./confirmDialog";
         { key: "about", label: () => i18n.settingsTabAbout ?? "About" },
     ] as const;
 
-    // ------------------------------------------------------- bindings (5B)
+    // ------------------------------------------------------- bindings
 
     /** Editor state: null = list view, otherwise a new or existing binding. */
     let editing: { mode: "new" } | { mode: "edit"; binding: ConfigBinding } | null = null;
@@ -398,15 +398,24 @@ import { showSafeConfirm } from "./confirmDialog";
         return commandCatalog.find((c) => c.id === id)?.title ?? id;
     }
 
+    /** Whether a builtin command id is selectable in the current catalog. */
+    function commandKnown(id: string): boolean {
+        return commandCatalog.some((c) => c.id === id);
+    }
+
     /**
      * Display name for a binding action: builtin commands show the
      * localised command title; shortcuts show the user-defined action
-     * name.  Unknown/invalid actions fall back to the direction sequence
-     * only.
+     * name.  A builtin command this version does not register shows a
+     * neutral "Unavailable in this version" label (never a fake name).
+     * Unknown/invalid actions fall back to the direction sequence only.
      */
     function bindingActionTitle(binding: ConfigBinding): string {
         const action = binding.action;
         if (action.type === "builtin") {
+            if (!commandKnown(action.commandId)) {
+                return i18n.bindingUnavailableInThisVersion ?? "Unavailable in this version";
+            }
             return commandTitle(action.commandId);
         }
         if (action.type === "shortcut") {
@@ -417,12 +426,15 @@ import { showSafeConfirm } from "./confirmDialog";
 
     /**
      * Secondary detail line for a binding action: shortcuts show the
-     * actual key combination beneath the action name; builtin actions
-     * have no detail.
+     * actual key combination beneath the action name; an unavailable
+     * builtin command shows its raw command id as a weaker hint.
      */
     function bindingActionDetail(binding: ConfigBinding): string | null {
         if (binding.action.type === "shortcut") {
             return displayShortcut(binding.action.shortcut, detectShortcutPlatform());
+        }
+        if (binding.action.type === "builtin" && !commandKnown(binding.action.commandId)) {
+            return binding.action.commandId;
         }
         return null;
     }

@@ -11,7 +11,7 @@
     import type { ShortcutSpec } from "@/shortcuts/types";
 
     /**
-     * Binding editor (stage 6A).
+     * Binding editor.
      *
      * Draft-only UI: nothing is persisted until the user presses Save,
      * which delegates to the parent via {@link handleSave}.  Editing an
@@ -296,6 +296,14 @@
                 {i18n.actionBuiltinSelect ?? "选择内置功能"}
             </span>
             <select class="b3-select gf-binding-editor-select" bind:value={commandId}>
+                {#if commandCatalog.length > 0 && !commandCatalog.some((c) => c.id === commandId)}
+                    <!-- A binding whose command is not registered by this
+                         version: show the real original command, never a
+                         silently substituted first catalog entry. -->
+                    <option value={commandId} disabled>
+                        {i18n.bindingUnavailableInThisVersion ?? "Unavailable in this version"}: {commandId}
+                    </option>
+                {/if}
                 {#each groups as group}
                     <optgroup label={groupTitle(group)}>
                         {#each commandCatalog.filter((c) => c.group === group) as cmd}

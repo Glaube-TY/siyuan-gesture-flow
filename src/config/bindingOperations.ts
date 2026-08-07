@@ -6,7 +6,7 @@ import {
 import { isValidShortcut } from "@/shortcuts/shortcutUtils";
 
 /**
- * Atomic binding configuration operations (stage 5B).
+ * Atomic binding configuration operations.
  *
  * Pure functions only: every operation takes the current bindings list
  * (or config) and returns a NEW array — the input is never mutated.
@@ -22,7 +22,9 @@ import { isValidShortcut } from "@/shortcuts/shortcutUtils";
  *   rejects diagonals — they are never silently rewritten);
  * - the full sequence must be unique among the other bindings
  *   (self-excluded when editing);
- * - `commandId` must exist in the catalog (when provided);
+ * - `commandId` must exist in the catalog (when provided), except the
+ *   commandId already present on the binding being edited (preserved
+ *   unchanged so newer-version bindings survive editing);
  * - `commandParams` must stay a plain object.
  */
 
@@ -67,6 +69,13 @@ export interface BindingValidationOptions {
     directionMode: DirectionMode;
     /** Command ids selectable in the settings (catalog). */
     availableCommandIds?: Set<string>;
+    /**
+     * Command id already present on the binding being edited.  An unknown
+     * commandId is allowed to be preserved unchanged on save, so a binding
+     * created by a newer version survives editing in an older one; only a
+     * newly chosen unknown id is rejected.
+     */
+    preserveCommandId?: string;
 }
 
 const ALL_DIRECTIONS: readonly Direction[] = [
@@ -109,7 +118,7 @@ export function generateBindingId(): string {
  * Pure check — no mutation.  Used by the binding editor before saving
  * and by add/update internally.
  *
- * Direction-mode compatibility (stage 5B stabilization): in 4-direction
+ * Direction-mode compatibility: in 4-direction
  * mode, ONLY *enabled* diagonal bindings are rejected.  A disabled
  * diagonal binding may be kept so the user can switch back to
  * 8-direction mode later and re-enable it.
@@ -165,7 +174,11 @@ export function validateBindingDraft(
             return fail("unknown-command", "commandId must not be empty");
         }
         if (options.availableCommandIds && !options.availableCommandIds.has(commandId)) {
-            return fail("unknown-command", `unknown command ${JSON.stringify(commandId)}`);
+            // Preserve the binding's existing commandId unchanged; reject
+            // only a newly chosen id that does not exist in the catalog.
+            if (options.preserveCommandId !== commandId) {
+                return fail("unknown-command", `unknown command ${JSON.stringify(commandId)}`);
+            }
         }
         const cp = builtin.commandParams;
         if (cp !== undefined) {
@@ -301,6 +314,8 @@ export function updateBinding(
         maximumSegments: options.maximumSegments,
         directionMode: options.directionMode,
         availableCommandIds: options.availableCommandIds,
+        preserveCommandId:
+            existing.action.type === "builtin" ? existing.action.commandId : undefined,
     });
     if (!validation.ok) return validation;
 
@@ -358,9 +373,8 @@ export function removeBinding(
  * Enable or disable a binding by id.
  *
  * Returns `not-found` when the id does not exist.  Enabling a diagonal
- * binding while in 4-direction mode is rejected (stage 5B: such a
- * binding may exist disabled, but cannot be activated).  Input is never
- * mutated.
+ * binding while in 4-direction mode is rejected (such a binding may
+ * exist disabled, but cannot be activated).  Input is never mutated.
  */
 export function toggleBinding(
     config: GestureFlowConfig,

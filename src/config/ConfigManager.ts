@@ -5,7 +5,6 @@ import {
 } from "./types";
 import { createDefaultConfig, deepCloneConfig } from "./defaults";
 import { validateConfig } from "./validate";
-import type { ValidateOptions } from "./validate";
 
 /**
  * Stable storage key used with `Plugin.loadData` / `Plugin.saveData`.
@@ -86,15 +85,14 @@ export type ConfigUpdatePatch = {
  *   save so no further notifications fire.
  *
  * ConfigManager never touches the DOM, the runtime, or the input layer.
- * It does not depend on `CommandRegistry` directly; the available
- * command id set is injected via {@link ConfigManagerOptions.availableCommandIds}
- * (a function so the set is always fresh when commands are added at
- * runtime in future stages).
+ * It does not depend on `CommandRegistry`; whether a command id is
+ * registered is a runtime concern, never a load-time decision — a binding
+ * to an unknown command is preserved as-is and reports `unavailable` at
+ * runtime.
  */
 export class ConfigManager {
     private readonly host: ConfigPersistenceHost;
     private readonly storageName: string;
-    private readonly availableCommandIds: () => Set<string>;
     private config: GestureFlowConfig;
     private listeners = new Set<ConfigListener>();
     private loadPromise: Promise<ConfigLoadResult> | null = null;
@@ -107,11 +105,9 @@ export class ConfigManager {
     constructor(opts: {
         host: ConfigPersistenceHost;
         storageName?: string;
-        availableCommandIds: () => Set<string>;
     }) {
         this.host = opts.host;
         this.storageName = opts.storageName ?? CONFIG_STORAGE_NAME;
-        this.availableCommandIds = opts.availableCommandIds;
         this.config = createDefaultConfig();
     }
 
@@ -190,7 +186,7 @@ export class ConfigManager {
             };
         }
 
-        const result = validateConfig(raw, this.validateOptions());
+        const result = validateConfig(raw);
         if (this.destroyed) {
             return this.destroyedResult();
         }
@@ -270,7 +266,7 @@ export class ConfigManager {
         if (this.destroyed) {
             return { status: "error", message: "ConfigManager destroyed" };
         }
-        const result = validateConfig(candidate, this.validateOptions());
+        const result = validateConfig(candidate);
         if (result.status === "invalid") {
             return {
                 status: "error",
@@ -385,7 +381,7 @@ export class ConfigManager {
         if (this.destroyed) {
             return { status: "error", message: "ConfigManager destroyed", errors: [] };
         }
-        const result = validateConfig(payload, this.validateOptions());
+        const result = validateConfig(payload);
         if (result.status === "invalid") {
             return {
                 status: "error",
@@ -462,12 +458,6 @@ export class ConfigManager {
             config: createDefaultConfig(),
             source: "error",
             message: "ConfigManager destroyed",
-        };
-    }
-
-    private validateOptions(): ValidateOptions {
-        return {
-            availableCommandIds: this.availableCommandIds(),
         };
     }
 

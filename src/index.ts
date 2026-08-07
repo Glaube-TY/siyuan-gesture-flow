@@ -110,26 +110,17 @@ export default class GestureFlowPlugin extends Plugin {
             removeData: (name: string) => this.removeData(name),
         };
 
-        // The available command id set is computed on demand so the
-        // validator always sees the current registry.  We construct a
-        // throwaway registry here just to enumerate the built-in command
-        // ids; the runtime creates its own registry during start.
+        // A throwaway registry enumerating the built-in commands.  It is
+        // kept only as the source for the settings command catalog; the
+        // runtime creates its own registry during start.
         const probeRegistry = new CommandRegistry();
         const probeBridge = new SiyuanActionBridge();
         registerBuiltinCommands(probeRegistry, probeBridge);
-        // Keep the registry alive as the settings command catalog source.
         this.commandCatalogSource = probeRegistry;
-        const commandIds = new Set(probeRegistry.list().map((c) => c.id));
 
         const configManager = new ConfigManager({
             host,
             storageName: CONFIG_STORAGE_NAME,
-            availableCommandIds: () => {
-                // The runtime's registry is rebuilt on every start, so
-                // the command set is stable; it is derived from the
-                // built-in registry above.
-                return commandIds;
-            },
         });
         this.configManager = configManager;
 

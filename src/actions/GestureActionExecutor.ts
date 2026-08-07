@@ -7,7 +7,7 @@ import { buildCommandContext, CommandExecutionResult } from "@/commands/types";
 import { ShortcutExecutor, ShortcutExecutionResult } from "@/shortcuts/ShortcutExecutor";
 
 /**
- * Outcome of a single dispatch attempt (stage 6A).
+ * Outcome of a single dispatch attempt.
  *
  * - `executed` — an action was actually invoked; `actionType` says
  *   which kind and `result` carries the underlying executor result.

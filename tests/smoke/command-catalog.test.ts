@@ -192,9 +192,6 @@ describe("built-in command catalog (v0.2.0)", () => {
 
 describe("v0.1.0 config compatibility (v0.2.0)", () => {
     it("a released v0.1.0 config still validates against the new command id set", () => {
-        const registry = buildRegistry();
-        const availableCommandIds = new Set(registry.list().map((c) => c.id));
-
         const config = createDefaultConfig();
         config.bindings.push(
             // A custom builtin binding using a v0.1.0-era id.
@@ -225,7 +222,7 @@ describe("v0.1.0 config compatibility (v0.2.0)", () => {
             },
         );
 
-        const result = validateConfig(config, { availableCommandIds });
+        const result = validateConfig(config);
         expect(result.status).toBe("valid");
         expect(result.config.version).toBe(1);
     });

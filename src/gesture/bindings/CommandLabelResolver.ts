@@ -29,7 +29,7 @@ export interface CommandLabelResolverOptions {
 
 /**
  * Create a {@link CommandLabelResolver} backed by a
- * {@link GestureBindingRegistry} and an i18n map (stage 6A).
+ * {@link GestureBindingRegistry} and an i18n map.
  *
  * The resolver looks up the binding for the given directions and, if
  * found and enabled, renders a label by action type:
@@ -37,7 +37,9 @@ export interface CommandLabelResolverOptions {
  * - `builtin` → localised command title.  The title key comes from the
  *   `commandTitles` map (built from the CommandRegistry's `title`
  *   field, which is itself an i18n key such as `cmdTabsNext`); falling
- *   back to the command id when the map is absent.
+ *   back to the command id when the map is absent.  A builtin command
+ *   the current version does not register returns `null` so the overlay
+ *   never shows an internal id.
  * - `shortcut` → localised "shortcut:" prefix + the display string,
  *   e.g. `快捷键：Ctrl+Shift+P`.
  * - unknown / invalid action → the direction sequence is shown by the
@@ -64,6 +66,13 @@ export function createCommandLabelResolver(
         const action = resolved.binding.action;
 
         if (action.type === "builtin") {
+            // A command this version does not register: hide the raw
+            // internal id — the overlay falls back to showing only the
+            // direction sequence.  (When no title map is provided, keep
+            // the legacy fallback to the command id itself.)
+            if (commandTitles && !commandTitles.has(action.commandId)) {
+                return null;
+            }
             const titleKey = commandTitles?.get(action.commandId) ?? action.commandId;
             return i18n[titleKey] ?? titleKey;
         }
