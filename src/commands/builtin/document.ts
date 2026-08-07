@@ -15,7 +15,7 @@ export function createDocumentReloadCommand(bridge: SiyuanActionBridge): Command
     return {
         id: "document.reload",
         title: "cmdDocumentReload",
-        group: "Document",
+        group: "Documents",
         execute: () => bridge.reloadActiveDocument(),
     };
 }

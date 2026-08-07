@@ -15,6 +15,12 @@ export default defineConfig({
     resolve: {
         alias: [
             { find: "@", replacement: resolve(__dirname, "src") },
+            // `siyuan` is a type-only package (declarations only) that
+            // cannot be resolved at runtime in a node environment.  The
+            // stub under tests/stubs supplies the module-level symbols
+            // the action bridge imports; it is never exercised by the
+            // smoke tests.  Production builds are unaffected.
+            { find: "siyuan", replacement: resolve(__dirname, "tests/stubs/siyuan.ts") },
         ],
     },
     test: {

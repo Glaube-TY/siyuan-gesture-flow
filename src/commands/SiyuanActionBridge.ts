@@ -1,4 +1,5 @@
 import { getActiveTab, getActiveEditor, Tab, Protyle, globalCommand } from "siyuan";
+import { CommandExecutionResult } from "./types";
 
 /**
  * The SiYuan `App` instance type as required by the plugin API's
@@ -343,13 +344,37 @@ export class SiyuanActionBridge {
         return this.runGlobalCommand("goForward", "navigateForward failed");
     }
 
+    /**
+     * Execute any official SiYuan `globalCommand` by its command name.
+     *
+     * This is the single generic entry point for built-in actions that
+     * map 1:1 to SiYuan's public `globalCommand` API (the pairing is
+     * declared once in `OFFICIAL_GLOBAL_ACTIONS`).  It applies the same
+     * uniform rules as the other global-command actions:
+     *
+     * - No App → `unavailable`.
+     * - `globalCommand` missing → `unavailable`.
+     * - `false` return (unhandled command) → `unavailable`.
+     * - Exception → `failed`.
+     * - `true` return → `executed`.
+     *
+     * Never retries, never logs on the happy path.  With no selected text
+     * (e.g. `stickSearch`), no history, no closed tabs, or no splits,
+     * SiYuan accepts the command and the UI simply shows no change — we
+     * never probe any internal state to detect that.
+     */
+    executeGlobalCommand(command: string): CommandExecutionResult {
+        return this.runGlobalCommand(command, `globalCommand "${command}" failed`);
+    }
+
     // --------------------------------------------------------------- internals
 
     /**
      * Run a `globalCommand` action, mapping the outcome to a
-     * {@link TabOperationResult}.  Shared by restore/navigate actions.
+     * {@link CommandExecutionResult}.  Shared by restore / navigate /
+     * generic global-command actions.
      */
-    private runGlobalCommand(command: string, failureLabel: string): TabOperationResult {
+    private runGlobalCommand(command: string, failureLabel: string): CommandExecutionResult {
         if (!this.app) {
             return { status: "unavailable", reason: "no app instance" };
         }

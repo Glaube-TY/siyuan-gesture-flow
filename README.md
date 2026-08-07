@@ -4,9 +4,12 @@ GestureFlow is a **gesture automation plugin** for SiYuan. Draw a gesture with y
 
 ## What you can do
 
-- Switch between tabs.
-- Close a tab, or restore the most recently closed one.
-- Reload the current document.
+- Switch tabs, close them, or restore a recently closed one.
+- Create documents, open the daily note or recent documents, and more.
+- Run a global search or search for the selected text.
+- Show or hide panels (file tree, outline, backlinks, …) and graph views.
+- Split or unsplit the editor layout.
+- Open settings, sync now, toggle read-only mode, or lock the screen.
 - Scroll to the top or bottom of a document.
 - Go back / forward through your navigation history.
 - Bind a gesture to a keyboard shortcut, with a custom action name.
@@ -44,19 +47,86 @@ GestureFlow is a **gesture automation plugin** for SiYuan. Draw a gesture with y
 
 ## Built-in actions
 
+GestureFlow reuses SiYuan's own action capabilities, so each built-in action behaves exactly like its native SiYuan equivalent.
+
+### Tabs
+
 | Name | Effect |
 | --- | --- |
 | Previous tab | Switch to the previous tab in the current window. |
 | Next tab | Switch to the next tab in the current window. |
 | Close current tab | Close the currently active tab. |
-| Restore recently closed tab | Restore the most recently closed tab (uses SiYuan's own restore flow). |
+| Restore recently closed tab | Restore the most recently closed tab. |
+| Close tabs to the left | Close every tab to the left of the active tab. |
+| Close tabs to the right | Close every tab to the right of the active tab. |
+| Close other tabs | Close all tabs except the active one. |
+| Close all tabs | Close all tabs in the current window. |
+
+### Documents
+
+| Name | Effect |
+| --- | --- |
 | Reload current document | Reload the currently active document. |
-| Scroll to top | Scroll the current document to the top. |
-| Scroll to bottom | Scroll the current document to the bottom. |
+| New document | Create a new document. |
+| Open daily note | Open today's daily note. |
+| Recent documents | Open the recent-documents list. |
+| Data history | Open the data history panel. |
+| Flashcards | Open the spaced-repetition card view. |
+
+### Search
+
+| Name | Effect |
+| --- | --- |
+| Global search | Open SiYuan's global search. |
+| Search selected text | Search for the currently selected text. |
+
+### Navigation
+
+| Name | Effect |
+| --- | --- |
 | Back | Go back one step in navigation history. |
 | Forward | Go forward one step in navigation history. |
 
-> The newer actions (close tab, restore, reload, back, forward) have **no default gesture** — bind them to a trajectory of your choice in the Bindings tab.
+### Panels & Views
+
+| Name | Effect |
+| --- | --- |
+| File tree | Show / hide the file-tree panel. |
+| Outline | Show / hide the outline panel. |
+| Backlinks | Show / hide the backlinks panel. |
+| Bookmarks | Show / hide the bookmarks panel. |
+| Tags | Show / hide the tags panel. |
+| Inbox | Show / hide the inbox panel. |
+| Document graph | Show / hide the document graph. |
+| Global graph | Show / hide the global graph. |
+| Toggle dock bar | Show / hide the dock bar. |
+
+### Layout
+
+| Name | Effect |
+| --- | --- |
+| Split left / right | Split the current tab into a left/right layout. |
+| Split top / bottom | Split the current tab into a top/bottom layout. |
+| Unsplit current layout | Remove the current split. |
+| Unsplit all | Remove all splits. |
+
+### Application & System
+
+| Name | Effect |
+| --- | --- |
+| Open SiYuan settings | Open the SiYuan settings dialog. |
+| Sync now | Trigger an immediate synchronisation. |
+| Toggle read-only mode | Toggle the editor read-only mode. |
+| Lock screen | Lock the SiYuan screen. |
+
+### Scrolling
+
+| Name | Effect |
+| --- | --- |
+| Scroll to top | Scroll the current document to the top. |
+| Scroll to bottom | Scroll the current document to the bottom. |
+
+> The default gestures are unchanged: **L → previous tab**, **R → next tab**, **U → scroll to top**, **D → scroll to bottom**. Every other action has **no default gesture** — bind it to a trajectory of your choice in the Bindings tab.
 
 ## Shortcut compatibility
 
