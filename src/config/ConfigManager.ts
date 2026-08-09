@@ -53,6 +53,7 @@ export type ConfigUpdatePatch = {
     trigger?: Partial<GestureFlowConfig["trigger"]>;
     recognizer?: Partial<GestureFlowConfig["recognizer"]>;
     overlay?: Partial<GestureFlowConfig["overlay"]>;
+    touchpad?: Partial<GestureFlowConfig["touchpad"]>;
     bindings?: GestureFlowConfig["bindings"];
 };
 
@@ -321,6 +322,9 @@ export class ConfigManager {
         }
         if (patch.overlay) {
             merged.overlay = { ...this.config.overlay, ...patch.overlay };
+        }
+        if (patch.touchpad) {
+            merged.touchpad = { ...this.config.touchpad, ...patch.touchpad };
         }
         if (patch.bindings) {
             merged.bindings = patch.bindings;

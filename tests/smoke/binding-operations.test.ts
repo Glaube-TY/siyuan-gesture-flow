@@ -11,13 +11,11 @@ import {
 } from "../../src/config/bindingOperations";
 
 /**
- * Binding operations smoke tests.
+ * Binding operations smoke tests (version-2 descriptor shape).
  *
- * Persistable-binding logic (add / edit / delete / duplicate-direction /
+ * Persistable-binding logic (add / edit / delete / duplicate-signature /
  * id-collision / shortcut-title rules, both builtin and shortcut actions)
- * plus the single current config structure (defaults valid, dev-era
- * structures rejected) — a small permanent core suite.  UI flows are
- * verified in real SiYuan.
+ * plus the current config structure — a small permanent core suite.
  */
 
 const opts = {
@@ -33,13 +31,15 @@ function makeConfig(): GestureFlowConfig {
 
 const builtinDraft: BindingDraft = {
     enabled: true,
-    directions: ["R", "D"],
+    source: "mouse",
+    gesture: { kind: "shape", button: 2, directions: ["R", "D"] },
     action: { type: "builtin", commandId: "tabs.next", commandParams: {} },
 };
 
 const shortcutDraft: BindingDraft = {
     enabled: true,
-    directions: ["D", "L"],
+    source: "mouse",
+    gesture: { kind: "shape", button: 2, directions: ["D", "L"] },
     action: {
         type: "shortcut",
         title: "打开全局搜索",
@@ -47,7 +47,21 @@ const shortcutDraft: BindingDraft = {
     },
 };
 
-describe("binding-operations smoke", () => {
+const touchpadDraft: BindingDraft = {
+    enabled: true,
+    source: "touchpad",
+    gesture: { kind: "tap", fingerCount: 3 },
+    action: { type: "builtin", commandId: "tabs.previous", commandParams: {} },
+};
+
+function dirs(b: ConfigBinding): string[] {
+    if (b.source === "mouse") {
+        return (b.gesture as Extract<ConfigBinding["gesture"], { kind: "shape" }>).directions;
+    }
+    return [];
+}
+
+describe("binding-operations smoke (v2)", () => {
     it("新增 builtin 绑定", () => {
         const r = addBinding(makeConfig(), builtinDraft, opts);
         expect(r.ok).toBe(true);
@@ -66,13 +80,24 @@ describe("binding-operations smoke", () => {
         }
     });
 
+    it("新增触控板绑定（source=touchpad）", () => {
+        const r = addBinding(makeConfig(), touchpadDraft, opts);
+        expect(r.ok).toBe(true);
+        if (r.ok) {
+            const added = r.bindings[r.bindings.length - 1];
+            expect(added.source).toBe("touchpad");
+            expect((added.gesture as { kind: string }).kind).toBe("tap");
+            expect((added.gesture as { fingerCount: number }).fingerCount).toBe(3);
+        }
+    });
+
     it("编辑绑定保留 id 并更新 action", () => {
         const cfg = makeConfig();
         const r = updateBinding(cfg, "default-L", builtinDraft, { ...opts, excludeId: "default-L" });
         expect(r.ok).toBe(true);
         if (r.ok) {
             const updated = r.bindings.find((b: ConfigBinding) => b.id === "default-L");
-            expect(updated?.directions).toEqual(["R", "D"]);
+            expect(dirs(updated as ConfigBinding)).toEqual(["R", "D"]);
         }
     });
 
@@ -86,16 +111,31 @@ describe("binding-operations smoke", () => {
         }
     });
 
-    it("重复方向序列被拒绝（无论动作类型）", () => {
+    it("重复方向序列被拒绝（鼠标签名冲突）", () => {
         const cfg = makeConfig(); // 已含 ["L"] 默认绑定
-        const dup = { ...builtinDraft, directions: ["L"] };
+        const dup = { ...builtinDraft, gesture: { kind: "shape" as const, button: 2, directions: ["L"] } };
         const r = addBinding(cfg, dup, opts);
         expect(r.ok).toBe(false);
         if (!r.ok) expect(r.error).toBe("duplicate-directions");
     });
 
+    it("鼠标与触控板手势互不冲突（不同签名）", () => {
+        const cfg = makeConfig(); // 含 mouse:2:shape:L
+        const mouseDup = { ...touchpadDraft, gesture: { kind: "swipe" as const, fingerCount: 3, direction: "L" as const } };
+        const r = addBinding(cfg, mouseDup, opts);
+        expect(r.ok).toBe(true);
+    });
+
+    it("相同触控板手势重复被拒绝", () => {
+        const cfg = makeConfig();
+        const first = addBinding(cfg, touchpadDraft, opts);
+        if (!first.ok) throw new Error("first add failed");
+        const second = addBinding({ ...cfg, bindings: first.bindings }, touchpadDraft, opts);
+        expect(second.ok).toBe(false);
+        if (!second.ok) expect(second.error).toBe("duplicate-directions");
+    });
+
     it("ID 冲突时重试生成唯一 ID", () => {
-        // 首次 randomUUID 返回已有 id → 内部有界重试仍成功
         const cfg = makeConfig();
         const spy = viRandomOnce("default-L");
         const r = addBinding(cfg, builtinDraft, opts);
@@ -120,14 +160,23 @@ describe("binding-operations smoke", () => {
         if (!r.ok) expect(r.error).toBe("invalid-shortcut");
     });
 
-    it("当前默认配置有效（版本 1 单一结构）", () => {
-        const result = validateConfig(createDefaultConfig());
-        expect(result.status).toBe("valid");
-        expect(result.config.version).toBe(1);
+    it("anchorDraw 需要 1 ≤ anchorCount < fingerCount", () => {
+        const bad = {
+            ...touchpadDraft,
+            gesture: { kind: "anchorDraw" as const, fingerCount: 2, anchorCount: 2, directions: ["U"] },
+        };
+        const r = validateBindingDraft(bad, opts);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.error).toBe("invalid-gesture");
     });
 
-    it("旧开发结构被拒绝（顶层 commandId / 旧版本）", () => {
-        // 仍使用顶层 commandId 的旧绑定结构
+    it("当前默认配置有效（版本 2）", () => {
+        const result = validateConfig(createDefaultConfig());
+        expect(result.status).toBe("valid");
+        expect(result.config.version).toBe(2);
+    });
+
+    it("旧开发结构被拒绝（顶层 commandId / 未来版本）", () => {
         const legacyTopLevel = {
             ...createDefaultConfig(),
             bindings: [
@@ -135,9 +184,7 @@ describe("binding-operations smoke", () => {
             ],
         };
         expect(validateConfig(legacyTopLevel).status).toBe("invalid");
-        // 非当前版本（旧 version 2 等）
-        expect(validateConfig({ ...createDefaultConfig(), version: 2 }).status).toBe("invalid");
-        // 缺少 action
+        expect(validateConfig({ ...createDefaultConfig(), version: 3 }).status).toBe("invalid");
         expect(validateConfig({ ...createDefaultConfig(), bindings: [{ id: "x", enabled: true, directions: ["L"] }] }).status).toBe("invalid");
     });
 });

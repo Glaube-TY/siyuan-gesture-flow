@@ -1,45 +1,52 @@
 <script lang="ts">
     import { createEventDispatcher } from "svelte";
     import GestureRecorder from "./GestureRecorder.svelte";
+    import TouchpadGestureRecorder from "./TouchpadGestureRecorder.svelte";
     import ShortcutRecorder from "./ShortcutRecorder.svelte";
     import { GestureEngine } from "@/gesture/GestureEngine";
     import type { RecognizerConfig } from "@/gesture/GestureEngine";
     import type { Direction } from "@/gesture/recognition/DirectionVectorizer";
-    import type { BindingAction, ConfigBinding } from "@/config/types";
+    import type { BindingAction, ConfigBinding, MouseShapeGestureSpec } from "@/config/types";
     import type { SettingCommandItem } from "../commandCatalog";
     import { directionSymbol } from "../directionLabels";
     import type { ShortcutSpec } from "@/shortcuts/types";
+    import type { GestureSource } from "@/gesture/signature";
+    import type { TouchpadGestureSpec } from "@/gesture/touchpad/types";
+    import type { TouchpadTrackerConfig } from "@/gesture/touchpad/recognition/TouchpadGestureTracker";
+    import { touchpadDescriptorLabel } from "@/gesture/touchpad/labels";
+    import type { TouchpadConfig } from "@/config/types";
+    import { computeConflictLevel } from "@/gesture/conflict/TouchpadConflictPolicy";
+    import { getTouchpadDiagnostics } from "@/runtime/TouchpadRuntimeState";
+    import { openWindowsTouchpadSettings } from "@/touchpad/systemSettings";
 
     /**
-     * Binding editor.
+     * Binding editor (version 2 — multi-input source).
      *
-     * Draft-only UI: nothing is persisted until the user presses Save,
-     * which delegates to the parent via {@link handleSave}.  Editing an
-     * existing binding keeps its original id; creating a new one
-     * generates a fresh id at save time (not before).
+     * Draft-only UI: nothing is persisted until the user presses Save, which
+     * delegates to the parent via {@link handleSave}.  The editor supports:
      *
-     * The editor now supports two persistent action types:
-     * - `builtin` — pick a command from the catalog.
-     * - `shortcut` — capture a keyboard shortcut (ShortcutRecorder).
-     * JavaScript shows as a disabled "in development" option that can
-     * never be selected, drafted, or saved.
+     *   - input source: mouse (existing GestureRecorder) or touchpad
+     *     (TouchpadGestureRecorder);
+     *   - action types: builtin command or keyboard shortcut.
      *
-     * Switching between types only edits the local draft — nothing is
-     * persisted and the runtime is not restarted until Save.  Cancelling
-     * leaves the original binding untouched.
+     * Switching sources/types only edits the local draft — nothing is
+     * persisted until Save.
      */
 
     export let binding: ConfigBinding | null;
     export let commandCatalog: SettingCommandItem[];
-    /** Full current recognizer config — the recorder must match the runtime. */
+    /** Full current recognizer config — the mouse recorder must match the runtime. */
     export let recognizer: RecognizerConfig;
-    /** Trigger values the recorder must honour (activation distance + timeout). */
+    /** Trigger values the mouse recorder must honour. */
     export let trigger: { activationDistance: number; timeoutMs: number };
+    /** Touchpad thresholds the touchpad recorder must honour. */
+    export let touchpad: TouchpadConfig;
     export let i18n: Record<string, string>;
     /** Parent-provided save callback.  Must not resolve until persisted. */
     export let handleSave: (draft: {
         enabled: boolean;
-        directions: Direction[];
+        source: GestureSource;
+        gesture: ConfigBinding["gesture"];
         action: BindingAction;
     }) => Promise<string | null>;
 
@@ -47,8 +54,6 @@
         cancel: Record<string, never>;
     }>();
 
-    // Rebuilt whenever the recognizer config changes so the recorder
-    // always recognises with the same parameters as the runtime.
     $: engine = new GestureEngine({
         sampleDistance: recognizer.sampleDistance,
         simplifyTolerance: recognizer.simplifyTolerance,
@@ -58,23 +63,25 @@
         directionMode: recognizer.directionMode,
     });
 
-    /** Selectable implementation types: javascript is a disabled placeholder. */
     type ImplType = "builtin" | "shortcut" | "javascript";
 
     // ---- draft state (never written to config until Save) ----
     let enabled = binding?.enabled ?? true;
-    let directions: Direction[] = binding ? binding.directions.slice() : [];
-    let implType: ImplType = binding
-        ? binding.action.type
-        : "builtin";
+    let source: GestureSource = binding?.source ?? "mouse";
+    let directions: Direction[] = binding && binding.source === "mouse"
+        ? (binding.gesture as MouseShapeGestureSpec).directions.slice()
+        : [];
+    let touchpadGesture: TouchpadGestureSpec | null =
+        binding && binding.source === "touchpad"
+            ? (binding.gesture as TouchpadGestureSpec)
+            : null;
+    let implType: ImplType = binding ? binding.action.type : "builtin";
     let commandId = "";
-    /** Draft of the shortcut action title (user-defined name). */
     let shortcutTitle = "";
     let shortcut: ShortcutSpec | null = null;
     let errorMessage = "";
     let saving = false;
 
-    // Initialise per-action draft fields from the edited binding.
     if (binding) {
         if (binding.action.type === "builtin") {
             commandId = binding.action.commandId;
@@ -91,19 +98,36 @@
         errorMessage = "";
     }
 
-    function onClear(): void {
-        directions = [];
+    function onTouchpadRecord(e: CustomEvent<{ gesture: TouchpadGestureSpec }>): void {
+        touchpadGesture = e.detail.gesture;
         errorMessage = "";
     }
 
-    /** Switch implementation type — edits the draft only. */
+    function onClear(): void {
+        directions = [];
+        touchpadGesture = null;
+        errorMessage = "";
+    }
+
+    function onSourceChange(e: Event): void {
+        const next = (e.currentTarget as HTMLInputElement).value as GestureSource;
+        source = next;
+        errorMessage = "";
+        if (next === "mouse" && directions.length === 0 && touchpadGesture) {
+            directions = directionsOf(touchpadGesture);
+        }
+    }
+
+    function directionsOf(spec: TouchpadGestureSpec): Direction[] {
+        if (spec.kind === "swipe") return [spec.direction];
+        if (spec.kind === "shape" || spec.kind === "anchorDraw") return spec.directions.slice();
+        return [];
+    }
+
     function onImplTypeChange(e: Event): void {
         const target = e.currentTarget as HTMLInputElement;
         implType = target.value as ImplType;
         errorMessage = "";
-        // When switching (back) to builtin, seed the command draft so the
-        // visible select and the model never diverge (e.g. editing a
-        // shortcut binding leaves commandId empty until now).
         if (implType === "builtin" && !commandId) {
             commandId = commandCatalog[0]?.id ?? "";
         }
@@ -121,42 +145,41 @@
 
     /** Validate the draft against the config constraints (UI mirror). */
     function validateDraft(): string | null {
-        if (directions.length === 0) {
-            return i18n.bindingErrorEmpty ?? "Record a gesture first";
-        }
-        if (directions.length > recognizer.maximumSegments) {
-            return (
-                i18n.bindingErrorTooMany ??
-                `Gesture has too many segments (max ${recognizer.maximumSegments})`
-            );
-        }
-        // Mirrors the config layer: only ENABLED diagonal bindings are
-        // rejected in 4-direction mode; a disabled one may be kept.
-        if (
-            recognizer.directionMode === 4 &&
-            enabled &&
-            directions.some((d) => d.length === 2)
-        ) {
-            return i18n.bindingErrorDiagonal4Enable ?? "Diagonals cannot be enabled in 4-direction mode";
+        if (source === "mouse") {
+            if (directions.length === 0) {
+                return i18n.bindingErrorEmpty ?? "Record a gesture first";
+            }
+            if (directions.length > recognizer.maximumSegments) {
+                return i18n.bindingErrorTooMany ?? "Gesture has too many segments";
+            }
+            if (
+                recognizer.directionMode === 4 &&
+                enabled &&
+                directions.some((d) => d.length === 2)
+            ) {
+                return i18n.bindingErrorDiagonal4Enable ?? "Diagonals cannot be enabled in 4-direction mode";
+            }
+        } else {
+            if (!touchpadGesture) {
+                return i18n.tpRecorderNoGesture ?? "Record a touchpad gesture first";
+            }
         }
         if (implType === "builtin") {
             if (!commandId) {
                 return i18n.bindingErrorNoCommand ?? "Choose a command";
             }
         } else if (implType === "shortcut") {
-            // User-defined action name is required (trimmed, ≤ 80).
             if (shortcutTitle.trim().length === 0) {
-                return i18n.shortcutActionTitleRequired ?? "请输入操作名称";
+                return i18n.shortcutActionTitleRequired ?? "Enter an action name";
             }
             if (shortcutTitle.trim().length > 80) {
-                return i18n.shortcutActionTitleTooLong ?? "操作名称不能超过 80 个字符";
+                return i18n.shortcutActionTitleTooLong ?? "Action name must be at most 80 characters";
             }
             if (!shortcut) {
-                return i18n.shortcutEmptyError ?? "快捷键不能为空";
+                return i18n.shortcutEmptyError ?? "Shortcut must not be empty";
             }
         } else {
-            // javascript is never savable.
-            return i18n.bindingErrorJavascriptUnavailable ?? "JavaScript 功能正在开发";
+            return i18n.bindingErrorJavascriptUnavailable ?? "JavaScript actions are in development";
         }
         return null;
     }
@@ -171,6 +194,13 @@
         return null;
     }
 
+    function draftGesture(): ConfigBinding["gesture"] | null {
+        if (source === "mouse") {
+            return { kind: "shape", button: 2, directions };
+        }
+        return touchpadGesture;
+    }
+
     async function onSave(): Promise<void> {
         if (saving) return;
         const localError = validateDraft();
@@ -179,19 +209,18 @@
             return;
         }
         const action = draftAction();
-        if (!action) {
+        const gesture = draftGesture();
+        if (!action || !gesture) {
             errorMessage = i18n.bindingErrorJavascriptUnavailable ?? "JavaScript 功能正在开发";
             return;
         }
         saving = true;
         errorMessage = "";
         try {
-            const saveError = await handleSave({ enabled, directions, action });
+            const saveError = await handleSave({ enabled, source, gesture, action });
             if (saveError) {
-                // Save failed — keep the draft and show the error.
                 errorMessage = saveError;
             }
-            // On success the parent closes the editor.
         } finally {
             saving = false;
         }
@@ -203,9 +232,42 @@
 
     const groups = [...new Set(commandCatalog.map((c) => c.group))];
 
-    /** Localised group label for the command optgroup. */
     function groupTitle(group: string): string {
         return commandCatalog.find((c) => c.group === group)?.groupTitle ?? group;
+    }
+
+    const touchpadTrackerConfig: Partial<TouchpadTrackerConfig> = {
+        tapMaxDurationMs: touchpad.tapMaxDurationMs,
+        tapMaxMovement: touchpad.tapMaxMovement,
+        holdDurationMs: touchpad.holdDurationMs,
+        holdMaxMovement: touchpad.holdMaxMovement,
+        swipeMinDistance: touchpad.swipeMinDistance,
+        shapeMinPathLength: touchpad.shapeMinPathLength,
+        anchorMaxDrift: touchpad.anchorMaxDrift,
+        anchorDrawActivation: touchpad.anchorDrawActivation,
+        pinchThreshold: touchpad.pinchThreshold,
+        rotateThresholdDeg: touchpad.rotateThresholdDeg,
+        cooldownMs: touchpad.cooldownMs,
+    };
+
+    /**
+     * Contextual system-conflict note for the current touchpad gesture draft.
+     * Only shown while editing THIS binding, never as a settings page card.
+     */
+    $: conflictNote = touchpadGesture ? touchpadConflictNote(touchpadGesture) : null;
+
+    function touchpadConflictNote(spec: TouchpadGestureSpec): string | null {
+        const caps = getTouchpadDiagnostics().capabilities;
+        if (!caps) return null;
+        const level = computeConflictLevel(spec, caps);
+        if (level === "none") return null;
+        if (spec.fingerCount <= 2) {
+            return i18n.tpConflictHintTwoFinger ?? "该手势可能与系统滚动/缩放冲突";
+        }
+        if (!caps.canOverrideSystemGestures) {
+            return i18n.tpConflictHintSystem ?? "该手势可能同时触发 Windows 系统手势";
+        }
+        return i18n.tpConflictHintGeneric ?? "该手势可能与系统手势冲突";
     }
 </script>
 
@@ -226,31 +288,93 @@
         />
     </div>
 
+    <div class="gf-binding-editor-row gf-binding-type-row">
+        <span class="gf-binding-editor-label">
+            {i18n.tpInputSource ?? "输入方式"}
+        </span>
+        <div class="gf-binding-type-group" role="radiogroup" aria-label={i18n.tpInputSource ?? "输入方式"}>
+            <label class="gf-binding-type-option">
+                <input
+                    type="radio"
+                    name="gf-binding-input-source"
+                    value="mouse"
+                    checked={source === "mouse"}
+                    on:change={onSourceChange}
+                />
+                <span>{i18n.tpSourceMouse ?? "鼠标"}</span>
+            </label>
+            <label class="gf-binding-type-option">
+                <input
+                    type="radio"
+                    name="gf-binding-input-source"
+                    value="touchpad"
+                    checked={source === "touchpad"}
+                    on:change={onSourceChange}
+                />
+                <span>{i18n.tpSourceTouchpad ?? "触控板"}</span>
+            </label>
+        </div>
+    </div>
+
     <div class="gf-binding-editor-row">
         <span class="gf-binding-editor-label">
             {i18n.bindingGesture ?? "Gesture"}
         </span>
         <div class="gf-binding-editor-dirs">
-            {#if directions.length > 0}
-                {#each directions as dir, i (i)}
-                    <span class="gf-badge gf-binding-editor-dir">{directionSymbol(dir)}</span>
-                {/each}
+            {#if source === "mouse"}
+                {#if directions.length > 0}
+                    {#each directions as dir, i (i)}
+                        <span class="gf-badge gf-binding-editor-dir">{directionSymbol(dir)}</span>
+                    {/each}
+                {:else}
+                    <span class="gf-binding-editor-empty">
+                        {i18n.bindingNoGesture ?? "No gesture recorded"}
+                    </span>
+                {/if}
             {:else}
-                <span class="gf-binding-editor-empty">
-                    {i18n.bindingNoGesture ?? "No gesture recorded"}
-                </span>
+                {#if touchpadGesture}
+                    <span class="gf-tp-binding-label">{touchpadDescriptorLabel(touchpadGesture, i18n)}</span>
+                {:else}
+                    <span class="gf-binding-editor-empty">
+                        {i18n.tpRecorderNoGesture ?? "No touchpad gesture recorded"}
+                    </span>
+                {/if}
             {/if}
         </div>
     </div>
 
-    <GestureRecorder
-        {engine}
-        {trigger}
-        {i18n}
-        {directions}
-        on:update={onRecord}
-        on:clear={onClear}
-    />
+    {#if source === "mouse"}
+        <GestureRecorder
+            {engine}
+            {trigger}
+            {i18n}
+            {directions}
+            on:update={onRecord}
+            on:clear={onClear}
+        />
+    {:else}
+        <TouchpadGestureRecorder
+            {i18n}
+            trackerConfig={touchpadTrackerConfig}
+            safeMode={touchpad.safeMode}
+            on:update={onTouchpadRecord}
+            on:clear={onClear}
+        />
+        {#if touchpadGesture && conflictNote}
+            <p class="gf-tp-conflict-inline">
+                {conflictNote}
+                {#if !touchpad.safeMode}
+                    <button
+                        type="button"
+                        class="b3-button b3-button--text gf-tp-conflict-link"
+                        on:click={openWindowsTouchpadSettings}
+                    >
+                        {i18n.tpOpenSystemSettings ?? "Windows 触控板设置"}
+                    </button>
+                {/if}
+            </p>
+        {/if}
+    {/if}
 
     <div class="gf-binding-editor-row gf-binding-type-row">
         <span class="gf-binding-editor-label">
@@ -297,9 +421,6 @@
             </span>
             <select class="b3-select gf-binding-editor-select" bind:value={commandId}>
                 {#if commandCatalog.length > 0 && !commandCatalog.some((c) => c.id === commandId)}
-                    <!-- A binding whose command is not registered by this
-                         version: show the real original command, never a
-                         silently substituted first catalog entry. -->
                     <option value={commandId} disabled>
                         {i18n.bindingUnavailableInThisVersion ?? "Unavailable in this version"}: {commandId}
                     </option>
@@ -401,21 +522,21 @@
         max-width: 280px;
         min-width: 0;
     }
-
-    /* Shortcut action name input (gf- scoped, never global). */
+    .gf-tp-binding-label {
+        font-size: 13px;
+        color: var(--b3-theme-on-surface, #1f2329);
+    }
     .gf-shortcut-title-row {
         display: flex;
         flex-direction: column;
         gap: 6px;
         margin-bottom: 12px;
     }
-
     .gf-shortcut-title-label {
         font-size: 13px;
         color: var(--b3-theme-on-background, inherit);
         opacity: 0.85;
     }
-
     .gf-shortcut-title-input {
         width: 100%;
         box-sizing: border-box;
@@ -453,6 +574,20 @@
         font-size: 12px;
         line-height: 1.5;
         color: var(--b3-theme-error, #d23f31);
+    }
+    .gf-tp-conflict-inline {
+        margin: 0;
+        font-size: 12px;
+        line-height: 1.5;
+        color: var(--b3-theme-secondary, #f29900);
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        flex-wrap: wrap;
+    }
+    .gf-tp-conflict-link {
+        font-size: 12px;
+        padding: 0 4px;
     }
     .gf-binding-editor-actions {
         display: flex;

@@ -9,9 +9,18 @@ import {
     GestureFlowConfig,
     SupportedConfigVersion,
     ValidationResult,
+    MouseShapeGestureSpec,
 } from "./types";
-import { createDefaultConfig, deepCloneConfig } from "./defaults";
+import {
+    MAX_TOUCHPAD_FINGERS,
+    MIN_TOUCHPAD_FINGERS,
+    TouchpadGestureKind,
+    TouchpadGestureSpec,
+} from "@/gesture/touchpad/types";
+import { GestureSignatureKey, mouseSignature, touchpadSignature } from "@/gesture/signature";
+import { createDefaultConfig, deepCloneConfig, cloneBinding } from "./defaults";
 import { validateShortcutSpec } from "@/shortcuts/shortcutUtils";
+import { migrateV1toV2 } from "./migrate";
 
 const ALLOWED_SUPPRESSION_KEYS: readonly SuppressionKey[] = [
     "Alt",
@@ -34,34 +43,39 @@ const ALL_DIRECTIONS: readonly Direction[] = [
 /** Diagonals — only allowed in 8-direction mode. */
 const DIAGONALS: readonly Direction[] = ["UL", "UR", "DL", "DR"];
 
+const TOUCHPAD_KINDS: readonly string[] = [
+    "tap",
+    "press",
+    "hold",
+    "swipe",
+    "shape",
+    "anchorDraw",
+    "pinch",
+    "rotate",
+];
+
 /**
  * Validate and normalise an unknown payload into a {@link GestureFlowConfig}.
  *
+ * The validator understands exactly two persisted structures: the released
+ * v1 schema and the current v2 schema.  A v1 payload is migrated
+ * automatically (idempotent — see {@link migrateV1toV2}) and reported as
+ * `normalized`.  Anything else (corrupt, future version) is `invalid` and is
+ * never written back to disk by the caller.
+ *
  * The validator is deliberately defensive: it never throws on bad input.
- * Instead it returns a {@link ValidationResult} that distinguishes three
- * outcomes:
+ * Outcomes:
  *
  * - `valid`      — input was already a clean current-version config.
- * - `normalized` — input was repairable (missing fields filled, values
- *                  clamped into range).  The returned config is safe to
- *                  use; {@link notes} lists every repair so the UI can
- *                  inform the user.
- * - `invalid`    — input could not be safely used (wrong root type,
- *                  duplicate binding ids, duplicate direction sequences,
- *                  unknown future version).  {@link config} is a fresh
- *                  default and {@link errors} lists the concrete reasons.
+ * - `normalized` — input was repairable (v1→v2 migration, missing fields
+ *                  filled, values clamped).  {@link notes} lists every
+ *                  repair.
+ * - `invalid`    — input could not be safely used.  {@link config} is a
+ *                  fresh default and {@link errors} lists the reasons.
  *
  * A builtin binding whose `commandId` is not registered by the current
- * version is NOT structural damage: it is preserved as-is (id, enabled,
- * directions, commandId, commandParams) and simply reports `unavailable`
- * at runtime.  Whether a command exists is a runtime capability, not part
- * of the persisted schema.
- *
- * Range clamping:
- *   activationDistance 4–100, timeoutMs 0–10000, sampleDistance > 0,
- *   simplifyTolerance >= 0, minimumSegmentLength > 0,
- *   turnAngleThreshold 1–89, maximumSegments positive integer,
- *   directionMode 4|8, lineWidth 1–20, button === 2.
+ * version is NOT structural damage: it is preserved as-is and simply reports
+ * `unavailable` at runtime.
  */
 export function validateConfig(input: unknown): ValidationResult {
     const notes: string[] = [];
@@ -72,15 +86,15 @@ export function validateConfig(input: unknown): ValidationResult {
         return invalid([`config root must be an object, got ${typeof input}`]);
     }
 
+    // --- version + migration ------------------------------------------------
     const root = input as Record<string, unknown>;
-    const defaults = createDefaultConfig();
-
-    // --- version ------------------------------------------------------------
-    // The validator understands exactly one current structure.  Any
-    // payload whose version is not the fixed current version is invalid
-    // (no version inference, no migration); the caller decides whether to
-    // discard it (import) or preserve it untouched (load fallback).
-    if (root.version !== CURRENT_CONFIG_VERSION) {
+    let payload: unknown = input;
+    if (root.version === 1) {
+        const migration = migrateV1toV2(root);
+        payload = migration.payload;
+        notes.push(...migration.notes);
+        notes.push(`migrated from schema v1 to v${CURRENT_CONFIG_VERSION}`);
+    } else if (root.version !== CURRENT_CONFIG_VERSION) {
         errors.push(
             `unsupported config version ${JSON.stringify(root.version)} (current is ${CURRENT_CONFIG_VERSION})`,
         );
@@ -88,34 +102,40 @@ export function validateConfig(input: unknown): ValidationResult {
     if (errors.length > 0) {
         return invalid(errors);
     }
+    const root2 = payload as Record<string, unknown>;
 
     // --- enabled ------------------------------------------------------------
-    let enabled = defaults.enabled;
-    if (root.enabled === undefined) {
+    let enabled = createDefaultConfig().enabled;
+    if (root2.enabled === undefined) {
         notes.push("missing enabled — set to default");
-    } else if (typeof root.enabled !== "boolean") {
-        errors.push(`enabled must be boolean, got ${typeof root.enabled}`);
+    } else if (typeof root2.enabled !== "boolean") {
+        errors.push(`enabled must be boolean, got ${typeof root2.enabled}`);
     } else {
-        enabled = root.enabled;
+        enabled = root2.enabled;
     }
 
+    const defaults = createDefaultConfig();
+
     // --- trigger ------------------------------------------------------------
-    const triggerResult = validateTrigger(root.trigger, defaults.trigger, notes, errors);
+    const triggerResult = validateTrigger(root2.trigger, defaults.trigger, notes, errors);
 
     // --- recognizer ---------------------------------------------------------
     const recognizerResult = validateRecognizer(
-        root.recognizer,
+        root2.recognizer,
         defaults.recognizer,
         notes,
         errors,
     );
 
     // --- overlay ------------------------------------------------------------
-    const overlayResult = validateOverlay(root.overlay, defaults.overlay, notes, errors);
+    const overlayResult = validateOverlay(root2.overlay, defaults.overlay, notes, errors);
+
+    // --- touchpad -----------------------------------------------------------
+    const touchpadResult = validateTouchpad(root2.touchpad, defaults.touchpad, notes, errors);
 
     // --- bindings -----------------------------------------------------------
     const bindingsResult = validateBindings(
-        root.bindings,
+        root2.bindings,
         defaults.bindings,
         notes,
         errors,
@@ -132,6 +152,7 @@ export function validateConfig(input: unknown): ValidationResult {
         trigger: triggerResult,
         recognizer: recognizerResult,
         overlay: overlayResult,
+        touchpad: touchpadResult,
         bindings: bindingsResult,
     };
 
@@ -379,6 +400,38 @@ function validateBoolean(
     return v;
 }
 
+function validateTouchpad(
+    input: unknown,
+    defaults: GestureFlowConfig["touchpad"],
+    notes: string[],
+    errors: string[],
+): GestureFlowConfig["touchpad"] {
+    if (input === undefined || input === null) {
+        notes.push("missing touchpad — using defaults");
+        return { ...defaults };
+    }
+    if (!isPlainObject(input)) {
+        errors.push(`touchpad must be an object, got ${typeof input}`);
+        return { ...defaults };
+    }
+    const o = input as Record<string, unknown>;
+    return {
+        enabled: validateBoolean(o.enabled, defaults.enabled, "touchpad.enabled", notes),
+        safeMode: validateBoolean(o.safeMode, defaults.safeMode, "touchpad.safeMode", notes),
+        tapMaxDurationMs: clampInt(o.tapMaxDurationMs, defaults.tapMaxDurationMs, 50, 2000, "touchpad.tapMaxDurationMs", notes, errors),
+        tapMaxMovement: clampNumber(o.tapMaxMovement, defaults.tapMaxMovement, 0.005, 0.3, "touchpad.tapMaxMovement", notes, errors),
+        holdDurationMs: clampInt(o.holdDurationMs, defaults.holdDurationMs, 100, 5000, "touchpad.holdDurationMs", notes, errors),
+        holdMaxMovement: clampNumber(o.holdMaxMovement, defaults.holdMaxMovement, 0.005, 0.3, "touchpad.holdMaxMovement", notes, errors),
+        swipeMinDistance: clampNumber(o.swipeMinDistance, defaults.swipeMinDistance, 0.02, 0.8, "touchpad.swipeMinDistance", notes, errors),
+        shapeMinPathLength: clampNumber(o.shapeMinPathLength, defaults.shapeMinPathLength, 0.02, 0.8, "touchpad.shapeMinPathLength", notes, errors),
+        anchorMaxDrift: clampNumber(o.anchorMaxDrift, defaults.anchorMaxDrift, 0.002, 0.2, "touchpad.anchorMaxDrift", notes, errors),
+        anchorDrawActivation: clampNumber(o.anchorDrawActivation, defaults.anchorDrawActivation, 0.02, 0.8, "touchpad.anchorDrawActivation", notes, errors),
+        pinchThreshold: clampNumber(o.pinchThreshold, defaults.pinchThreshold, 0.02, 0.9, "touchpad.pinchThreshold", notes, errors),
+        rotateThresholdDeg: clampNumber(o.rotateThresholdDeg, defaults.rotateThresholdDeg, 5, 120, "touchpad.rotateThresholdDeg", notes, errors),
+        cooldownMs: clampInt(o.cooldownMs, defaults.cooldownMs, 0, 2000, "touchpad.cooldownMs", notes, errors),
+    };
+}
+
 function clampNumber(
     v: unknown,
     def: number,
@@ -451,10 +504,7 @@ function validateBindings(
         return defaults.map(cloneBindingShallow);
     }
     if (input.length === 0) {
-        // An explicitly empty array is a VALID user choice — the user
-        // deleted every binding.  It must NOT be replaced with the default
-        // bindings.  (Only a *missing* `bindings` field falls back to
-        // defaults, handled above.)
+        // An explicitly empty array is a VALID user choice.
         return [];
     }
 
@@ -471,26 +521,8 @@ function validateBindings(
         const o = raw as Record<string, unknown>;
 
         // id
-        let id: string;
-        if (o.id === undefined) {
-            errors.push(`bindings[${i}].id missing`);
-            continue;
-        }
-        if (typeof o.id !== "string") {
-            errors.push(`bindings[${i}].id must be string, got ${typeof o.id}`);
-            continue;
-        }
-        const trimmedId = o.id.trim();
-        if (!trimmedId) {
-            errors.push(`bindings[${i}].id must not be empty`);
-            continue;
-        }
-        if (seenIds.has(trimmedId)) {
-            errors.push(`duplicate binding id: ${trimmedId}`);
-            continue;
-        }
-        seenIds.add(trimmedId);
-        id = trimmedId;
+        const id = validateBindingId(o.id, seenIds, i, errors);
+        if (id === null) continue;
 
         // enabled
         let enabled = true;
@@ -504,150 +536,53 @@ function validateBindings(
             notes.push(`bindings[${i}].enabled missing — set to true`);
         }
 
-        // directions
-        if (!Array.isArray(o.directions)) {
-            errors.push(`bindings[${i}].directions must be an array`);
-            continue;
-        }
-        const directions: Direction[] = [];
-        let dirError = false;
-        for (const d of o.directions) {
-            if (typeof d !== "string" || !ALL_DIRECTIONS.includes(d as Direction)) {
-                errors.push(`bindings[${i}].directions has invalid direction ${JSON.stringify(d)}`);
-                dirError = true;
-                break;
-            }
-            directions.push(d as Direction);
-        }
-        if (dirError) continue;
-        if (directions.length === 0) {
-            errors.push(`bindings[${i}].directions must not be empty`);
-            continue;
-        }
-        // In 4-direction mode, enabled diagonal bindings are invalid;
-        // disabled diagonal bindings may remain for later reuse in
-        // 8-direction mode (the runtime never resolves disabled bindings,
-        // so they cannot crash on load).
-        if (directionMode === 4 && enabled && directions.some((d) => DIAGONALS.includes(d))) {
-            errors.push(
-                `bindings[${i}].directions contains enabled diagonals not allowed in 4-direction mode: ${directions.join("-")}`,
-            );
-            continue;
-        }
-        // No duplicate consecutive? The spec says "方向序列不重复" — meaning
-        // the whole sequence must be unique among bindings, not internal
-        // duplicates.  Internal duplicates are handled by the recognizer.
-        const key = directions.join("-");
-        if (seenKeys.has(key)) {
-            errors.push(`duplicate binding directions: ${key}`);
-            continue;
-        }
-        seenKeys.add(key);
-
-        // action (unified binding action — single current structure)
-        if (o.action === undefined || o.action === null || !isPlainObject(o.action)) {
-            errors.push(`bindings[${i}].action must be an object`);
-            continue;
-        }
-        const rawAction = o.action as Record<string, unknown>;
-        const actionType = rawAction.type;
-
-        if (actionType === "builtin") {
-            if (typeof rawAction.commandId !== "string") {
-                errors.push(`bindings[${i}].action.commandId must be a string`);
+        // source
+        let source: "mouse" | "touchpad" = "mouse";
+        if (o.source !== undefined) {
+            if (o.source !== "mouse" && o.source !== "touchpad") {
+                errors.push(`bindings[${i}].source must be "mouse" or "touchpad", got ${JSON.stringify(o.source)}`);
                 continue;
             }
-            const commandId = rawAction.commandId.trim();
-            if (!commandId) {
-                errors.push(`bindings[${i}].action.commandId must not be empty`);
+            source = o.source;
+        } else {
+            notes.push(`bindings[${i}].source missing — treated as mouse`);
+        }
+
+        // gesture
+        let gesture: ConfigBinding["gesture"] | null = null;
+        if (o.gesture !== undefined && o.gesture !== null) {
+            if (!isPlainObject(o.gesture)) {
+                errors.push(`bindings[${i}].gesture must be an object`);
                 continue;
             }
-            // A commandId the current version does not register is kept
-            // unchanged (id, enabled, directions, commandId, commandParams).
-            // Whether the command exists is a runtime capability, not a
-            // schema problem — the executor returns `unavailable`.
-            let commandParams: Record<string, unknown> = {};
-            if (rawAction.commandParams !== undefined) {
-                if (!isPlainObject(rawAction.commandParams)) {
-                    errors.push(`bindings[${i}].action.commandParams must be a plain object`);
-                    continue;
-                }
-                commandParams = { ...(rawAction.commandParams as Record<string, unknown>) };
-            }
-            result.push({
-                id,
-                enabled,
-                directions,
-                action: { type: "builtin", commandId, commandParams },
-            });
+            gesture = source === "mouse"
+                ? validateMouseGesture(o.gesture, directionMode, enabled, i, notes, errors)
+                : validateTouchpadGesture(o.gesture, directionMode, enabled, i, notes, errors);
+            if (gesture === null) continue;
+        } else if (Array.isArray(o.directions)) {
+            // Tolerance for hand-edited / partially-migrated data: a bare
+            // `directions` array is treated as a mouse shape.
+            notes.push(`bindings[${i}].gesture missing — reconstructed from directions`);
+            const shape = validateMouseGesture({ kind: "shape", directions: o.directions } as Record<string, unknown>, directionMode, enabled, i, notes, errors);
+            if (shape === null) continue;
+            gesture = shape;
+        } else {
+            errors.push(`bindings[${i}].gesture missing`);
             continue;
         }
 
-        if (actionType === "shortcut") {
-            // User-defined action name: required, trimmed, ≤ 80 chars.
-            const rawTitle = rawAction.title;
-            if (typeof rawTitle !== "string" || rawTitle.trim().length === 0) {
-                errors.push(`bindings[${i}].action.title must be a non-empty string`);
-                continue;
-            }
-            if (rawTitle.trim().length > 80) {
-                errors.push(`bindings[${i}].action.title must be at most 80 characters`);
-                continue;
-            }
-            const rawShortcut = rawAction.shortcut;
-            if (rawShortcut === undefined || rawShortcut === null || !isPlainObject(rawShortcut)) {
-                errors.push(`bindings[${i}].action.shortcut must be an object`);
-                continue;
-            }
-            const s = rawShortcut as Record<string, unknown>;
-            // Reject functions / DOM data (JSON payloads can't carry them,
-            // but be strict anyway).
-            if (Object.values(s).some((v) => typeof v === "function")) {
-                errors.push(`bindings[${i}].action.shortcut must not contain functions`);
-                continue;
-            }
-            const key = typeof s.key === "string" ? s.key : "";
-            const code = typeof s.code === "string" ? s.code : "";
-            const keyCode = typeof s.keyCode === "number" ? s.keyCode : 0;
-            const candidate = {
-                key,
-                code,
-                keyCode,
-                ctrlKey: s.ctrlKey === true,
-                altKey: s.altKey === true,
-                shiftKey: s.shiftKey === true,
-                metaKey: s.metaKey === true,
-            };
-            // Same strict key/code/keyCode consistency check as capture
-            // and binding-draft validation — single source of truth.
-            if (!validateShortcutSpec(candidate)) {
-                errors.push(`bindings[${i}].action.shortcut is invalid`);
-                continue;
-            }
-            result.push({
-                id,
-                enabled,
-                directions,
-                action: {
-                    type: "shortcut",
-                    title: rawTitle.trim(),
-                    shortcut: candidate,
-                },
-            });
+        // action (unified binding action — single current structure)
+        const action = validateAction(o.action, i, errors);
+        if (action === null) continue;
+
+        const signature = signatureOf(source, gesture);
+        if (seenKeys.has(signature)) {
+            errors.push(`duplicate binding gesture: ${signature}`);
             continue;
         }
+        seenKeys.add(signature);
 
-        if (actionType === "javascript") {
-            // JavaScript actions are NOT a persistent type — reject them
-            // so imports can never bypass the disabled "in development"
-            // state.
-            errors.push(`bindings[${i}].action.type "javascript" is not available in this version`);
-            continue;
-        }
-
-        // Unknown action type: config is invalid.  Never silently convert
-        // to builtin, never execute.
-        errors.push(`bindings[${i}].action.type unknown: ${JSON.stringify(actionType)}`);
+        result.push({ id, enabled, source, gesture, action });
     }
 
     if (errors.length > 0) {
@@ -660,27 +595,319 @@ function validateBindings(
     return result;
 }
 
-function cloneBindingShallow(b: ConfigBinding): ConfigBinding {
-    if (b.action.type === "builtin") {
+/** Validate the shared binding id field.  Returns the trimmed id or null. */
+function validateBindingId(
+    v: unknown,
+    seenIds: Set<string>,
+    index: number,
+    errors: string[],
+): string | null {
+    if (v === undefined) {
+        errors.push(`bindings[${index}].id missing`);
+        return null;
+    }
+    if (typeof v !== "string") {
+        errors.push(`bindings[${index}].id must be string, got ${typeof v}`);
+        return null;
+    }
+    const trimmed = v.trim();
+    if (!trimmed) {
+        errors.push(`bindings[${index}].id must not be empty`);
+        return null;
+    }
+    if (seenIds.has(trimmed)) {
+        errors.push(`duplicate binding id: ${trimmed}`);
+        return null;
+    }
+    seenIds.add(trimmed);
+    return trimmed;
+}
+
+/** Validate a mouse gesture (kind must be "shape"). */
+function validateMouseGesture(
+    input: Record<string, unknown>,
+    directionMode: DirectionMode,
+    enabled: boolean,
+    index: number,
+    notes: string[],
+    errors: string[],
+): MouseShapeGestureSpec | null {
+    if (input.kind !== undefined && input.kind !== "shape") {
+        errors.push(`bindings[${index}].gesture.kind must be "shape" for mouse, got ${JSON.stringify(input.kind)}`);
+        return null;
+    }
+    let button = 2;
+    if (input.button !== undefined) {
+        if (typeof input.button !== "number" || !Number.isInteger(input.button)) {
+            errors.push(`bindings[${index}].gesture.button must be an integer`);
+            return null;
+        }
+        if (input.button !== 2) {
+            errors.push(`bindings[${index}].gesture.button must be 2 (right), got ${input.button}`);
+            return null;
+        }
+        button = input.button;
+    } else {
+        notes.push(`bindings[${index}].gesture.button missing — set to 2`);
+    }
+    const directions = validateDirections(input.directions, directionMode, enabled, index, notes, errors);
+    if (directions === null) return null;
+    return { kind: "shape", button, directions };
+}
+
+/** Validate a touchpad gesture descriptor. */
+function validateTouchpadGesture(
+    input: Record<string, unknown>,
+    directionMode: DirectionMode,
+    enabled: boolean,
+    index: number,
+    notes: string[],
+    errors: string[],
+): TouchpadGestureSpec | null {
+    const kind = input.kind;
+    if (typeof kind !== "string" || !TOUCHPAD_KINDS.includes(kind)) {
+        errors.push(`bindings[${index}].gesture.kind is not a valid touchpad kind: ${JSON.stringify(kind)}`);
+        return null;
+    }
+    const k = kind as TouchpadGestureKind;
+
+    const fingerCount = validateFingerCount(input.fingerCount, index, notes, errors);
+    if (fingerCount === null) return null;
+
+    switch (k) {
+        case "tap":
+        case "press":
+        case "hold":
+            return { kind: k, fingerCount };
+        case "swipe": {
+            const direction = validateSingleDirection(input.direction, index, notes, errors);
+            if (direction === null) return null;
+            if (directionMode === 4 && enabled && DIAGONALS.includes(direction)) {
+                errors.push(`bindings[${index}].gesture contains enabled diagonal not allowed in 4-direction mode: ${direction}`);
+                return null;
+            }
+            return { kind: "swipe", fingerCount, direction };
+        }
+        case "shape": {
+            const directions = validateDirections(input.directions, directionMode, enabled, index, notes, errors);
+            if (directions === null) return null;
+            return { kind: "shape", fingerCount, directions };
+        }
+        case "anchorDraw": {
+            const anchorCount = validateAnchorCount(input.anchorCount, fingerCount, index, notes, errors);
+            if (anchorCount === null) return null;
+            const directions = validateDirections(input.directions, directionMode, enabled, index, notes, errors);
+            if (directions === null) return null;
+            return { kind: "anchorDraw", fingerCount, anchorCount, directions };
+        }
+        case "pinch": {
+            const direction = input.direction;
+            if (direction !== "in" && direction !== "out") {
+                errors.push(`bindings[${index}].gesture.direction must be "in" or "out", got ${JSON.stringify(direction)}`);
+                return null;
+            }
+            return { kind: "pinch", fingerCount, direction };
+        }
+        case "rotate": {
+            const direction = input.direction;
+            if (direction !== "cw" && direction !== "ccw") {
+                errors.push(`bindings[${index}].gesture.direction must be "cw" or "ccw", got ${JSON.stringify(direction)}`);
+                return null;
+            }
+            return { kind: "rotate", fingerCount, direction };
+        }
+        default:
+            errors.push(`bindings[${index}].gesture.kind unsupported: ${JSON.stringify(kind)}`);
+            return null;
+    }
+}
+
+function validateFingerCount(
+    v: unknown,
+    index: number,
+    notes: string[],
+    errors: string[],
+): number | null {
+    if (v === undefined) {
+        notes.push(`bindings[${index}].gesture.fingerCount missing — set to 2`);
+        return 2;
+    }
+    if (typeof v !== "number" || !Number.isInteger(v)) {
+        errors.push(`bindings[${index}].gesture.fingerCount must be an integer, got ${JSON.stringify(v)}`);
+        return null;
+    }
+    if (v < MIN_TOUCHPAD_FINGERS || v > MAX_TOUCHPAD_FINGERS) {
+        errors.push(`bindings[${index}].gesture.fingerCount must be between ${MIN_TOUCHPAD_FINGERS} and ${MAX_TOUCHPAD_FINGERS}, got ${v}`);
+        return null;
+    }
+    return v;
+}
+
+function validateAnchorCount(
+    v: unknown,
+    fingerCount: number,
+    index: number,
+    notes: string[],
+    errors: string[],
+): number | null {
+    if (v === undefined) {
+        notes.push(`bindings[${index}].gesture.anchorCount missing — set to 1`);
+        return 1;
+    }
+    if (typeof v !== "number" || !Number.isInteger(v)) {
+        errors.push(`bindings[${index}].gesture.anchorCount must be an integer, got ${JSON.stringify(v)}`);
+        return null;
+    }
+    if (v < 1 || v >= fingerCount) {
+        errors.push(`bindings[${index}].gesture.anchorCount must be at least 1 and less than fingerCount (${fingerCount}), got ${v}`);
+        return null;
+    }
+    return v;
+}
+
+function validateSingleDirection(
+    v: unknown,
+    index: number,
+    notes: string[],
+    errors: string[],
+): Direction | null {
+    if (typeof v !== "string" || !ALL_DIRECTIONS.includes(v as Direction)) {
+        errors.push(`bindings[${index}].gesture.direction has invalid direction ${JSON.stringify(v)}`);
+        return null;
+    }
+    void notes;
+    return v as Direction;
+}
+
+function validateDirections(
+    v: unknown,
+    directionMode: DirectionMode,
+    enabled: boolean,
+    index: number,
+    notes: string[],
+    errors: string[],
+): Direction[] | null {
+    if (!Array.isArray(v)) {
+        errors.push(`bindings[${index}].gesture.directions must be an array`);
+        return null;
+    }
+    const directions: Direction[] = [];
+    for (const d of v) {
+        if (typeof d !== "string" || !ALL_DIRECTIONS.includes(d as Direction)) {
+            errors.push(`bindings[${index}].gesture.directions has invalid direction ${JSON.stringify(d)}`);
+            return null;
+        }
+        directions.push(d as Direction);
+    }
+    if (directions.length === 0) {
+        errors.push(`bindings[${index}].gesture.directions must not be empty`);
+        return null;
+    }
+    if (directionMode === 4 && enabled && directions.some((d) => DIAGONALS.includes(d))) {
+        errors.push(
+            `bindings[${index}].gesture contains enabled diagonals not allowed in 4-direction mode: ${directions.join("-")}`,
+        );
+        return null;
+    }
+    void notes;
+    return directions;
+}
+
+/** Validate the shared action structure (unchanged from v1 semantics). */
+function validateAction(
+    v: unknown,
+    index: number,
+    errors: string[],
+): ConfigBinding["action"] | null {
+    if (v === undefined || v === null || !isPlainObject(v)) {
+        errors.push(`bindings[${index}].action must be an object`);
+        return null;
+    }
+    const rawAction = v as Record<string, unknown>;
+    const actionType = rawAction.type;
+
+    if (actionType === "builtin") {
+        if (typeof rawAction.commandId !== "string") {
+            errors.push(`bindings[${index}].action.commandId must be a string`);
+            return null;
+        }
+        const commandId = rawAction.commandId.trim();
+        if (!commandId) {
+            errors.push(`bindings[${index}].action.commandId must not be empty`);
+            return null;
+        }
+        let commandParams: Record<string, unknown> = {};
+        if (rawAction.commandParams !== undefined) {
+            if (!isPlainObject(rawAction.commandParams)) {
+                errors.push(`bindings[${index}].action.commandParams must be a plain object`);
+                return null;
+            }
+            commandParams = { ...(rawAction.commandParams as Record<string, unknown>) };
+        }
+        return { type: "builtin", commandId, commandParams };
+    }
+
+    if (actionType === "shortcut") {
+        const rawTitle = rawAction.title;
+        if (typeof rawTitle !== "string" || rawTitle.trim().length === 0) {
+            errors.push(`bindings[${index}].action.title must be a non-empty string`);
+            return null;
+        }
+        if (rawTitle.trim().length > 80) {
+            errors.push(`bindings[${index}].action.title must be at most 80 characters`);
+            return null;
+        }
+        const rawShortcut = rawAction.shortcut;
+        if (rawShortcut === undefined || rawShortcut === null || !isPlainObject(rawShortcut)) {
+            errors.push(`bindings[${index}].action.shortcut must be an object`);
+            return null;
+        }
+        const s = rawShortcut as Record<string, unknown>;
+        if (Object.values(s).some((val) => typeof val === "function")) {
+            errors.push(`bindings[${index}].action.shortcut must not contain functions`);
+            return null;
+        }
+        const key = typeof s.key === "string" ? s.key : "";
+        const code = typeof s.code === "string" ? s.code : "";
+        const keyCode = typeof s.keyCode === "number" ? s.keyCode : 0;
+        const candidate = {
+            key,
+            code,
+            keyCode,
+            ctrlKey: s.ctrlKey === true,
+            altKey: s.altKey === true,
+            shiftKey: s.shiftKey === true,
+            metaKey: s.metaKey === true,
+        };
+        if (!validateShortcutSpec(candidate)) {
+            errors.push(`bindings[${index}].action.shortcut is invalid`);
+            return null;
+        }
         return {
-            id: b.id,
-            enabled: b.enabled,
-            directions: b.directions.slice(),
-            action: {
-                type: "builtin",
-                commandId: b.action.commandId,
-                commandParams: { ...b.action.commandParams },
-            },
+            type: "shortcut",
+            title: rawTitle.trim(),
+            shortcut: candidate,
         };
     }
-    return {
-        id: b.id,
-        enabled: b.enabled,
-        directions: b.directions.slice(),
-        action: {
-            type: "shortcut",
-            title: b.action.title,
-            shortcut: { ...b.action.shortcut },
-        },
-    };
+
+    if (actionType === "javascript") {
+        errors.push(`bindings[${index}].action.type "javascript" is not available in this version`);
+        return null;
+    }
+
+    errors.push(`bindings[${index}].action.type unknown: ${JSON.stringify(actionType)}`);
+    return null;
+}
+
+/** Canonical signature for a validated binding (for duplicate detection). */
+function signatureOf(source: "mouse" | "touchpad", gesture: ConfigBinding["gesture"]): GestureSignatureKey {
+    if (source === "mouse") {
+        const g = gesture as MouseShapeGestureSpec;
+        return mouseSignature(g.button, g.directions);
+    }
+    return touchpadSignature(gesture as TouchpadGestureSpec);
+}
+
+function cloneBindingShallow(b: ConfigBinding): ConfigBinding {
+    return cloneBinding(b);
 }

@@ -32,6 +32,27 @@ const REQUIRED_FILES = [
     "i18n/en.json",
 ];
 
+/**
+ * Optional release files that MAY ship but are not required at the file
+ * level.  When the Windows N-API addon is REQUIRED for a release
+ * (`GESTURE_FLOW_REQUIRE_NATIVE=1`, set by the release workflow),
+ * {@link verifyNativeAddon} enforces its presence explicitly.
+ */
+const OPTIONAL_FILE_PREFIXES = ["native/"];
+
+/**
+ * Whether the Windows N-API addon is required for this build.  The release
+ * workflow (Windows runner) sets `GESTURE_FLOW_REQUIRE_NATIVE=1`; normal
+ * local development leaves it unset so the addon stays optional.
+ */
+const REQUIRE_NATIVE =
+    process.env.GESTURE_FLOW_REQUIRE_NATIVE === "1" ||
+    String(process.env.GESTURE_FLOW_REQUIRE_NATIVE).toLowerCase() === "true";
+
+function isAllowedOptional(file) {
+    return OPTIONAL_FILE_PREFIXES.some((prefix) => file.startsWith(prefix));
+}
+
 const FORBIDDEN_FILES = [
     "kernel.js",
     "kernel.js.map",
@@ -293,7 +314,7 @@ function verifyDist() {
     console.log(`  dist contains ${allFiles.length} files`);
 
     for (const file of allFiles) {
-        if (!REQUIRED_FILES.includes(file)) {
+        if (!REQUIRED_FILES.includes(file) && !isAllowedOptional(file)) {
             fail(`dist/${file} — unexpected release file`);
         }
     }
@@ -357,7 +378,7 @@ function verifyZip() {
     }));
 
     for (const { normalized } of entryMap) {
-        if (!normalized.endsWith("/") && !REQUIRED_FILES.includes(normalized)) {
+        if (!normalized.endsWith("/") && !REQUIRED_FILES.includes(normalized) && !isAllowedOptional(normalized)) {
             fail(`package.zip/${normalized} — unexpected release file`);
         }
     }
@@ -730,12 +751,52 @@ function verifyQuietRuntime() {
     }
 }
 
+// --------------------------------------------------------------- native addon
+
+/**
+ * When `GESTURE_FLOW_REQUIRE_NATIVE=1`, the Windows touchpad addon must be
+ * present (and non-empty) in BOTH dist/ and package.zip.  Without it the
+ * release would silently ship without native Touchpad support while verify
+ * still reported success.
+ */
+function verifyNativeAddon() {
+    console.log("\n--- Verifying native touchpad addon ---");
+    if (!REQUIRE_NATIVE) {
+        ok("native addon optional (GESTURE_FLOW_REQUIRE_NATIVE unset)");
+        return;
+    }
+
+    const addonName = "native/gesture_flow_touchpad.node";
+    const distPath = path.join(DIST_DIR, "native", "gesture_flow_touchpad.node");
+    if (!fs.existsSync(distPath) || fs.statSync(distPath).size === 0) {
+        fail(`dist/${addonName} missing or empty (native required for this release)`);
+        return;
+    }
+    ok(`dist/${addonName} (${fs.statSync(distPath).size} bytes)`);
+
+    let zip;
+    let entry;
+    try {
+        zip = new AdmZip(ZIP_PATH);
+        entry = zip.getEntries().find((e) => e.entryName.replace(/^\.\//, "") === addonName);
+    } catch (e) {
+        fail(`cannot inspect package.zip for ${addonName}: ${e.message}`);
+        return;
+    }
+    if (!entry || entry.header.size === 0) {
+        fail(`package.zip/${addonName} missing or empty (native required for this release)`);
+        return;
+    }
+    ok(`package.zip/${addonName} (${entry.header.size} bytes)`);
+}
+
 // --------------------------------------------------------------- main
 
 console.log("=== Build Artifact Verification ===");
 verifyVersions();
 verifyDist();
 verifyZip();
+verifyNativeAddon();
 verifyAssets("dist");
 verifyAssets("zip");
 verifyStaticFileConsistency();

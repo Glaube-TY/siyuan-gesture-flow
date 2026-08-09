@@ -4,7 +4,6 @@
 import { showSafeConfirm } from "./confirmDialog";
     import type { ConfigManager, ConfigUpdatePatch } from "@/config/ConfigManager";
     import type { GestureFlowConfig } from "@/config/types";
-    import type { ConfigBinding } from "@/config/types";
     import type { SuppressionKey } from "@/gesture/types";
     import type { Direction } from "@/gesture/recognition/DirectionVectorizer";
     import { parseNumber, DebouncedPatchScheduler } from "./settingsHelpers";
@@ -12,11 +11,15 @@ import { showSafeConfirm } from "./confirmDialog";
     import SettingRow from "./components/SettingRow.svelte";
     import AboutPlugin from "./components/AboutPlugin.svelte";
     import BindingEditor from "./components/BindingEditor.svelte";
+    import TouchpadPanel from "./components/TouchpadPanel.svelte";
     import type { SettingCommandItem } from "./commandCatalog";
     import { catalogCommandIds } from "./commandCatalog";
     import { directionSymbol } from "./directionLabels";
     import { displayShortcut, detectShortcutPlatform } from "@/shortcuts/shortcutUtils";
-    import type { BindingAction } from "@/config/types";
+    import type { BindingAction, ConfigBinding, MouseShapeGestureSpec } from "@/config/types";
+    import type { GestureSource } from "@/gesture/signature";
+    import type { TouchpadGestureSpec } from "@/gesture/touchpad/types";
+    import { touchpadKindLabel } from "@/gesture/touchpad/labels";
     import {
         addBinding,
         updateBinding,
@@ -42,7 +45,7 @@ import { showSafeConfirm } from "./confirmDialog";
     export let onStatus: (message: string, isError: boolean) => void = () => {};
 
     let config: GestureFlowConfig = configManager.getConfig();
-    let activeTab: "general" | "recognition" | "display" | "bindings" | "data" | "about" = "general";
+    let activeTab: "general" | "recognition" | "display" | "bindings" | "touchpad" | "data" | "about" = "general";
 
     /** Debounced patch scheduler — merges rapid edits into a single save. */
     let scheduler: DebouncedPatchScheduler | null = null;
@@ -351,6 +354,7 @@ import { showSafeConfirm } from "./confirmDialog";
         { key: "recognition", label: () => i18n.settingsTabRecognition ?? "Recognition" },
         { key: "display", label: () => i18n.settingsTabDisplay ?? "Display" },
         { key: "bindings", label: () => i18n.settingsTabBindings ?? "Bindings" },
+        { key: "touchpad", label: () => i18n.settingsTabTouchpad ?? "Touchpad" },
         { key: "data", label: () => i18n.settingsTabData ?? "Data" },
         { key: "about", label: () => i18n.settingsTabAbout ?? "About" },
     ] as const;
@@ -389,6 +393,8 @@ import { showSafeConfirm } from "./confirmDialog";
                 return i18n.bindingErrorInvalidParams ?? "Invalid command parameters";
             case "invalid-shortcut":
                 return i18n.shortcutFormatError ?? "快捷键格式无效";
+            case "invalid-gesture":
+                return i18n.bindingErrorInvalidGesture ?? "手势描述无效";
             case "not-found":
                 return i18n.bindingErrorNotFound ?? "Binding not found";
         }
@@ -421,7 +427,7 @@ import { showSafeConfirm } from "./confirmDialog";
         if (action.type === "shortcut") {
             return action.title;
         }
-        return directionsLabel(binding.directions);
+        return bindingGestureLabel(binding);
     }
 
     /**
@@ -453,9 +459,60 @@ import { showSafeConfirm } from "./confirmDialog";
             : (i18n.actionShortcutBadge ?? "快捷键");
     }
 
-    /** Direction symbols joined for confirmation dialogs. */
-    function directionsLabel(directions: readonly Direction[]): string {
-        return directions.map(directionSymbol).join(" → ");
+    /** Direction sequence of a binding (mouse shape / touchpad direction kinds). */
+    function bindingDirections(binding: ConfigBinding): readonly Direction[] {
+        if (binding.source === "mouse") {
+            const g = binding.gesture as MouseShapeGestureSpec;
+            return g.directions;
+        }
+        const spec = binding.gesture as TouchpadGestureSpec;
+        if (spec.kind === "swipe") return [spec.direction];
+        if (spec.kind === "shape" || spec.kind === "anchorDraw") return spec.directions;
+        return [];
+    }
+
+    /** Source label ("鼠标" / "触控板"). */
+    function sourceLabel(source: GestureSource): string {
+        return source === "mouse"
+            ? (i18n.tpSourceMouse ?? "鼠标")
+            : (i18n.tpSourceTouchpad ?? "触控板");
+    }
+
+    /**
+     * Full gesture label shown in the bindings list, e.g.
+     *   "鼠标 · L-D"      /  "触控板 · 三指点击"
+     */
+    function bindingGestureLabel(binding: ConfigBinding): string {
+        if (binding.source === "mouse") {
+            const dirs = bindingDirections(binding);
+            return `${sourceLabel("mouse")} · ${dirs.map(directionSymbol).join(" → ")}`;
+        }
+        return touchpadBindingSummary(binding);
+    }
+
+    /**
+     * Touchpad binding summary: "触控板 · 3指 · ←↓→" (device · fingers ·
+     * trail).  Never exposes the internal signature string.
+     */
+    function touchpadBindingSummary(binding: ConfigBinding): string {
+        const spec = binding.gesture as TouchpadGestureSpec;
+        const fingers = `${spec.fingerCount}${i18n.tpFingers ?? "指"}`;
+        const summary = touchpadGestureTrailSummary(spec);
+        return `${sourceLabel("touchpad")} · ${fingers} · ${summary}`;
+    }
+
+    /** Direction symbols for swipe/shape/anchorDraw, short kind word otherwise. */
+    function touchpadGestureTrailSummary(spec: TouchpadGestureSpec): string {
+        if (spec.kind === "swipe") return directionSymbol(spec.direction);
+        if (spec.kind === "shape" || spec.kind === "anchorDraw") {
+            return spec.directions.map(directionSymbol).join("");
+        }
+        return touchpadKindLabel(spec.kind, i18n);
+    }
+
+    /** Touchpad descriptor label for a binding (helper for template casts). */
+    function touchpadLabel(binding: ConfigBinding): string {
+        return touchpadBindingSummary(binding);
     }
 
     function bindingValidationOptions() {
@@ -473,7 +530,8 @@ import { showSafeConfirm } from "./confirmDialog";
      */
     async function editorSave(draft: {
         enabled: boolean;
-        directions: Direction[];
+        source: GestureSource;
+        gesture: ConfigBinding["gesture"];
         action: BindingAction;
     }): Promise<string | null> {
         const result =
@@ -536,8 +594,8 @@ import { showSafeConfirm } from "./confirmDialog";
     function handleDeleteBinding(binding: ConfigBinding): void {
         const detail = bindingActionDetail(binding);
         const body = detail
-            ? [directionsLabel(binding.directions), bindingActionTitle(binding), detail]
-            : [directionsLabel(binding.directions), bindingActionTitle(binding)];
+            ? [bindingGestureLabel(binding), bindingActionTitle(binding), detail]
+            : [bindingGestureLabel(binding), bindingActionTitle(binding)];
         showSafeConfirm({
             title: i18n.bindingDeleteConfirm ?? "Delete binding",
             body,
@@ -800,6 +858,7 @@ import { showSafeConfirm } from "./confirmDialog";
                             activationDistance: config.trigger.activationDistance,
                             timeoutMs: config.trigger.timeoutMs,
                         }}
+                        touchpad={config.touchpad}
                     />
                 {:else}
                     <div class="gf-binding-toolbar">
@@ -820,11 +879,20 @@ import { showSafeConfirm } from "./confirmDialog";
                             {#each config.bindings as binding (binding.id)}
                                 <div class="gf-binding-item">
                                     <div class="gf-binding-left">
-                                        <div class="gf-binding-dirs">
-                                            {#each binding.directions as dir, i (i)}
-                                                <span class="gf-badge">{directionSymbol(dir)}</span>
-                                            {/each}
-                                        </div>
+                                        {#if binding.source === "mouse"}
+                                            <div class="gf-binding-dirs">
+                                                {#each bindingDirections(binding) as dir, i (i)}
+                                                    <span class="gf-badge">{directionSymbol(dir)}</span>
+                                                {/each}
+                                            </div>
+                                        {:else}
+                                            <span class="gf-binding-tp-label">
+                                                {touchpadLabel(binding)}
+                                            </span>
+                                        {/if}
+                                        <span class="gf-badge gf-binding-source">
+                                            {sourceLabel(binding.source)}
+                                        </span>
                                         <span class="gf-badge gf-binding-type {actionBadgeClass(binding)}">
                                             {actionBadgeLabel(binding)}
                                         </span>
@@ -869,6 +937,15 @@ import { showSafeConfirm } from "./confirmDialog";
                     {/if}
                 {/if}
             </SettingSection>
+        {/if}
+
+        {#if activeTab === "touchpad"}
+            <TouchpadPanel
+                {configManager}
+                {i18n}
+                {config}
+                {onStatus}
+            />
         {/if}
 
         {#if activeTab === "data"}
@@ -1007,6 +1084,19 @@ import { showSafeConfirm } from "./confirmDialog";
     .gf-binding-type.gf-badge--shortcut {
         background: var(--b3-theme-secondary-lightest, #fef3e2);
         color: var(--b3-theme-secondary, #f29900);
+    }
+    .gf-binding-source {
+        background: var(--b3-theme-primary-lightest, #e8f0fe);
+        color: var(--b3-theme-primary, #4285f4);
+        font-size: 11px;
+    }
+    .gf-binding-tp-label {
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--b3-theme-on-surface, #1f2329);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
     }
     .gf-binding-left {
         display: flex;

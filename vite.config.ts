@@ -1,4 +1,6 @@
 import { resolve } from "path";
+import path from "path";
+import fs from "fs";
 import { defineConfig } from "vite";
 import { viteStaticCopy } from "vite-plugin-static-copy";
 import livereload from "rollup-plugin-livereload";
@@ -45,6 +47,8 @@ export default defineConfig({
                 { src: "./icon.png", dest: "./" }
             ],
         }),
+
+        copyNativeAddon(outputDir),
 
         ...(isDev && env.SIYUAN_SKIP_DEV_DEPLOY !== "1" ? [devDeploymentMirror()] : []),
     ],
@@ -123,6 +127,39 @@ function devDeploymentMirror() {
                     `[dev-deploy] Synced real directory ${result.targetDir} `
                     + `(copied ${result.copied}, unchanged ${result.unchanged}, deleted ${result.deleted})`
                 );
+            }
+        }
+    };
+}
+
+/**
+ * Copy the built native addon (`native/gesture_flow_touchpad.node`) into the
+ * output `native/` directory when it exists.  The addon is optional: without
+ * it the plugin still works (Electron observer mode).  Build it with
+ * `pnpm native:build` on a machine with MSVC + the Windows SDK.
+ */
+function copyNativeAddon(outputDir: string) {
+    const pathMod = path;
+    return {
+        name: "copy-native-addon",
+        apply: "build" as const,
+        // writeBundle order "pre" runs BEFORE the dev-deploy mirror's
+        // writeBundle ("post"), so dev/native/ is present when stale files
+        // are computed (otherwise a locked deployed .node would be treated
+        // as stale and fail to unlink).
+        writeBundle: {
+            sequential: true,
+            order: "pre" as const,
+            handler() {
+                const source = pathMod.resolve(__dirname, "native", "gesture_flow_touchpad.node");
+                if (!fs.existsSync(source)) {
+                    console.log("[native] no gesture_flow_touchpad.node — skipping (run `pnpm native:build`)");
+                    return;
+                }
+                const targetDir = pathMod.resolve(__dirname, outputDir, "native");
+                fs.mkdirSync(targetDir, { recursive: true });
+                fs.copyFileSync(source, pathMod.join(targetDir, "gesture_flow_touchpad.node"));
+                console.log(`[native] copied gesture_flow_touchpad.node -> ${outputDir}/native/`);
             }
         }
     };

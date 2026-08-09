@@ -12,10 +12,16 @@
     "url": "https://glaube-ty.top/da-shang/"
   },
   "packageManager": "pnpm@10.14.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  },
   "scripts": {
     "dev": "cross-env NODE_ENV=development VITE_SOURCEMAP=inline vite build --watch",
     "build": "cross-env NODE_ENV=production vite build",
     "build:dev": "cross-env NODE_ENV=development vite build",
+    "native:build": "node --no-warnings ./scripts/build_native.js",
     "dev:setup": "cross-env SIYUAN_SKIP_DEV_DEPLOY=1 pnpm build:dev && node --no-warnings ./scripts/make_dev_link.js",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "test:smoke": "vitest run",
@@ -50,6 +56,7 @@
     "vite": "^5.2.9",
     "vite-plugin-static-copy": "^1.0.2",
     "vite-plugin-zip-pack": "^1.0.5",
-    "vitest": "^2.1.9"
+    "vitest": "^2.1.9",
+    "node-gyp": "^11.0.0"
   }
 }

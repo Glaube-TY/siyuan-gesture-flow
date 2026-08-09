@@ -12,6 +12,7 @@ import { registerBuiltinCommands } from "@/commands/registerBuiltinCommands";
 import { buildCommandCatalog } from "@/settings/commandCatalog";
 import type { SettingCommandItem } from "@/settings/commandCatalog";
 import { OverlayI18n } from "@/gesture/overlay/types";
+import { setNativeBridgeContext } from "@/touchpad/nativeBridge";
 
 /** Whether the plugin is running in development mode (concise debug logs). */
 /**
@@ -101,6 +102,10 @@ export default class GestureFlowPlugin extends Plugin {
             return; // non-DOM environment, nothing to attach
         }
 
+        // The native bridge loader needs the plugin name to locate the addon
+        // bundled in this plugin's own directory.
+        setNativeBridgeContext({ pluginName: this.name });
+
         // --- Config manager ---
         // The plugin instance itself is the persistence host — it exposes
         // loadData / saveData / removeData via the SiYuan Plugin API.
@@ -135,6 +140,9 @@ export default class GestureFlowPlugin extends Plugin {
             overlayI18n,
             i18n: this.i18n ?? {},
             app: this.gfApp,
+            onTouchpadError: (label: string) => {
+                console.warn(`[GestureFlow] touchpad provider error (${label})`);
+            },
         });
         this.runtime = runtime;
 

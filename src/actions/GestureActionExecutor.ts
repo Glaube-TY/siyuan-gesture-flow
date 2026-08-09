@@ -2,9 +2,13 @@ import { GestureSession } from "@/gesture/GestureSession";
 import { RecognitionResult } from "@/gesture/GestureEngine";
 import { GestureState, InvalidReason } from "@/gesture/types";
 import { GestureBindingRegistry } from "@/gesture/bindings/GestureBindingRegistry";
+import { mouseSignature, GestureSignatureKey } from "@/gesture/signature";
 import { CommandExecutor } from "@/commands/CommandExecutor";
 import { buildCommandContext, CommandExecutionResult } from "@/commands/types";
 import { ShortcutExecutor, ShortcutExecutionResult } from "@/shortcuts/ShortcutExecutor";
+import { GesturePoint } from "@/gesture/types";
+import { Direction } from "@/gesture/recognition/DirectionVectorizer";
+import { BindingAction } from "@/config/types";
 
 /**
  * Outcome of a single dispatch attempt.
@@ -29,36 +33,51 @@ export type DispatchResult =
     | { status: "skipped"; reason: string };
 
 /**
+ * Input for a touchpad-originated dispatch.
+ *
+ * `points` are normalised touchpad-surface coordinates (0..1) — commands
+ * that use geometry (if any) receive these directly.
+ */
+export interface TouchpadDispatchInput {
+    /** Monotonic session id (namespace-independent; prefixed internally). */
+    sessionId: number;
+    /** Canonical gesture signature of the completed gesture. */
+    signature: GestureSignatureKey;
+    /** Direction sequence (swipe / shape / anchorDraw), possibly empty. */
+    directions: readonly Direction[];
+    /** Sampled points (centroid or tracer trail). */
+    points: readonly { x: number; y: number }[];
+    durationMs: number | null;
+}
+
+/**
  * Coordinates gesture completion → binding resolution → action
  * execution (built-in command or synthetic keyboard shortcut).
  *
- * The dispatcher is the single owner of the dispatch decision tree:
+ * The dispatcher is the single owner of the dispatch decision tree for BOTH
+ * input sources:
  *
- * 1. Verifies session state (must be {@link GestureState.COMPLETED}).
- * 2. Verifies recognition result (must be valid, non-empty directions,
- *    no invalidReason).
- * 3. Resolves the enabled binding via {@link GestureBindingRegistry}
- *    (which is action-agnostic).
- * 4. Builds an immutable {@link CommandContext} snapshot.
- * 5. Dispatches by `binding.action.type`:
- *    - `builtin` → {@link CommandExecutor}
- *    - `shortcut` → {@link ShortcutExecutor}
- *    JavaScript is deliberately absent from the runtime branch.
+ *   - mouse: {@link dispatch} — session + RecognitionResult; the mouse
+ *     signature is derived from the trigger button and direction sequence.
+ *   - touchpad: {@link dispatchTouchpad} — an already-resolved signature
+ *     produced by the touchpad recognizer.
  *
- * De-duplication: each session executes at most once, regardless of
- * action type (a bounded LRU-style set, mirroring CommandExecutor).
+ * Both paths share the same binding registry (signature-keyed), command
+ * executor and shortcut executor, so a command bound to a mouse gesture and
+ * the same command bound to a touchpad gesture dispatch identically.
  *
- * The dispatcher **never re-runs recognition** — it uses the
- * {@link RecognitionResult} produced by the gesture controller.  It
- * never touches the DOM or the SiYuan API directly; all side effects
- * happen inside the executed command / dispatched event.
+ * De-duplication: each session executes at most once, regardless of input
+ * source or action type.
+ *
+ * The dispatcher never re-runs recognition; it uses the result produced by
+ * the gesture controller / touchpad adapter.
  */
 export class GestureActionExecutor {
     private readonly bindings: GestureBindingRegistry;
     private readonly commandExecutor: CommandExecutor;
     private readonly shortcutExecutor: ShortcutExecutor;
-    /** Bounded set of recently executed session ids (cross-type dedup). */
-    private readonly executedSessions = new Set<number>();
+    /** Bounded set of recently executed session keys (cross-type dedup). */
+    private readonly executedSessions = new Set<string>();
     private readonly maxHistory = 64;
 
     constructor(
@@ -72,22 +91,12 @@ export class GestureActionExecutor {
     }
 
     /**
-     * Attempt to dispatch the action bound to a completed gesture.
-     *
-     * Returns `skipped` (with a reason) when any execution condition
-     * fails.  Returns `executed` (with the action type and its result)
-     * when an action is actually invoked.
-     *
-     * The dispatcher is async because the underlying CommandExecutor is
-     * async.  Callers may fire-and-forget the returned promise — the
-     * executors handle their own error containment, so the promise
-     * never rejects.
+     * Dispatch the action bound to a completed mouse gesture.
      */
     async dispatch(
         session: GestureSession,
         result: RecognitionResult,
     ): Promise<DispatchResult> {
-        // --- Execution conditions (all must hold) ---
         if (session.state !== GestureState.COMPLETED) {
             return { status: "skipped", reason: `session state is ${session.state}` };
         }
@@ -102,27 +111,78 @@ export class GestureActionExecutor {
             return { status: "skipped", reason: "empty directions" };
         }
 
-        // Cross-type session de-duplication: each completed gesture
-        // executes its action at most once.
-        if (this.executedSessions.has(session.id)) {
+        const key = `m:${session.id}`;
+        if (this.executedSessions.has(key)) {
             return { status: "skipped", reason: "session already executed" };
         }
-        this.markSession(session.id);
+        this.markSession(key);
 
-        // Resolve the enabled binding (registry is action-agnostic).
-        const resolved = this.bindings.resolve(result.directions);
+        const signature = mouseSignature(session.trigger.button, result.directions);
+        const resolved = this.bindings.resolve(signature);
         if (!resolved) {
             return { status: "skipped", reason: "no enabled binding" };
         }
-        const action = resolved.binding.action;
 
+        const context = buildCommandContext(
+            session.id,
+            session.points,
+            result,
+            session.durationMs,
+        );
+        return this.execute(resolved.binding.action, context);
+    }
+
+    /**
+     * Dispatch the action bound to a completed touchpad gesture.
+     */
+    async dispatchTouchpad(input: TouchpadDispatchInput): Promise<DispatchResult> {
+        if (!input.signature) {
+            return { status: "skipped", reason: "empty signature" };
+        }
+
+        const key = `t:${input.sessionId}`;
+        if (this.executedSessions.has(key)) {
+            return { status: "skipped", reason: "session already executed" };
+        }
+        this.markSession(key);
+
+        const resolved = this.bindings.resolve(input.signature);
+        if (!resolved) {
+            return { status: "skipped", reason: "no enabled binding" };
+        }
+
+        const resultLike = minimalRecognitionResult(input.directions, input.points.length);
+        const context = buildCommandContext(
+            input.sessionId,
+            toGesturePoints(input.points),
+            resultLike,
+            input.durationMs,
+        );
+        return this.execute(resolved.binding.action, context);
+    }
+
+    /** Clear the execution history (e.g. on plugin unload). */
+    reset(): void {
+        this.executedSessions.clear();
+    }
+
+    /** Whether the registry holds any binding for the given signature. */
+    hasBinding(signature: GestureSignatureKey): boolean {
+        return this.bindings.has(signature);
+    }
+
+    /** Whether the registry holds any *enabled* binding for the signature. */
+    hasEnabledBinding(signature: GestureSignatureKey): boolean {
+        return this.bindings.resolve(signature) !== null;
+    }
+
+    // --------------------------------------------------------------- internals
+
+    private async execute(
+        action: BindingAction,
+        context: ReturnType<typeof buildCommandContext>,
+    ): Promise<DispatchResult> {
         if (action.type === "builtin") {
-            const context = buildCommandContext(
-                session.id,
-                session.points,
-                result,
-                session.durationMs,
-            );
             const execResult = await this.commandExecutor.execute(
                 action.commandId,
                 context,
@@ -135,8 +195,6 @@ export class GestureActionExecutor {
                 result: execResult,
             };
         }
-
-        // shortcut action
         if (action.type === "shortcut") {
             const execResult = this.shortcutExecutor.dispatch(action.shortcut);
             return {
@@ -145,26 +203,41 @@ export class GestureActionExecutor {
                 result: execResult,
             };
         }
-
-        // Unknown / invalid action type (e.g. a malicious "javascript"
-        // payload): never execute, never fall through.
         const actionType = (action as { type?: unknown }).type;
         return { status: "skipped", reason: `unsupported action type ${JSON.stringify(actionType)}` };
     }
 
-    /** Clear the execution history (e.g. on plugin unload). */
-    reset(): void {
-        this.executedSessions.clear();
-    }
-
-    /** Mark a session as executed, evicting old entries if needed. */
-    private markSession(sessionId: number): void {
+    private markSession(key: string): void {
         if (this.executedSessions.size >= this.maxHistory) {
             const oldest = this.executedSessions.values().next().value;
             if (oldest !== undefined) {
                 this.executedSessions.delete(oldest);
             }
         }
-        this.executedSessions.add(sessionId);
+        this.executedSessions.add(key);
     }
+}
+
+/** Build a minimal RecognitionResult from touchpad data for the command context. */
+function minimalRecognitionResult(
+    directions: readonly Direction[],
+    pointCount: number,
+): RecognitionResult {
+    return {
+        valid: true,
+        invalidReason: null,
+        directions: directions.slice(),
+        rawDirections: directions.slice(),
+        segments: [],
+        rawPointCount: pointCount,
+        sampledPointCount: pointCount,
+        simplifiedPointCount: pointCount,
+        cancelled: false,
+        cancelReason: null,
+    };
+}
+
+/** Convert plain touchpad points to GesturePoint (timestamps defaulted). */
+function toGesturePoints(points: readonly { x: number; y: number }[]): GesturePoint[] {
+    return points.map((p, i) => ({ x: p.x, y: p.y, t: i * 16 }));
 }

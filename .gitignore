@@ -14,3 +14,7 @@ tmp
 .siyuan-dev-target.json
 .reasonix
 .release_answers.txt
+# Native addon build artifacts
+native/gesture_flow_touchpad.node
+native/touchpad/build/
+native/touchpad/build_env.gypi

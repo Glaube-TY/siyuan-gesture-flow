@@ -23,6 +23,12 @@ export interface OverlayState {
     status: OverlayStatus;
     /** Localised label for the bound command, or null when no binding matches. */
     commandLabel: string | null;
+    /**
+     * Localised descriptor label for non-direction gestures (touchpad tap /
+     * pinch / rotate / anchorDraw).  When set, it is shown in the hint
+     * instead of the direction sequence.
+     */
+    descriptorLabel?: string | null;
 }
 
 /**

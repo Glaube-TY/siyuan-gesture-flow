@@ -1,5 +1,7 @@
 import { SuppressionKey } from "@/gesture/types";
 import { DirectionMode, Direction } from "@/gesture/recognition/DirectionVectorizer";
+import { TouchpadGestureSpec } from "@/gesture/touchpad/types";
+import type { GestureSource } from "@/gesture/signature";
 import type { ShortcutSpec } from "@/shortcuts/types";
 
 /**
@@ -7,9 +9,15 @@ import type { ShortcutSpec } from "@/shortcuts/types";
  *
  * Version 1 is the first released config schema (shipped with v0.1.0).
  * v0.2.0 only adds selectable built-in commands and does not change the
- * persisted structure, so it continues to use version 1.  The version is
- * raised only when the persisted structure itself changes, and a
- * migration is then provided.
+ * persisted structure, so it continues to use version 1.
+ *
+ * **Version 2** (this release) extends {@link ConfigBinding} with an
+ * explicit input source and a structured gesture descriptor so bindings can
+ * come from the mouse *and* the touchpad.  The migration from v1 is
+ * automatic and idempotent (see {@link validateConfig}): every legacy
+ * binding becomes `source: "mouse"` + `gesture: { kind: "shape", button: 2,
+ * directions }` while id / enabled / action / commandId / shortcut title /
+ * shortcut spec are preserved unchanged.
  *
  * Bindings carry a single {@link BindingAction} — either a built-in
  * command action or a shortcut action.  JavaScript actions are NOT a
@@ -22,14 +30,13 @@ import type { ShortcutSpec } from "@/shortcuts/types";
  */
 
 /**
- * Current config schema version.  Version 1 is the schema first released
- * with v0.1.0; v0.2.0 keeps it because the persisted structure is
- * unchanged.
+ * Current config schema version.  Version 2 introduces the input-source /
+ * gesture-descriptor binding structure.
  */
-export const CURRENT_CONFIG_VERSION = 1 as const;
+export const CURRENT_CONFIG_VERSION = 2 as const;
 
-/** The only supported config version (the v0.1.0 released schema). */
-export type SupportedConfigVersion = 1;
+/** Config versions this release can read. */
+export type SupportedConfigVersion = 1 | 2;
 
 /** Trigger (input-layer) configuration. */
 export interface TriggerConfig {
@@ -69,6 +76,45 @@ export interface OverlayConfig {
     lineWidth: number;
 }
 
+/**
+ * Touchpad input configuration (version 2).
+ *
+ * Movement thresholds are expressed in **normalised touchpad-surface
+ * units** (0..1) so they are independent of physical pad size.
+ */
+export interface TouchpadConfig {
+    /** Master switch for the touchpad gesture feature. */
+    enabled: boolean;
+    /**
+     * Safe mode (default ON): 1/2-finger gestures are never dispatched, so
+     * the system's own click / scroll / right-click / pinch-zoom keep
+     * working untouched.  Only 3+ finger gestures dispatch.
+     */
+    safeMode: boolean;
+    /** Tap: maximum duration between touch-down and lift (ms). */
+    tapMaxDurationMs: number;
+    /** Tap: maximum per-contact movement (normalised 0..1). */
+    tapMaxMovement: number;
+    /** Hold: minimum duration before a hold is recognised (ms). */
+    holdDurationMs: number;
+    /** Hold: maximum per-contact movement (normalised 0..1). */
+    holdMaxMovement: number;
+    /** Swipe: minimum centroid travel before a swipe is recognised (0..1). */
+    swipeMinDistance: number;
+    /** Shape: minimum centroid path length before shape analysis runs (0..1). */
+    shapeMinPathLength: number;
+    /** AnchorDraw: maximum anchor drift (normalised 0..1). */
+    anchorMaxDrift: number;
+    /** AnchorDraw: minimum tracer path length to enter tracking (0..1). */
+    anchorDrawActivation: number;
+    /** Pinch: pairwise-distance ratio change required (e.g. 0.15 = 15%). */
+    pinchThreshold: number;
+    /** Rotate: cumulative angle change required (degrees). */
+    rotateThresholdDeg: number;
+    /** Cooldown after a completed gesture before the next can start (ms). */
+    cooldownMs: number;
+}
+
 /** Action: run a built-in command through the CommandRegistry. */
 export interface BuiltinBindingAction {
     readonly type: "builtin";
@@ -103,14 +149,25 @@ export interface ShortcutBindingAction {
  */
 export type BindingAction = BuiltinBindingAction | ShortcutBindingAction;
 
-/** A single gesture-to-action binding (config-layer shape, version 1). */
+/** Mouse shape gesture (the only mouse gesture kind this release supports). */
+export interface MouseShapeGestureSpec {
+    readonly kind: "shape";
+    /** Pointer button that triggers the gesture.  Only 2 (right) is allowed. */
+    readonly button: number;
+    /** Direction sequence that triggers the action (e.g. `["L"]`). */
+    readonly directions: Direction[];
+}
+
+/** A single gesture-to-action binding (config-layer shape, version 2). */
 export interface ConfigBinding {
     /** Unique binding id. */
     id: string;
     /** Whether this binding is active. */
     enabled: boolean;
-    /** Direction sequence that triggers the action. */
-    directions: Direction[];
+    /** Input source the gesture comes from. */
+    source: GestureSource;
+    /** The gesture descriptor (mouse shape or a touchpad gesture). */
+    gesture: MouseShapeGestureSpec | TouchpadGestureSpec;
     /** The action performed when the gesture is recognised. */
     action: BindingAction;
 }
@@ -122,6 +179,7 @@ export interface GestureFlowConfig {
     trigger: TriggerConfig;
     recognizer: RecognizerConfig;
     overlay: OverlayConfig;
+    touchpad: TouchpadConfig;
     bindings: ConfigBinding[];
 }
 

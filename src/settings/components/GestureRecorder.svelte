@@ -409,7 +409,7 @@
     .gf-recorder {
         position: relative;
         width: 100%;
-        height: 140px;
+        height: 220px;
         border: 1px dashed var(--b3-border-color, #e9e9ea);
         border-radius: 8px;
         overflow: hidden;

@@ -223,7 +223,9 @@ describe("v0.1.0 config compatibility (v0.2.0)", () => {
         );
 
         const result = validateConfig(config);
-        expect(result.status).toBe("valid");
-        expect(result.config.version).toBe(1);
+        // A released v1 config validates through the automatic v1→v2
+        // migration (reported as normalized).
+        expect(["valid", "normalized"]).toContain(result.status);
+        expect(result.config.version).toBe(2);
     });
 });

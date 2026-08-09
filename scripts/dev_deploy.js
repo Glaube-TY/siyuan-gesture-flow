@@ -98,10 +98,63 @@ function removeStaleEntries(directory, targetRoot, expectedFiles, stats) {
                 fs.rmdirSync(entryPath);
             }
         } else if (!expectedFiles.has(relativePath)) {
-            fs.unlinkSync(entryPath);
-            stats.deleted += 1;
+            if (!unlinkOrWarnLocked(entryPath, relativePath, stats)) {
+                // Locked file (e.g. a loaded native addon) — leave it in place.
+            }
         }
     }
+}
+
+/**
+ * Copy a changed file to the deploy target, tolerating locked native addons.
+ *
+ * A native `.node` that is currently loaded by the running SiYuan is
+ * memory-mapped and cannot be overwritten on Windows (EPERM).  In that case
+ * keep the existing copy and print a clear warning instead of failing the
+ * build; the user reloads/restarts SiYuan to pick up the change.
+ */
+function copyOrWarnLocked(sourcePath, targetPath, relativePath, stats) {
+    try {
+        fs.copyFileSync(sourcePath, targetPath);
+        stats.copied += 1;
+        return true;
+    } catch (err) {
+        if (isNativeAddon(relativePath) && isLockError(err)) {
+            console.warn(
+                `[dev-deploy] ${relativePath} is locked by the running SiYuan — ` +
+                "reload/restart SiYuan, then rebuild to pick up native changes",
+            );
+            return false;
+        }
+        throw err;
+    }
+}
+
+/** Delete a stale file, tolerating locked native addons (same as copy). */
+function unlinkOrWarnLocked(entryPath, relativePath, stats) {
+    try {
+        fs.unlinkSync(entryPath);
+        stats.deleted += 1;
+        return true;
+    } catch (err) {
+        if (isNativeAddon(relativePath) && isLockError(err)) {
+            console.warn(
+                `[dev-deploy] ${relativePath} is locked by the running SiYuan — ` +
+                "reload/restart SiYuan before removing it",
+            );
+            return false;
+        }
+        throw err;
+    }
+}
+
+/** Native addon files cannot be overwritten while loaded by SiYuan. */
+function isNativeAddon(relativePath) {
+    return relativePath.endsWith(".node");
+}
+
+function isLockError(err) {
+    return err && (err.code === "EPERM" || err.code === "EACCES");
 }
 
 function validateExistingTarget(targetDir, pluginName) {
@@ -175,8 +228,12 @@ export function mirrorGeneratedDirectory(sourceDir, targetDir, {
             stats.unchanged += 1;
             continue;
         }
-        fs.copyFileSync(sourcePath, targetPath);
-        stats.copied += 1;
+        if (!copyOrWarnLocked(sourcePath, targetPath, relativePath, stats)) {
+            // The file is locked by the running SiYuan (e.g. a loaded native
+            // addon).  Keep the existing copy and warn instead of failing the
+            // whole build.
+            continue;
+        }
     }
 
     removeStaleEntries(resolvedTarget, resolvedTarget, new Set(sourceFiles.keys()), stats);

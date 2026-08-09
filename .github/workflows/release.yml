@@ -20,10 +20,14 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    # Windows runner: the touchpad release REQUIRES the native N-API addon
+    # (pnpm native:build needs MSVC + Windows SDK), and the final package.zip
+    # must contain native/gesture_flow_touchpad.node.
+    runs-on: windows-latest
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       BUILD_REF_INPUT: ${{ inputs.ref }}
+      GESTURE_FLOW_REQUIRE_NATIVE: "1"
     steps:
       - name: Checkout
         shell: bash
@@ -88,6 +92,13 @@ jobs:
 
           console.log(`Validated ${tag}: package.json and plugin.json are both ${pluginJson.version}.`);
           NODE
+      - name: Build native touchpad addon
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm native:build
+          test -f native/gesture_flow_touchpad.node
+
       - name: Run release checks and build
         shell: bash
         run: pnpm release:check
@@ -98,6 +109,19 @@ jobs:
           set -euo pipefail
           test -f package.zip
           ls -lh package.zip
+          # The native addon must be inside the zip (verify_build already
+          # enforces this with GESTURE_FLOW_REQUIRE_NATIVE=1).
+          node <<'NODE'
+          const fs = require('node:fs');
+          const AdmZip = require('adm-zip');
+          const zip = new AdmZip('package.zip');
+          const entry = zip.getEntries().find((e) => e.entryName.replace(/^\.\//, '') === 'native/gesture_flow_touchpad.node');
+          if (!entry || entry.header.size === 0) {
+            console.error('package.zip is missing native/gesture_flow_touchpad.node');
+            process.exit(1);
+          }
+          console.log('package.zip contains native/gesture_flow_touchpad.node (' + entry.header.size + ' bytes)');
+          NODE
 
       - name: Create or update GitHub release
         shell: bash

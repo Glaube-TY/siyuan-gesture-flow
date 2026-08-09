@@ -343,10 +343,11 @@ export class GestureOverlay {
         }
         hint.textContent = text;
         hint.style.display = "block";
-        // Position near the last point
+        // Position near the last point, or centre the hint when the source
+        // provides no screen coordinates (e.g. touchpad gestures).
         const last = state.points[state.points.length - 1];
         if (!last) {
-            hint.style.display = "none";
+            this.positionHint(hint, this.cssWidth / 2, this.cssHeight / 3);
             return;
         }
         this.positionHint(hint, last.x, last.y);
@@ -362,6 +363,13 @@ export class GestureOverlay {
         }
         if (status === "empty") {
             return this.i18n.gestureUnrecognised;
+        }
+        // A descriptor label (touchpad tap/pinch/rotate/anchorDraw) wins over
+        // the raw direction sequence.
+        if (state.descriptorLabel) {
+            return state.commandLabel
+                ? `${state.descriptorLabel}\n${state.commandLabel}`
+                : state.descriptorLabel;
         }
         // tracking or complete
         if (state.directions.length === 0) {
