@@ -17,6 +17,15 @@ export type OverlayStatus = "idle" | "tracking" | "too-long" | "complete" | "emp
 export interface OverlayState {
     /** Raw gesture points (CSS pixel coordinates). */
     points: { x: number; y: number }[];
+    /**
+     * Optional per-contact trails (CSS pixel coordinates). Touchpad feedback
+     * supplies one path per physical finger; mouse feedback leaves this unset
+     * and continues to render {@link points} as a single trail.
+     */
+    contactPaths?: Array<{
+        id: number;
+        points: { x: number; y: number }[];
+    }>;
     /** Current direction sequence (empty when not yet recognisable). */
     directions: Direction[];
     /** Visual status of the hint. */

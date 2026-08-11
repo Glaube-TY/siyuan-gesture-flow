@@ -32,6 +32,15 @@ const THEME_VARS = {
     hintBorder: ["--b3-theme-primary-light", "#d0e3ff"],
 } as const;
 
+/** Stable colours for simultaneous touchpad contact trails. */
+const CONTACT_TRAIL_COLORS = [
+    THEME_VARS.trailColor,
+    ["--b3-theme-success", "#2e9d74"],
+    ["--b3-theme-warning", "#d9822b"],
+    ["--b3-theme-secondary", "#8b6fd6"],
+    ["--b3-theme-error", "#d45d9e"],
+] as const;
+
 /**
  * Renders the live gesture trail on a Canvas and shows a direction-sequence
  * hint element.
@@ -178,7 +187,7 @@ export class GestureOverlay {
             this.show();
         }
         if (this.config.showTrail) {
-            this.renderTrail(state.points);
+            this.renderTrail(state.points, state.contactPaths);
         } else {
             // Trail disabled — clear any previous drawing and hide the
             // canvas so it never intercepts hit-testing (although it is
@@ -303,7 +312,7 @@ export class GestureOverlay {
         }
         // Redraw current trail if any
         if (this.current) {
-            this.renderTrail(this.current.points);
+            this.renderTrail(this.current.points, this.current.contactPaths);
             // Reposition hint so it stays within the new viewport bounds.
             if (this.hint && this.hint.style.display !== "none") {
                 const last = this.current.points[this.current.points.length - 1];
@@ -314,22 +323,39 @@ export class GestureOverlay {
         }
     }
 
-    private renderTrail(points: { x: number; y: number }[]): void {
+    private renderTrail(
+        points: readonly { x: number; y: number }[],
+        contactPaths?: ReadonlyArray<{
+            id: number;
+            points: readonly { x: number; y: number }[];
+        }>,
+    ): void {
         const ctx = this.ctx;
         if (!ctx) return;
         ctx.clearRect(0, 0, this.cssWidth, this.cssHeight);
-        if (points.length < 2) return;
+        const multiTrails = contactPaths?.filter((path) => path.points.length >= 2) ?? [];
+        const trails = multiTrails.length > 0
+            ? multiTrails.map((path, index) => ({
+                points: path.points,
+                color: this.readThemeVar(CONTACT_TRAIL_COLORS[index % CONTACT_TRAIL_COLORS.length]),
+            }))
+            : points.length >= 2
+                ? [{ points, color: this.readThemeVar(THEME_VARS.trailColor) }]
+                : [];
+        if (trails.length === 0) return;
         ctx.save();
         ctx.lineWidth = this.config.lineWidth;
         ctx.lineCap = "round";
         ctx.lineJoin = "round";
-        ctx.strokeStyle = this.readThemeVar(THEME_VARS.trailColor);
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) {
-            ctx.lineTo(points[i].x, points[i].y);
+        for (const trail of trails) {
+            ctx.strokeStyle = trail.color;
+            ctx.beginPath();
+            ctx.moveTo(trail.points[0].x, trail.points[0].y);
+            for (let i = 1; i < trail.points.length; i++) {
+                ctx.lineTo(trail.points[i].x, trail.points[i].y);
+            }
+            ctx.stroke();
         }
-        ctx.stroke();
         ctx.restore();
     }
 

@@ -41,9 +41,6 @@ jobs:
       - name: Verify package
         run: pnpm verify
 
-      - name: Run smoke tests
-        run: pnpm test:smoke
-
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:

@@ -1,6 +1,9 @@
 import { Direction } from "@/gesture/recognition/DirectionVectorizer";
 import { GestureBindingRegistry } from "./GestureBindingRegistry";
-import { mouseSignature } from "@/gesture/signature";
+import {
+    mouseSignature,
+    type GestureSignatureKey,
+} from "@/gesture/signature";
 import { displayShortcut, detectShortcutPlatform } from "@/shortcuts/shortcutUtils";
 
 /**
@@ -14,6 +17,11 @@ import { displayShortcut, detectShortcutPlatform } from "@/shortcuts/shortcutUti
  */
 export type CommandLabelResolver = (
     directions: readonly Direction[],
+) => string | null;
+
+/** Resolve any already-canonical gesture signature to its action label. */
+export type SignatureLabelResolver = (
+    signature: GestureSignatureKey,
 ) => string | null;
 
 /** Options for {@link createCommandLabelResolver}. */
@@ -49,12 +57,28 @@ export function createCommandLabelResolver(
     options: CommandLabelResolverOptions = {},
 ): CommandLabelResolver {
     const button = options.button ?? 2;
-    const commandTitles = options.commandTitles;
-    const shortcutPrefixKey = options.shortcutPrefixKey ?? "overlayShortcutPrefix";
+    const resolveSignature = createSignatureLabelResolver(bindings, i18n, options);
 
     return (directions: readonly Direction[]): string | null => {
         if (directions.length === 0) return null;
-        const resolved = bindings.resolve(mouseSignature(button, directions));
+        return resolveSignature(mouseSignature(button, directions));
+    };
+}
+
+/**
+ * Source-agnostic action label resolver used by both mouse and touchpad
+ * feedback. The signature has already encoded the input source and gesture.
+ */
+export function createSignatureLabelResolver(
+    bindings: GestureBindingRegistry,
+    i18n: Record<string, string>,
+    options: CommandLabelResolverOptions = {},
+): SignatureLabelResolver {
+    const commandTitles = options.commandTitles;
+    const shortcutPrefixKey = options.shortcutPrefixKey ?? "overlayShortcutPrefix";
+
+    return (signature: GestureSignatureKey): string | null => {
+        const resolved = bindings.resolve(signature);
         if (!resolved) return null;
         const action = resolved.binding.action;
 

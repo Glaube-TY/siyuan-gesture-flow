@@ -19,6 +19,9 @@ export const GITHUB_URL = "https://github.com/Glaube-TY";
 export const REPO_URL = "https://github.com/Glaube-TY/siyuan-gesture-flow";
 /** Issues / feedback. */
 export const ISSUES_URL = "https://github.com/Glaube-TY/siyuan-gesture-flow/issues";
+/** Microsoft reference for the built-in Windows touchpad gesture language. */
+export const WINDOWS_TOUCHPAD_GESTURES_URL =
+    "https://support.microsoft.com/windows/hardware/input-devices/touch-gestures-for-windows";
 
 /**
  * WeChat pay QR image, taken from the donation page (relative path

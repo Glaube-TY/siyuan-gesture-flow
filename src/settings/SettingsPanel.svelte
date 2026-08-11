@@ -11,7 +11,6 @@ import { showSafeConfirm } from "./confirmDialog";
     import SettingRow from "./components/SettingRow.svelte";
     import AboutPlugin from "./components/AboutPlugin.svelte";
     import BindingEditor from "./components/BindingEditor.svelte";
-    import TouchpadPanel from "./components/TouchpadPanel.svelte";
     import type { SettingCommandItem } from "./commandCatalog";
     import { catalogCommandIds } from "./commandCatalog";
     import { directionSymbol } from "./directionLabels";
@@ -45,7 +44,7 @@ import { showSafeConfirm } from "./confirmDialog";
     export let onStatus: (message: string, isError: boolean) => void = () => {};
 
     let config: GestureFlowConfig = configManager.getConfig();
-    let activeTab: "general" | "recognition" | "display" | "bindings" | "touchpad" | "data" | "about" = "general";
+    let activeTab: "general" | "recognition" | "display" | "bindings" | "data" | "about" = "general";
 
     /** Debounced patch scheduler — merges rapid edits into a single save. */
     let scheduler: DebouncedPatchScheduler | null = null;
@@ -130,6 +129,13 @@ import { showSafeConfirm } from "./confirmDialog";
     function setEnabled(value: boolean): void {
         pendingPatch = { ...pendingPatch, enabled: value };
         config = { ...config, enabled: value };
+        scheduleSave();
+    }
+
+    function setTouchpadEnabled(value: boolean): void {
+        const touchpad = { ...config.touchpad, enabled: value };
+        pendingPatch = { ...pendingPatch, touchpad };
+        config = { ...config, touchpad };
         scheduleSave();
     }
 
@@ -354,7 +360,6 @@ import { showSafeConfirm } from "./confirmDialog";
         { key: "recognition", label: () => i18n.settingsTabRecognition ?? "Recognition" },
         { key: "display", label: () => i18n.settingsTabDisplay ?? "Display" },
         { key: "bindings", label: () => i18n.settingsTabBindings ?? "Bindings" },
-        { key: "touchpad", label: () => i18n.settingsTabTouchpad ?? "Touchpad" },
         { key: "data", label: () => i18n.settingsTabData ?? "Data" },
         { key: "about", label: () => i18n.settingsTabAbout ?? "About" },
     ] as const;
@@ -507,6 +512,9 @@ import { showSafeConfirm } from "./confirmDialog";
         if (spec.kind === "shape" || spec.kind === "anchorDraw") {
             return spec.directions.map(directionSymbol).join("");
         }
+        if (spec.kind === "multiShape") {
+            return spec.paths.map((path) => path.map(directionSymbol).join("")).join(" + ");
+        }
         return touchpadKindLabel(spec.kind, i18n);
     }
 
@@ -641,13 +649,24 @@ import { showSafeConfirm } from "./confirmDialog";
                 <SettingRow
                     title={i18n.settingsEnabled ?? "Enable gestures"}
                     description={i18n.settingsEnabledDesc ?? ""}
-                    last
                 >
                     <input
                         type="checkbox"
                         class="b3-switch"
                         checked={config.enabled}
                         on:change={(e) => setEnabled(e.currentTarget.checked)}
+                    />
+                </SettingRow>
+                <SettingRow
+                    title={i18n.tpEnable ?? "启用触控板手势"}
+                    description={i18n.tpEnableDesc ?? ""}
+                    last
+                >
+                    <input
+                        type="checkbox"
+                        class="b3-switch"
+                        checked={config.touchpad.enabled}
+                        on:change={(e) => setTouchpadEnabled(e.currentTarget.checked)}
                     />
                 </SettingRow>
             </SettingSection>
@@ -937,15 +956,6 @@ import { showSafeConfirm } from "./confirmDialog";
                     {/if}
                 {/if}
             </SettingSection>
-        {/if}
-
-        {#if activeTab === "touchpad"}
-            <TouchpadPanel
-                {configManager}
-                {i18n}
-                {config}
-                {onStatus}
-            />
         {/if}
 
         {#if activeTab === "data"}

@@ -18,3 +18,4 @@ tmp
 native/gesture_flow_touchpad.node
 native/touchpad/build/
 native/touchpad/build_env.gypi
+.codegraph

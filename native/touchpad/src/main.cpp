@@ -3,6 +3,8 @@
 #include <windows.h>
 
 #include <algorithm>
+#include <array>
+#include <atomic>
 #include <memory>
 #include <string>
 #include <vector>
@@ -20,7 +22,8 @@ RawInputCapture g_rawCapture;
 GesturesController g_controller;
 bool g_started = false;
 bool g_rawActive = false;
-int g_maxContactsSeen = 0;
+std::atomic<int> g_maxContactsSeen{0};
+std::atomic<unsigned long> g_deliveryQueueDropCount{0};
 
 // Compile-time build identifier so the settings page can confirm which .node
 // binary is actually loaded (not a release version).
@@ -34,6 +37,13 @@ double NowMsDouble() {
 void SetInt(napi_value obj, const char* name, int value);
 void SetBool(napi_value obj, const char* name, bool value);
 void SetStr(napi_value obj, const char* name, const char* value);
+
+void UpdateMaxContactsSeen(int value) {
+  int current = g_maxContactsSeen.load();
+  while (value > current &&
+         !g_maxContactsSeen.compare_exchange_weak(current, value)) {
+  }
+}
 
 // ------------------------------------------------------------- probe helpers
 
@@ -72,8 +82,8 @@ NativeCapabilities ProbeCapabilities() {
   caps.rawContacts = g_rawActive;
   // Raw multi-contact input is available once the HID descriptor contact map
   // has been parsed (independent of the Windows 11 controller).
-  const TouchpadDescriptor& desc = g_rawCapture.descriptor();
-  caps.multiContactGestures = desc.valid && desc.contacts.size() > 0;
+  const TouchpadDescriptorStatus desc = g_rawCapture.descriptorStatus();
+  caps.multiContactGestures = desc.valid && desc.contactFieldCount > 0;
   if (desc.maxContacts > 0) caps.maxContacts = desc.maxContacts;
   if (caps.gesturesControllerAvailable) {
     caps.supportedGestureFingerCounts = {3, 4, 5};
@@ -89,21 +99,25 @@ void EmitFrame(NativeFrame* frame) {
     delete frame;
     return;
   }
-  napi_call_threadsafe_function(g_tsfn, frame, napi_tsfn_blocking);
+  // A bounded non-blocking queue prevents a stalled renderer from blocking
+  // the Raw Input thread or growing native memory without limit.
+  napi_status status =
+      napi_call_threadsafe_function(g_tsfn, frame, napi_tsfn_nonblocking);
+  if (status != napi_ok) {
+    g_deliveryQueueDropCount.fetch_add(1);
+    delete frame;
+  }
 }
 
 void OnRawFrame(const NativeFrame& frame) {
-  if (frame.contactCount > g_maxContactsSeen) g_maxContactsSeen = frame.contactCount;
-  if (!frame.contacts.empty() &&
-      static_cast<int>(frame.contacts.size()) > g_maxContactsSeen) {
-    g_maxContactsSeen = static_cast<int>(frame.contacts.size());
-  }
+  UpdateMaxContactsSeen(frame.contactCount);
+  UpdateMaxContactsSeen(static_cast<int>(frame.contacts.size()));
   auto* f = new NativeFrame(frame);
   EmitFrame(f);
 }
 
 void OnPointer(int contactCount, double timestamp, double x, double y) {
-  if (contactCount > g_maxContactsSeen) g_maxContactsSeen = contactCount;
+  UpdateMaxContactsSeen(contactCount);
   auto* f = new NativeFrame();
   f->timestamp = timestamp;
   f->contactCount = contactCount;
@@ -202,9 +216,43 @@ void CallJsFrame(napi_env env, napi_value js_cb, void* /*context*/, void* data) 
 
 // ------------------------------------------------------------- N-API exports
 
+void ReadFingerCounts(napi_env env, napi_value options, const char* name,
+                      std::array<bool, 3>& out) {
+  bool has = false;
+  if (napi_has_named_property(env, options, name, &has) != napi_ok || !has) return;
+  napi_value value;
+  if (napi_get_named_property(env, options, name, &value) != napi_ok) return;
+  bool isArray = false;
+  if (napi_is_array(env, value, &isArray) != napi_ok || !isArray) return;
+  uint32_t length = 0;
+  if (napi_get_array_length(env, value, &length) != napi_ok) return;
+  for (uint32_t i = 0; i < length; ++i) {
+    napi_value item;
+    int32_t count = 0;
+    if (napi_get_element(env, value, i, &item) == napi_ok &&
+        napi_get_value_int32(env, item, &count) == napi_ok &&
+        count >= 3 && count <= 5) {
+      out[static_cast<size_t>(count - 3)] = true;
+    }
+  }
+}
+
+GesturesControllerConfig ReadControllerConfig(napi_env env, size_t argc,
+                                              napi_value* args) {
+  GesturesControllerConfig config;
+  if (argc < 2) return config;
+  napi_valuetype type = napi_undefined;
+  if (napi_typeof(env, args[1], &type) != napi_ok || type != napi_object) {
+    return config;
+  }
+  ReadFingerCounts(env, args[1], "manipulationFingerCounts", config.manipulations);
+  ReadFingerCounts(env, args[1], "actionFingerCounts", config.actions);
+  return config;
+}
+
 napi_value Start(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value args[1];
+  size_t argc = 2;
+  napi_value args[2];
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
   if (argc < 1) {
     napi_throw_type_error(env, nullptr, "start(callback) requires a callback");
@@ -224,17 +272,19 @@ napi_value Start(napi_env env, napi_callback_info info) {
   g_env = env;
   napi_value resourceName;
   napi_create_string_utf8(env, "GestureFlowTouchpad", NAPI_AUTO_LENGTH, &resourceName);
-  if (napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 0, 1, nullptr,
+  if (napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 256, 1, nullptr,
                                       nullptr, nullptr, CallJsFrame, &g_tsfn) != napi_ok) {
     napi_throw_error(env, nullptr, "failed to create thread-safe function");
     return nullptr;
   }
 
   g_started = true;
+  const GesturesControllerConfig controllerConfig =
+      ReadControllerConfig(env, argc, args);
   // Raw Input contact frames (best effort).
   g_rawActive = g_rawCapture.Start(OnRawFrame);
   // TouchpadGesturesController 3/4/5-finger actions (best effort).
-  g_controller.Start(OnPointer, OnAction);
+  g_controller.Start(OnPointer, OnAction, controllerConfig);
 
   napi_value undef;
   napi_get_undefined(env, &undef);
@@ -263,19 +313,21 @@ napi_value Stop(napi_env env, napi_callback_info info) {
 
 napi_value GetCapabilities(napi_env env, napi_callback_info info) {
   (void)info;
+  g_env = env;
   NativeCapabilities caps = ProbeCapabilities();
   napi_value out;
   napi_create_object(env, &out);
   napi_value v;
   napi_get_boolean(env, caps.precisionTouchpad, &v);
   napi_set_named_property(env, out, "precisionTouchpad", v);
-  napi_create_int32(env, std::max(caps.maxContacts, g_maxContactsSeen), &v);
+  const int maxContactsSeen = g_maxContactsSeen.load();
+  napi_create_int32(env, std::max(caps.maxContacts, maxContactsSeen), &v);
   napi_set_named_property(env, out, "maxContacts", v);
   // Separate the authoritative hardware cap (descriptor / Feature report)
   // from the runtime observed max so the JS layer never conflates them.
   napi_create_int32(env, caps.maxContacts, &v);
   napi_set_named_property(env, out, "hardwareMaxContacts", v);
-  napi_create_int32(env, g_maxContactsSeen, &v);
+  napi_create_int32(env, maxContactsSeen, &v);
   napi_set_named_property(env, out, "observedMaxContacts", v);
   napi_get_boolean(env, caps.gesturesControllerAvailable, &v);
   napi_set_named_property(env, out, "gesturesControllerAvailable", v);
@@ -370,7 +422,7 @@ napi_value GetDiagnostics(napi_env env, napi_callback_info info) {
   SetStr(out, "buildId", kNativeBuildId);
 
   // --- capture (independent of descriptor parse success) -------------------
-  const RawCaptureDiagnostics& cd = g_rawCapture.captureDiag();
+  const RawCaptureDiagnostics cd = g_rawCapture.captureDiagSnapshot();
   napi_value capture;
   napi_create_object(env, &capture);
   SetInt(capture, "wmInputCount", static_cast<int>(cd.wmInputCount));
@@ -384,12 +436,18 @@ napi_value GetDiagnostics(napi_env env, napi_callback_info info) {
   SetInt(capture, "descriptorParseAttemptCount", static_cast<int>(cd.descriptorParseAttemptCount));
   SetInt(capture, "descriptorParseSuccessCount", static_cast<int>(cd.descriptorParseSuccessCount));
   SetInt(capture, "descriptorParseFailureCount", static_cast<int>(cd.descriptorParseFailureCount));
+  SetInt(capture, "deviceContextCount", static_cast<int>(cd.deviceContextCount));
+  SetInt(capture, "deviceSwitchCount", static_cast<int>(cd.deviceSwitchCount));
+  SetInt(capture, "deviceArrivalCount", static_cast<int>(cd.deviceArrivalCount));
+  SetInt(capture, "deviceRemovalCount", static_cast<int>(cd.deviceRemovalCount));
   SetInt(capture, "callbackDeliveryCount", static_cast<int>(cd.callbackDeliveryCount));
   SetInt(capture, "invalidFrameDropCount", static_cast<int>(cd.invalidFrameDropCount));
+  SetInt(capture, "deliveryQueueDropCount",
+         static_cast<int>(g_deliveryQueueDropCount.load()));
   napi_set_named_property(env, out, "capture", capture);
 
   // --- descriptor (structured, even when the parse failed) -----------------
-  const TouchpadDescriptor& d = g_rawCapture.descriptor();
+  const TouchpadDescriptor d = g_rawCapture.descriptorSnapshot();
   napi_value desc;
   napi_create_object(env, &desc);
   SetBool(desc, "parsed", d.valid);
@@ -481,7 +539,7 @@ napi_value GetDiagnostics(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, out, "descriptor", desc);
 
   // --- assembler stats -----------------------------------------------------
-  const ParserStats& s = g_rawCapture.parserStats();
+  const ParserStats s = g_rawCapture.parserStatsSnapshot();
   napi_value asm_;
   napi_create_object(env, &asm_);
   SetInt(asm_, "lastReportId", s.lastReportId);

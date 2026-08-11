@@ -60,11 +60,13 @@ bool GesturesController::IsAvailable() {
 #endif
 }
 
-bool GesturesController::Start(PointerCallback onPointer, ActionCallback onAction) {
+bool GesturesController::Start(PointerCallback onPointer, ActionCallback onAction,
+                               const GesturesControllerConfig& config) {
   if (running_) return true;
-  if (!IsAvailable()) return false;
+  if (!config.any() || !IsAvailable()) return false;
   onPointer_ = std::move(onPointer);
   onAction_ = std::move(onAction);
+  config_ = config;
   enabled_ = false;
   running_ = true;
   thread_ = CreateThread(nullptr, 0, &GesturesController::ThreadProc, this, 0, nullptr);
@@ -102,15 +104,16 @@ void GesturesController::RunLoop() {
   try {
     using namespace winrt::Windows::UI::Input;
     auto controller = TouchpadGesturesController::CreateForProcess();
-    // Take over the system's 3/4/5-finger gestures (manipulations + actions).
-    TouchpadGesturesConfiguration config;
-    config |= TouchpadGesturesConfiguration::ThreeFingerManipulations;
-    config |= TouchpadGesturesConfiguration::FourFingerManipulations;
-    config |= TouchpadGesturesConfiguration::FiveFingerManipulations;
-    config |= TouchpadGesturesConfiguration::ThreeFingerActions;
-    config |= TouchpadGesturesConfiguration::FourFingerActions;
-    config |= TouchpadGesturesConfiguration::FiveFingerActions;
-    controller.SupportedGestures(config);
+    // Take over ONLY finger counts/kinds with enabled GestureFlow bindings.
+    // Claiming all flags here used to swallow unrelated Windows gestures.
+    TouchpadGesturesConfiguration supported{};
+    if (config_.manipulations[0]) supported |= TouchpadGesturesConfiguration::ThreeFingerManipulations;
+    if (config_.manipulations[1]) supported |= TouchpadGesturesConfiguration::FourFingerManipulations;
+    if (config_.manipulations[2]) supported |= TouchpadGesturesConfiguration::FiveFingerManipulations;
+    if (config_.actions[0]) supported |= TouchpadGesturesConfiguration::ThreeFingerActions;
+    if (config_.actions[1]) supported |= TouchpadGesturesConfiguration::FourFingerActions;
+    if (config_.actions[2]) supported |= TouchpadGesturesConfiguration::FiveFingerActions;
+    controller.SupportedGestures(supported);
     controller.Enabled(true);
     winrt::event_token tokenPressed =
         controller.PointerPressed([this](auto&&, auto&& args) {          if (!running_) return;

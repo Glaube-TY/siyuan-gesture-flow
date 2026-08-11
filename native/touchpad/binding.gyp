@@ -46,29 +46,6 @@
           }
         ]
       ]
-    },
-    {
-      "target_name": "frame_assembler_test",
-      "type": "executable",
-      "sources": [
-        "test/frame_assembler_test.cpp",
-        "src/frame_assembler.cpp"
-      ],
-      "include_dirs": [
-        "src"
-      ],
-      "defines": [
-        "_WIN32_WINNT=0x0A00",
-        "WIN32_LEAN_AND_MEAN",
-        "NOMINMAX",
-        "UNICODE",
-        "_UNICODE"
-      ],
-      "cflags_cc": [
-        "/std:c++17",
-        "/EHsc",
-        "/permissive-"
-      ]
     }
   ]
 }

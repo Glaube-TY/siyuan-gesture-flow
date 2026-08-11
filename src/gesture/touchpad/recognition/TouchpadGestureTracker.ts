@@ -5,6 +5,7 @@ import {
     TouchpadGestureKind,
     PinchDirection,
     RotateDirection,
+    canonicalContactPaths,
 } from "@/gesture/touchpad/types";
 import { GestureEngine, DEFAULT_RECOGNIZER_CONFIG } from "@/gesture/GestureEngine";
 import {
@@ -73,6 +74,8 @@ export interface TouchpadRecognitionResult {
     fingerCount: number;
     /** Direction sequence (swipe / shape / anchorDraw). */
     directions: Direction[];
+    /** Present for multiShape: one canonical direction sequence per contact. */
+    contactDirections?: Direction[][];
     /** Present for anchorDraw. */
     anchorCount?: number;
     /** Present for pinch. */
@@ -122,6 +125,13 @@ export interface TouchpadTrackerConfig {
      */
     allowedFingerCounts?: Set<number>;
     /**
+     * Recorder-only acquisition mode: the physical contact count is discovered
+     * from raw frames instead of being capped by a selector/binding set.  If
+     * another finger joins an active candidate, restart from that complete
+     * contact set rather than reporting a fictitious device-limit mismatch.
+     */
+    dynamicFingerCount?: boolean;
+    /**
      * Finger-acquisition settle window (ms): in POSSIBLE, before significant
      * movement, the finger count may settle/upgrade within this window.
      */
@@ -153,6 +163,7 @@ export const DEFAULT_TRACKER_CONFIG: TouchpadTrackerConfig = {
     cooldownMs: 120,
     directionMode: 8,
     minFingerCount: 1,
+    dynamicFingerCount: false,
     settleWindowMs: 80,
     anchorPreHoldMs: 220,
     maxTrailPoints: 256,
@@ -215,16 +226,51 @@ function sampleDisplayPoints(
     max: number,
 ): { x: number; y: number }[] {
     if (points.length === 0) return [];
+    if (max <= 1) {
+        const last = points[points.length - 1];
+        return [{ x: last.x, y: last.y }];
+    }
     if (points.length <= max) {
         return points.map((p) => ({ x: p.x, y: p.y }));
     }
-    const stride = points.length / max;
+    // Include both endpoints. The previous stride formula stopped one sample
+    // short, which made the rendered line visibly lag behind the contact dot.
+    const lastIndex = points.length - 1;
     const out: { x: number; y: number }[] = [];
     for (let i = 0; i < max; i++) {
-        const idx = Math.min(points.length - 1, Math.floor(i * stride));
+        const idx = Math.round((i * lastIndex) / (max - 1));
         out.push({ x: points[idx].x, y: points[idx].y });
     }
     return out;
+}
+
+/**
+ * Append a high-rate sample without ever dropping the newest part of a trail.
+ *
+ * Once the configured bound is reached, uniformly compact the older history
+ * (retaining both of its endpoints) and then append the new sample.  The old
+ * implementation simply stopped appending at the bound, which cut off the
+ * end of long gestures -- typically the final turn.
+ */
+function appendBoundedSample<T>(samples: T[], sample: T, maximum: number): void {
+    const limit = Math.max(2, Math.floor(maximum));
+    if (samples.length < limit) {
+        samples.push(sample);
+        return;
+    }
+
+    const keepCount = Math.max(1, Math.floor(limit / 2));
+    const previousLastIndex = samples.length - 1;
+    const compacted: T[] = [];
+    if (keepCount === 1) {
+        compacted.push(samples[0]);
+    } else {
+        for (let i = 0; i < keepCount; i++) {
+            const index = Math.round((i * previousLastIndex) / (keepCount - 1));
+            compacted.push(samples[index]);
+        }
+    }
+    samples.splice(0, samples.length, ...compacted, sample);
 }
 
 interface GestureRun {
@@ -234,10 +280,14 @@ interface GestureRun {
     /** Per-contact sampled trails (id → trail). */
     contactTrails: Map<number, GesturePoint[]>;
     startSpread: number;
+    /** Stable contact-id pair used for rotation; array order may change per frame. */
+    rotationPairIds: readonly [number, number] | null;
     lastAngle: number | null;
     angleAccum: number;
     /** Locked at start — never changes during the physical gesture. */
     fingerCount: number;
+    /** Unbound intermediate count seen while waiting for a higher allowed one. */
+    pendingHigherCount: number | null;
     /**
      * The most recent contact frame with the FULL locked finger count.
      * Classification uses this, never the staggered-release tail.
@@ -289,6 +339,7 @@ export const AUTO_RECORD_KINDS: Set<TouchpadGestureKind> = new Set([
     "pinch",
     "rotate",
     "anchorDraw",
+    "multiShape",
     "shape",
 ]);
 
@@ -523,6 +574,16 @@ export class TouchpadGestureTracker {
             // All fingers lifted without a stagger — complete now and cool
             // down directly (no release tail to wait for).
             if (this.stage === "POSSIBLE" || this.stage === "TRACKING") {
+                if (this.run && this.run.pendingHigherCount !== null) {
+                    // Example: allowed={3,5}, observed 3→4→0.  Four fingers
+                    // physically participated, so it must never fall back and
+                    // dispatch the 3-finger binding.
+                    const result = this.noMatch(this.run.fingerCount);
+                    this.run = null;
+                    this.currentKind = null;
+                    this.enterCooldown(now);
+                    return result;
+                }
                 const result = this.finishRun(now);
                 this.enterCooldown(now);
                 return result;
@@ -543,6 +604,10 @@ export class TouchpadGestureTracker {
         if (this.stage === "POSSIBLE") {
             const run = this.run;
             if (!run) return null;
+            if (run.pendingHigherCount !== null && count <= run.fingerCount) {
+                this.mismatchAndWait("too-few", contacts, now);
+                return null;
+            }
             if (count === run.fingerCount) {
                 this.updateRun(contacts, now);
                 return null;
@@ -552,6 +617,14 @@ export class TouchpadGestureTracker {
                     // e.g. 3 → 4 before movement, and 4 is allowed: re-arm at
                     // the higher count (pre-roll discarded).
                     this.beginRun(contacts, now);
+                    return null;
+                }
+                if (this.canWaitForHigherAllowedCount(count, run, now)) {
+                    // With bindings such as {3, 5}, four contacts are a normal
+                    // intermediate acquisition state on the way to five.  Do
+                    // not reject the physical gesture merely because the
+                    // intermediate count itself has no binding.
+                    run.pendingHigherCount = Math.max(run.pendingHigherCount ?? 0, count);
                     return null;
                 }
                 this.mismatchAndWait("too-many", contacts, now);
@@ -585,6 +658,12 @@ export class TouchpadGestureTracker {
             this.enterWaitRelease(contacts, now, run.fingerCount);
             return result;
         }
+        if (this.config.dynamicFingerCount && this.acquisitionAllowed(count)) {
+            // Recorder mode has no configured maximum. A later finger is part
+            // of the physical gesture, so restart at the actual complete set.
+            this.beginRun(contacts, now);
+            return null;
+        }
         // count > locked → finger-count mismatch.
         this.mismatchAndWait("too-many", contacts, now);
         return null;
@@ -608,11 +687,27 @@ export class TouchpadGestureTracker {
 
     /** Whether the count may upgrade during POSSIBLE (settle window). */
     private canUpgradeCount(count: number, run: GestureRun, now: number): boolean {
+        if (this.config.dynamicFingerCount) {
+            return this.acquisitionAllowed(count);
+        }
         if (!this.stillSettling(run, now)) return false;
         if (this.config.requiredFingerCount !== undefined) {
             return count === this.config.requiredFingerCount;
         }
-        return this.config.allowedFingerCounts?.has(count) ?? false;
+        return this.config.allowedFingerCounts?.has(count) ?? this.acquisitionAllowed(count);
+    }
+
+    /** Whether an unbound intermediate count may still grow into a bound one. */
+    private canWaitForHigherAllowedCount(count: number, run: GestureRun, now: number): boolean {
+        if (!this.stillSettling(run, now) || this.config.requiredFingerCount !== undefined) {
+            return false;
+        }
+        const allowed = this.config.allowedFingerCounts;
+        if (!allowed) return false;
+        for (const allowedCount of allowed) {
+            if (allowedCount > count) return true;
+        }
+        return false;
     }
 
     /** True while the fingers are still settling (no significant movement yet). */
@@ -640,6 +735,7 @@ export class TouchpadGestureTracker {
             contactTrails.set(contact.id, [{ x: contact.x, y: contact.y, t: now }]);
         }
         const preQualifiedAnchorIds = this.snapshotPreQualifiedAnchors(contacts, now);
+        const rotationPairIds = farthestContactPairIds(contacts);
         // Pre-acquisition history is consumed by the run snapshot.
         this.preContacts.clear();
         this.run = {
@@ -648,9 +744,13 @@ export class TouchpadGestureTracker {
             centroidPath: [{ x: c.x, y: c.y, t: now }],
             contactTrails,
             startSpread: pairwiseSpread(contacts),
-            lastAngle: null,
+            rotationPairIds,
+            // Seed the angle from the acquisition frame.  Starting at null
+            // silently discarded the first (often largest) rotation segment.
+            lastAngle: rotationPairIds ? headingForContactPair(contacts, rotationPairIds) : null,
             angleAccum: 0,
             fingerCount: contacts.length,
+            pendingHigherCount: null,
             lastFullContacts: contacts.map((ct) => ({ ...ct })),
             fullContactFrames: [{ timestamp: now, contacts: contacts.map((ct) => ({ id: ct.id, x: ct.x, y: ct.y })) }],
             preQualifiedAnchorIds,
@@ -714,36 +814,31 @@ export class TouchpadGestureTracker {
         run.lastFullContacts = contacts.map((c) => ({ ...c }));
 
         // Bounded full-contact frame history (for moving-group centroid path).
-        if (run.fullContactFrames.length < this.config.maxTrailPoints) {
-            run.fullContactFrames.push({
-                timestamp: now,
-                contacts: contacts.map((c) => ({ id: c.id, x: c.x, y: c.y })),
-            });
-        }
+        // Compact old samples when full so late motion is never truncated.
+        appendBoundedSample(run.fullContactFrames, {
+            timestamp: now,
+            contacts: contacts.map((c) => ({ id: c.id, x: c.x, y: c.y })),
+        }, this.config.maxTrailPoints);
 
         const c = centroid(contacts);
-        if (run.centroidPath.length < this.config.maxTrailPoints) {
-            run.centroidPath.push({ x: c.x, y: c.y, t: now });
-        }
+        appendBoundedSample(run.centroidPath, { x: c.x, y: c.y, t: now }, this.config.maxTrailPoints);
 
         for (const contact of contacts) {
             const trail = run.contactTrails.get(contact.id);
             if (trail) {
-                if (trail.length < this.config.maxTrailPoints) {
-                    trail.push({ x: contact.x, y: contact.y, t: now });
-                }
+                appendBoundedSample(trail, { x: contact.x, y: contact.y, t: now }, this.config.maxTrailPoints);
             } else {
                 run.contactTrails.set(contact.id, [{ x: contact.x, y: contact.y, t: now }]);
             }
         }
 
         // Rotation accumulation (unwrap-safe).
-        if (contacts.length >= 2) {
-            const a = heading(contacts[0], contacts[1]);
-            if (run.lastAngle !== null) {
+        if (contacts.length >= 2 && run.rotationPairIds) {
+            const a = headingForContactPair(contacts, run.rotationPairIds);
+            if (a !== null && run.lastAngle !== null) {
                 run.angleAccum += angleDelta(run.lastAngle, a);
             }
-            run.lastAngle = a;
+            if (a !== null) run.lastAngle = a;
         }
 
         // Stage transitions.
@@ -790,6 +885,12 @@ export class TouchpadGestureTracker {
         if ((all || kinds?.has("anchorDraw")) && isAnchor && cPathLen >= cfg.anchorDrawActivation) {
             return "anchorDraw";
         }
+        if ((all || kinds?.has("rotate")) && contacts.length >= 2 && Math.abs(run.angleAccum) >= (cfg.rotateThresholdDeg * Math.PI) / 180) {
+            return "rotate";
+        }
+        if ((all || kinds?.has("multiShape")) && this.recognizeMultiShape(run)) {
+            return "multiShape";
+        }
         if ((all || kinds?.has("pinch")) && contacts.length >= 2) {
             const spread = pairwiseSpread(contacts);
             if (run.startSpread > 0) {
@@ -798,9 +899,6 @@ export class TouchpadGestureTracker {
                     return "pinch";
                 }
             }
-        }
-        if ((all || kinds?.has("rotate")) && contacts.length >= 2 && Math.abs(run.angleAccum) >= (cfg.rotateThresholdDeg * Math.PI) / 180) {
-            return "rotate";
         }
         if ((all || kinds?.has("swipe")) && cPathLen >= cfg.swipeMinDistance && straightness(run.centroidPath) >= 0.7) {
             return "swipe";
@@ -995,19 +1093,6 @@ export class TouchpadGestureTracker {
             }
         }
 
-        // --- pinch ---
-        if (this.wants(all, kinds, "pinch") && run.fingerCount >= 2) {
-            if (finalSpreadValue > 0 && run.startSpread > 0) {
-                const ratio = finalSpreadValue / run.startSpread;
-                if (ratio >= 1 + cfg.pinchThreshold) {
-                    return { valid: true, kind: "pinch", fingerCount: run.fingerCount, directions: [], pinchDirection: "out", points: trail() };
-                }
-                if (ratio <= 1 - cfg.pinchThreshold) {
-                    return { valid: true, kind: "pinch", fingerCount: run.fingerCount, directions: [], pinchDirection: "in", points: trail() };
-                }
-            }
-        }
-
         // --- rotate ---
         if (this.wants(all, kinds, "rotate") && run.fingerCount >= 2) {
             const absAngle = Math.abs(run.angleAccum);
@@ -1020,6 +1105,37 @@ export class TouchpadGestureTracker {
                     rotateDirection: run.angleAccum > 0 ? "cw" : "ccw",
                     points: trail(),
                 };
+            }
+        }
+
+        // --- independent per-contact paths ---
+        // Runs before pinch so combined translations such as DL + DR are
+        // preserved as custom patterns.  A pure two-finger pinch is detected
+        // and excluded by recognizeMultiShape(), then handled below.
+        if (this.wants(all, kinds, "multiShape")) {
+            const paths = this.recognizeMultiShape(run);
+            if (paths) {
+                return {
+                    valid: true,
+                    kind: "multiShape",
+                    fingerCount: run.fingerCount,
+                    directions: [],
+                    contactDirections: paths,
+                    points: trail(),
+                };
+            }
+        }
+
+        // --- pinch ---
+        if (this.wants(all, kinds, "pinch") && run.fingerCount >= 2) {
+            if (finalSpreadValue > 0 && run.startSpread > 0) {
+                const ratio = finalSpreadValue / run.startSpread;
+                if (ratio >= 1 + cfg.pinchThreshold) {
+                    return { valid: true, kind: "pinch", fingerCount: run.fingerCount, directions: [], pinchDirection: "out", points: trail() };
+                }
+                if (ratio <= 1 - cfg.pinchThreshold) {
+                    return { valid: true, kind: "pinch", fingerCount: run.fingerCount, directions: [], pinchDirection: "in", points: trail() };
+                }
             }
         }
 
@@ -1148,6 +1264,45 @@ export class TouchpadGestureTracker {
         return this.pathRecognizer(points, this.config.directionMode);
     }
 
+    /** Recognise an unordered set of genuinely different moving contact paths. */
+    private recognizeMultiShape(run: GestureRun): Direction[][] | null {
+        if (run.fingerCount < 2 || run.contactTrails.size !== run.fingerCount) return null;
+        const paths: Direction[][] = [];
+        const lengths: number[] = [];
+        for (const contactTrail of run.contactTrails.values()) {
+            const length = pathLength(contactTrail);
+            if (length < this.config.shapeMinPathLength * 0.75) return null;
+            // Per-contact patterns always need diagonal fidelity.  Reusing a
+            // global four-direction setting would collapse DL + DR into the
+            // same downward motion and destroy the custom gesture's identity.
+            const directions = this.pathRecognizer(contactTrail, 8);
+            if (directions.length === 0) return null;
+            paths.push(directions);
+            lengths.push(length);
+        }
+        const canonical = canonicalContactPaths(paths);
+        if (new Set(canonical.map((path) => path.join("-"))).size < 2) {
+            return null; // all contacts moved together: normal pan/swipe/shape
+        }
+        if (run.fingerCount === 2 && this.looksLikePureTwoFingerPinch(run, lengths)) {
+            return null;
+        }
+        return canonical;
+    }
+
+    /** Keep the system's ordinary two-finger zoom out of multiShape. */
+    private looksLikePureTwoFingerPinch(run: GestureRun, contactLengths: readonly number[]): boolean {
+        if (run.startSpread <= 0) return false;
+        const finalSpread = pairwiseSpread(run.lastFullContacts);
+        const ratio = finalSpread / run.startSpread;
+        if (ratio < 1 + this.config.pinchThreshold && ratio > 1 - this.config.pinchThreshold) {
+            return false;
+        }
+        const averageContactLength = contactLengths.reduce((sum, value) => sum + value, 0) / contactLengths.length;
+        const centroidTravel = pathLength(run.centroidPath);
+        return centroidTravel < Math.max(this.config.shapeMinPathLength * 0.5, averageContactLength * 0.35);
+    }
+
     private wants(all: boolean, kinds: Set<TouchpadGestureKind> | null, kind: TouchpadGestureKind): boolean {
         return all || (kinds?.has(kind) ?? false);
     }
@@ -1163,6 +1318,41 @@ export class TouchpadGestureTracker {
     private noMatch(fingerCount: number): TouchpadRecognitionResult {
         return { valid: false, kind: "tap", fingerCount, directions: [], invalidReason: "too-short" };
     }
+}
+
+/** Pick a stable, low-jitter rotation baseline: the farthest contact-id pair. */
+function farthestContactPairIds(
+    contacts: readonly Pick<TouchpadContact, "id" | "x" | "y">[],
+): readonly [number, number] | null {
+    if (contacts.length < 2) return null;
+    let best: readonly [number, number] | null = null;
+    let bestDistance = -1;
+    for (let i = 0; i < contacts.length; i++) {
+        for (let j = i + 1; j < contacts.length; j++) {
+            const a = contacts[i];
+            const b = contacts[j];
+            const ids: readonly [number, number] = a.id <= b.id ? [a.id, b.id] : [b.id, a.id];
+            const distance = Math.hypot(b.x - a.x, b.y - a.y);
+            if (
+                distance > bestDistance ||
+                (distance === bestDistance && best !== null && (ids[0] < best[0] || (ids[0] === best[0] && ids[1] < best[1])))
+            ) {
+                best = ids;
+                bestDistance = distance;
+            }
+        }
+    }
+    return best;
+}
+
+/** Heading for a stable id pair, independent of provider contact-array order. */
+function headingForContactPair(
+    contacts: readonly Pick<TouchpadContact, "id" | "x" | "y">[],
+    ids: readonly [number, number],
+): number | null {
+    const a = contacts.find((c) => c.id === ids[0]);
+    const b = contacts.find((c) => c.id === ids[1]);
+    return a && b ? heading(a, b) : null;
 }
 
 /**

@@ -11,6 +11,7 @@ namespace gestureflow {
 
 namespace {
 constexpr USHORT kTouchpadUsage = 0x05;
+constexpr UINT kShutdownMessage = WM_APP + 0x475;
 
 double NowSeconds() {
   using namespace std::chrono;
@@ -34,6 +35,13 @@ RawInputCapture::~RawInputCapture() { Stop(); }
 bool RawInputCapture::Start(FrameCallback callback) {
   if (running_) return true;
   callback_ = std::move(callback);
+  {
+    std::lock_guard<std::mutex> lock(stateMutex_);
+    // A restart begins a new physical acquisition epoch.  Retaining a pending
+    // hybrid frame or previous-contact latch across plugin restarts can emit a
+    // bogus continuation/empty frame into the new tracker.
+    InvalidateDescriptor();
+  }
   startEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   if (!startEvent_) return false;
   running_ = true;
@@ -45,7 +53,21 @@ bool RawInputCapture::Start(FrameCallback callback) {
     return false;
   }
   // Wait for the thread to create the window and register Raw Input.
-  WaitForSingleObject(startEvent_, 3000);
+  DWORD startWait = WaitForSingleObject(startEvent_, 3000);
+  if (startWait != WAIT_OBJECT_0) {
+    running_ = false;
+    // Do not close startEvent_ until the setup thread is gone: it may still be
+    // about to signal the handle.
+    PostThreadMessageW(GetThreadId(thread_), WM_QUIT, 0, 0);
+    DWORD wait = WaitForSingleObject(thread_, 1000);
+    if (wait == WAIT_TIMEOUT) TerminateThread(thread_, 0);
+    CloseHandle(thread_);
+    thread_ = nullptr;
+    CloseHandle(startEvent_);
+    startEvent_ = nullptr;
+    hwnd_ = nullptr;
+    return false;
+  }
   CloseHandle(startEvent_);
   startEvent_ = nullptr;
   if (!hwnd_) {
@@ -63,7 +85,13 @@ void RawInputCapture::Stop() {
   if (!running_ && !thread_) return;
   running_ = false;
   if (thread_) {
-    PostThreadMessageW(GetThreadId(thread_), WM_QUIT, 0, 0);
+    // Ask the owning thread to unregister + destroy its window.  DestroyWindow
+    // from the JS thread fails because windows are thread-affine.
+    if (hwnd_) {
+      PostMessageW(hwnd_, kShutdownMessage, 0, 0);
+    } else {
+      PostThreadMessageW(GetThreadId(thread_), WM_QUIT, 0, 0);
+    }
     DWORD wait = WaitForSingleObject(thread_, 1500);
     if (wait == WAIT_TIMEOUT) {
       TerminateThread(thread_, 0);
@@ -71,10 +99,7 @@ void RawInputCapture::Stop() {
     CloseHandle(thread_);
     thread_ = nullptr;
   }
-  if (hwnd_) {
-    DestroyWindow(hwnd_);
-    hwnd_ = nullptr;
-  }
+  hwnd_ = nullptr;
 }
 
 /** Runs on the capture thread: create the window + register Raw Input. */
@@ -110,6 +135,15 @@ bool RawInputCapture::RegisterRawInput() {
   return RegisterRawInputDevices(&rid, 1, sizeof(rid)) != FALSE;
 }
 
+void RawInputCapture::UnregisterRawInput() {
+  RAWINPUTDEVICE rid = {};
+  rid.usUsagePage = kDigitizerUsagePage;
+  rid.usUsage = kTouchpadUsage;
+  rid.dwFlags = RIDEV_REMOVE;
+  rid.hwndTarget = nullptr;
+  RegisterRawInputDevices(&rid, 1, sizeof(rid));
+}
+
 void RawInputCapture::PumpMessages() {
   MSG msg;
   while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
@@ -133,13 +167,18 @@ LRESULT CALLBACK RawInputCapture::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
         // Count EVERY WM_INPUT that reaches the window proc, before any
         // parsing, so a parse failure can never hide whether Raw Input data
         // actually arrived.
-        self->captureDiag_.wmInputCount++;
+        self->RecordWmInput();
         self->HandleInput(reinterpret_cast<HRAWINPUT>(lp));
         return 0;
       case WM_INPUT_DEVICE_CHANGE:
-        self->HandleDeviceChange();
+        self->HandleDeviceChange(wp, reinterpret_cast<HANDLE>(lp));
         return 0;
-      case WM_QUIT:
+      case kShutdownMessage:
+        self->UnregisterRawInput();
+        DestroyWindow(hwnd);
+        return 0;
+      case WM_DESTROY:
+        self->hwnd_ = nullptr;
         PostQuitMessage(0);
         return 0;
       default:
@@ -149,23 +188,50 @@ LRESULT CALLBACK RawInputCapture::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
   return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-void RawInputCapture::HandleDeviceChange() {
-  // The touchpad may have been unplugged/replugged -- re-register so capture
-  // resumes when the device comes back, and drop the cached descriptor.
-  if (running_) {
-    InvalidateDescriptor();
-    RegisterRawInput();
+void RawInputCapture::HandleDeviceChange(WPARAM change, HANDLE device) {
+  if (!running_) return;
+  std::lock_guard<std::mutex> lock(stateMutex_);
+
+  // Raw Input registration is usage-wide and survives device arrivals/removals;
+  // registering again here can itself trigger another notification and causes
+  // the descriptor/assembler to restart between every movement sample on some
+  // precision-touchpad drivers.  Arrivals are parsed lazily on their first
+  // WM_INPUT.  Removals discard only that device's state.
+  if (change == GIDC_ARRIVAL) {
+    captureDiag_.deviceArrivalCount++;
+    return;
   }
+  if (change != GIDC_REMOVAL) return;
+
+  captureDiag_.deviceRemovalCount++;
+  if (device != nullptr) {
+    deviceStates_.erase(device);
+    if (diagnosticDevice_ == device) diagnosticDevice_ = nullptr;
+    if (lastInputDevice_ == device) lastInputDevice_ = nullptr;
+  }
+  captureDiag_.deviceContextCount = static_cast<ULONG>(deviceStates_.size());
 }
 
 void RawInputCapture::InvalidateDescriptor() {
-  descriptorValid_ = false;
-  descriptor_ = TouchpadDescriptor();
-  assembler_.Reset();
+  deviceStates_.clear();
+  diagnosticDevice_ = nullptr;
+  lastInputDevice_ = nullptr;
+  captureDiag_.deviceContextCount = 0;
+}
+
+void RawInputCapture::RecordWmInput() {
+  std::lock_guard<std::mutex> lock(stateMutex_);
+  captureDiag_.wmInputCount++;
 }
 
 void RawInputCapture::HandleInput(HRAWINPUT rawInput) {
   if (!callback_ || !running_) return;
+
+  // Descriptor parsing/frame assembly happens on the capture thread while
+  // native.getDiagnostics() runs on the JS thread.  Keep every vector/counter
+  // access synchronized so opening the diagnostics panel cannot race a HID
+  // report and crash the addon.
+  std::lock_guard<std::mutex> lock(stateMutex_);
 
   UINT size = 0;
   if (GetRawInputData(rawInput, RID_INPUT, nullptr, &size, sizeof(RAWINPUTHEADER)) ==
@@ -202,26 +268,41 @@ void RawInputCapture::HandleInput(HRAWINPUT rawInput) {
   captureDiag_.preparsedDataSuccessCount++;
   PHIDP_PREPARSED_DATA preparsed = reinterpret_cast<PHIDP_PREPARSED_DATA>(ppBuffer.data());
 
+  // Descriptors and Hybrid Reporting state are device-specific.  Multiple TLC
+  // handles may interleave even for one physical precision touchpad; preserve
+  // every device's parser instead of resetting the global state on each switch.
+  if (lastInputDevice_ != nullptr && lastInputDevice_ != raw->header.hDevice) {
+    captureDiag_.deviceSwitchCount++;
+  }
+  lastInputDevice_ = raw->header.hDevice;
+  diagnosticDevice_ = raw->header.hDevice;
+  auto [stateIt, inserted] = deviceStates_.try_emplace(raw->header.hDevice);
+  DeviceCaptureState& state = stateIt->second;
+  if (inserted) {
+    state.assembler.Reset();
+    captureDiag_.deviceContextCount = static_cast<ULONG>(deviceStates_.size());
+  }
+
   // Parse the report descriptor once and cache the contact map.  Counters are
   // recorded BEFORE/independent of the parse so failures are diagnosable.
-  if (!descriptorValid_) {
+  if (!state.descriptorValid) {
     captureDiag_.descriptorParseAttemptCount++;
-    descriptor_ = TouchpadDescriptor();
-    DescriptorParseResult result = ParseTouchpadDescriptor(preparsed, descriptor_);
-    descriptorValid_ = result.success;
-    if (descriptorValid_) {
+    state.descriptor = TouchpadDescriptor();
+    DescriptorParseResult result = ParseTouchpadDescriptor(preparsed, state.descriptor);
+    state.descriptorValid = result.success;
+    if (state.descriptorValid) {
       captureDiag_.descriptorParseSuccessCount++;
       // Best-effort read of the real Contact Count Maximum (0x55) from the
       // device Feature report; never fatal if access is denied.
-      if (ReadContactCountMaximum(raw->header.hDevice, preparsed, descriptor_,
-                                  descriptor_.maxContacts)) {
-        descriptor_.maxContactsFromDescriptor = true;
+      if (ReadContactCountMaximum(raw->header.hDevice, preparsed, state.descriptor,
+                                  state.descriptor.maxContacts)) {
+        state.descriptor.maxContactsFromDescriptor = true;
       }
     } else {
       captureDiag_.descriptorParseFailureCount++;
     }
   }
-  if (!descriptorValid_) {
+  if (!state.descriptorValid) {
     return;
   }
 
@@ -235,11 +316,11 @@ void RawInputCapture::HandleInput(HRAWINPUT rawInput) {
   for (DWORD i = 0; i < reportCount; ++i) {
     const BYTE* report = base + i * reportSize;
     RawReport parsed;
-    if (!ParseReport(descriptor_, preparsed, report, reportSize, parsed)) {
+    if (!ParseReport(state.descriptor, preparsed, report, reportSize, parsed)) {
       continue;
     }
     NativeFrame frame;
-    if (assembler_.OnReport(parsed, NowSeconds(), frame)) {
+    if (state.assembler.OnReport(parsed, NowSeconds(), frame)) {
       // Strict invariant: a frame violating contactCount/contacts consistency,
       // non-finite coordinates or unique ids is DROPPED — never sent to JS.
       if (!ValidateNativeFrame(frame)) {
@@ -251,6 +332,46 @@ void RawInputCapture::HandleInput(HRAWINPUT rawInput) {
       captureDiag_.callbackDeliveryCount++;
     }
   }
+}
+
+RawCaptureDiagnostics RawInputCapture::captureDiagSnapshot() const {
+  std::lock_guard<std::mutex> lock(stateMutex_);
+  return captureDiag_;
+}
+
+ParserStats RawInputCapture::parserStatsSnapshot() const {
+  std::lock_guard<std::mutex> lock(stateMutex_);
+  auto selected = deviceStates_.find(diagnosticDevice_);
+  if (selected != deviceStates_.end()) return selected->second.assembler.stats();
+  for (const auto& entry : deviceStates_) {
+    if (entry.second.descriptorValid) return entry.second.assembler.stats();
+  }
+  return ParserStats();
+}
+
+TouchpadDescriptor RawInputCapture::descriptorSnapshot() const {
+  std::lock_guard<std::mutex> lock(stateMutex_);
+  auto selected = deviceStates_.find(diagnosticDevice_);
+  if (selected != deviceStates_.end() && selected->second.descriptorValid) {
+    return selected->second.descriptor;
+  }
+  for (const auto& entry : deviceStates_) {
+    if (entry.second.descriptorValid) return entry.second.descriptor;
+  }
+  return TouchpadDescriptor();
+}
+
+TouchpadDescriptorStatus RawInputCapture::descriptorStatus() const {
+  std::lock_guard<std::mutex> lock(stateMutex_);
+  TouchpadDescriptorStatus status;
+  for (const auto& entry : deviceStates_) {
+    const TouchpadDescriptor& descriptor = entry.second.descriptor;
+    if (!entry.second.descriptorValid) continue;
+    status.valid = true;
+    status.contactFieldCount = std::max(status.contactFieldCount, descriptor.contacts.size());
+    status.maxContacts = std::max(status.maxContacts, descriptor.maxContacts);
+  }
+  return status;
 }
 
 DWORD WINAPI RawInputCapture::ThreadProc(LPVOID param) {

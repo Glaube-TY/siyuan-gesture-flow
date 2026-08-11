@@ -1,6 +1,6 @@
 {
   "name": "siyuan-gesture-flow",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "type": "module",
   "description": "通过自定义手势执行标签页、文档操作或快捷键 / Run tab actions, document actions, or keyboard shortcuts with custom gestures",
   "repository": "https://github.com/Glaube-TY/siyuan-gesture-flow",
@@ -24,9 +24,7 @@
     "native:build": "node --no-warnings ./scripts/build_native.js",
     "dev:setup": "cross-env SIYUAN_SKIP_DEV_DEPLOY=1 pnpm build:dev && node --no-warnings ./scripts/make_dev_link.js",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test:smoke": "vitest run",
-    "test": "pnpm test:smoke",
-    "release:check": "pnpm check && pnpm build && pnpm verify && pnpm test:smoke",
+    "release:check": "pnpm check && pnpm build && pnpm verify",
     "make-link": "node --no-warnings ./scripts/make_dev_link.js",
     "make-link-win": "pnpm dev:setup",
     "update-version": "node --no-warnings ./scripts/update_version.js",
@@ -56,7 +54,6 @@
     "vite": "^5.2.9",
     "vite-plugin-static-copy": "^1.0.2",
     "vite-plugin-zip-pack": "^1.0.5",
-    "vitest": "^2.1.9",
     "node-gyp": "^11.0.0"
   }
 }

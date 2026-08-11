@@ -52,10 +52,9 @@ const DEFAULT_BINDINGS: ConfigBinding[] = [
     },
 ];
 
-/** Default touchpad configuration (safe, conservative thresholds). */
+/** Default touchpad configuration (conservative recognition thresholds). */
 export const DEFAULT_TOUCHPAD_CONFIG: Readonly<TouchpadConfig> = Object.freeze({
     enabled: false,
-    safeMode: true,
     tapMaxDurationMs: 220,
     tapMaxMovement: 0.03,
     holdDurationMs: 500,
@@ -171,6 +170,9 @@ function cloneGesture(gesture: ConfigBinding["gesture"]): ConfigBinding["gesture
     if (spec.kind === "pinch") return { kind: "pinch", fingerCount: spec.fingerCount, direction: spec.direction };
     if (spec.kind === "rotate") return { kind: "rotate", fingerCount: spec.fingerCount, direction: spec.direction };
     if (spec.kind === "shape") return { kind: "shape", fingerCount: spec.fingerCount, directions: spec.directions.slice() };
+    if (spec.kind === "multiShape") {
+        return { kind: "multiShape", fingerCount: spec.fingerCount, paths: spec.paths.map((path) => path.slice()) };
+    }
     if (spec.kind === "anchorDraw") {
         return { kind: "anchorDraw", fingerCount: spec.fingerCount, anchorCount: spec.anchorCount, directions: spec.directions.slice() };
     }

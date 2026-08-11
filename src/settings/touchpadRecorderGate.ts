@@ -1,8 +1,9 @@
 /**
  * Pure release-gate logic for the touchpad recorder's PREPARING state.
  *
- * The recorder must ONLY arm (become ready to accept a new gesture) after a
- * CONFIRMED 0-contact frame plus a short quiet gate.  Mere frame inactivity
+ * The recorder arms (becomes ready to accept a new gesture) after either a
+ * confirmed 0-contact frame or a completed primary click that accounts for a
+ * single stale contact, followed by a short quiet gate.  Mere frame inactivity
  * is never enough: a finger held still on the touchpad may produce no Raw
  * Input frames, so "no frames for a while" ≠ "no fingers".
  *
@@ -33,6 +34,23 @@ export function onGateFrame(state: ReleaseGateState, contactCount: number): Rele
     return {
         zeroContactConfirmed: state.zeroContactConfirmed || contactCount === 0,
         currentContactCount: contactCount,
+    };
+}
+
+/**
+ * Treat a completed primary DOM click as release evidence for at most one
+ * stale native contact. Precision-touchpad drivers do not all emit a final
+ * empty HID frame after the tap/click that activates the recorder panel, but
+ * the browser only dispatches `click` after that primary pointer is released.
+ *
+ * Multiple native contacts are never cleared this way: a mouse click may have
+ * happened while another hand still had fingers on the touchpad.
+ */
+export function onCompletedPrimaryClick(state: ReleaseGateState): ReleaseGateState {
+    if (state.currentContactCount > 1) return state;
+    return {
+        zeroContactConfirmed: true,
+        currentContactCount: 0,
     };
 }
 

@@ -124,6 +124,8 @@ export interface TouchpadCapabilities {
     supportsPress: boolean;
     /** Whether GestureFlow can take over the system 3/4/5-finger gestures. */
     canOverrideSystemGestures: boolean;
+    /** Finger counts actually taken over for the current enabled bindings. */
+    overriddenGestureFingerCounts?: number[];
     /** Observer-only provider: it never consumes/modifies system input. */
     observerMode: boolean;
     /** Human-readable notes (why a capability is missing, etc.). */
@@ -162,8 +164,10 @@ export interface TouchpadParserDiagnostics {
         descriptorParseAttemptCount?: number;
         descriptorParseSuccessCount?: number;
         descriptorParseFailureCount?: number;
-        callbackDeliveryCount?: number;
-    };
+         callbackDeliveryCount?: number;
+         /** Frames dropped because the bounded JS delivery queue was full/closing. */
+         deliveryQueueDropCount?: number;
+     };
     descriptor?: {
         parsed?: boolean;
         parse?: { success?: boolean; stage?: number; reason?: string; status?: number };

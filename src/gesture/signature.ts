@@ -1,6 +1,7 @@
 import { Direction } from "@/gesture/recognition/DirectionVectorizer";
 import {
     TouchpadGestureSpec,
+    canonicalContactPaths,
     hasDirections,
     specDirections,
 } from "@/gesture/touchpad/types";
@@ -51,6 +52,12 @@ export function mouseSignature(button: number, directions: readonly Direction[])
  */
 export function touchpadSignature(spec: TouchpadGestureSpec): GestureSignatureKey {
     const base = `touchpad:${spec.fingerCount}:${spec.kind}`;
+    if (spec.kind === "multiShape") {
+        const paths = canonicalContactPaths(spec.paths)
+            .map((path) => path.join("-"))
+            .join("|");
+        return `${base}:${paths}`;
+    }
     if (hasDirections(spec)) {
         const dirs = specDirections(spec).join("-");
         if (spec.kind === "anchorDraw") {

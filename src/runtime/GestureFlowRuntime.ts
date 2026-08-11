@@ -12,7 +12,11 @@ import { GestureActionExecutor } from "@/actions/GestureActionExecutor";
 import { ShortcutExecutor } from "@/shortcuts/ShortcutExecutor";
 import { registerBuiltinCommands } from "@/commands/registerBuiltinCommands";
 import { GestureBindingRegistry } from "@/gesture/bindings/GestureBindingRegistry";
-import { createCommandLabelResolver } from "@/gesture/bindings/CommandLabelResolver";
+import {
+    createCommandLabelResolver,
+    createSignatureLabelResolver,
+    type SignatureLabelResolver,
+} from "@/gesture/bindings/CommandLabelResolver";
 import { GestureBinding } from "@/gesture/bindings/types";
 import { GestureSession } from "@/gesture/GestureSession";
 import { RecognitionResult } from "@/gesture/GestureEngine";
@@ -22,6 +26,7 @@ import { TouchpadGestureAdapter } from "@/gesture/touchpad/TouchpadGestureAdapte
 import { TouchpadFeedbackController } from "@/gesture/touchpad/TouchpadFeedbackController";
 import { TouchpadRecognitionResult, TouchpadTrackerConfig } from "@/gesture/touchpad/recognition/TouchpadGestureTracker";
 import { createTouchpadProvider } from "@/touchpad/ProviderRegistry";
+import type { NativeTouchpadStartOptions } from "@/touchpad/nativeBridge";
 import { dispatchAllowed, providerSupportsKind } from "@/gesture/conflict/TouchpadConflictPolicy";
 import {
     publishTouchpadCapabilities,
@@ -254,6 +259,11 @@ export class GestureFlowRuntime {
             this.i18n,
             { commandTitles, button: config.trigger.button },
         );
+        const signatureLabelResolver = createSignatureLabelResolver(
+            bindingRegistry,
+            this.i18n,
+            { commandTitles },
+        );
 
         const controller = new GestureFeedbackController({
             engine,
@@ -286,7 +296,7 @@ export class GestureFlowRuntime {
         this.adapter.attach(this.target);
 
         // --- Touchpad path (independent lifecycle) ---
-        this.startTouchpad(config, overlay);
+        this.startTouchpad(config, overlay, signatureLabelResolver);
 
         this.state = "running";
     }
@@ -295,6 +305,7 @@ export class GestureFlowRuntime {
     private startTouchpad(
         config: GestureFlowConfig,
         overlay: GestureOverlay,
+        signatureLabelResolver: SignatureLabelResolver,
     ): void {
         // Always probe and publish the *potential* provider so the settings
         // page shows the real provider ("Electron 事件观察", "Windows 原生",
@@ -309,22 +320,41 @@ export class GestureFlowRuntime {
         }
         const trackerConfig = this.toTrackerConfig(config);
         const { kinds, minFingerCount, allowedFingerCounts } = touchpadKindsFromBindings(config.bindings);
+        const nativeStartOptions = nativeTakeoverWithoutSystemClaims();
 
-        const feedback = new TouchpadFeedbackController(overlay, this.i18n);
+        const feedback = new TouchpadFeedbackController(overlay, this.i18n, {
+            directionMode: config.recognizer.directionMode,
+            commandLabelResolver: (spec) =>
+                signatureLabelResolver(touchpadSignature(spec)),
+        });
         this.touchpadFeedback = feedback;
+        let recorderFeedbackSuppressed = false;
 
         const adapter = new TouchpadGestureAdapter(
-            (providerEvents) => createTouchpadProvider(providerEvents),
+            (providerEvents) => createTouchpadProvider(providerEvents, { nativeStartOptions }),
             {
                 onTerminal: (result) => {
-                    this.handleTouchpadTerminal(config, result);
+                    this.handleTouchpadTerminal(result);
                 },
                 onLive: (live) => {
                     // While the settings recorder is active it renders its own
                     // trail — never draw a second one on the shared overlay.
-                    if (!isTouchpadRecording()) {
+                    if (isTouchpadRecording()) {
+                        // Also clear a trail that began immediately before the
+                        // recorder was armed; otherwise its terminal event is
+                        // intentionally suppressed and the overlay can stick.
+                        if (!recorderFeedbackSuppressed) {
+                            feedback.onCancel();
+                            recorderFeedbackSuppressed = true;
+                        }
+                    } else {
+                        recorderFeedbackSuppressed = false;
                         feedback.onLive(live);
                     }
+                    this.publishFrame();
+                },
+                onCancel: () => {
+                    feedback.onCancel();
                     this.publishFrame();
                 },
                 onStatus: (capabilities) => {
@@ -345,6 +375,7 @@ export class GestureFlowRuntime {
                     // unaffected.  Logging is delegated to index.ts.
                     this.onTouchpadError(err.label);
                 },
+                shouldProcessInput: () => this.isTouchpadInputActive(),
             },
             trackerConfig,
         );
@@ -362,6 +393,20 @@ export class GestureFlowRuntime {
         this.unsubscribeTouchpadPolling = subscribeTouchpadDiagnosticsPolling((active) => {
             this.setTouchpadPolling(active);
         });
+    }
+
+    /**
+     * Raw Input is registered with INPUTSINK, so Windows keeps sending frames
+     * while another application is foreground.  Never recognise or record
+     * those global frames; a plugin command must be scoped to active SiYuan.
+     */
+    private isTouchpadInputActive(): boolean {
+        try {
+            if (document.visibilityState === "hidden") return false;
+            return typeof document.hasFocus !== "function" || document.hasFocus();
+        } catch {
+            return false;
+        }
     }
 
     /** Start/stop the ~300 ms native-diagnostics poll. */
@@ -406,7 +451,7 @@ export class GestureFlowRuntime {
      * gate below (descriptor, capability, safe-mode, signature, binding,
      * dispatch) must NEVER be able to leave a stale trail on the overlay.
      */
-    private handleTouchpadTerminal(config: GestureFlowConfig, result: TouchpadRecognitionResult): void {
+    private handleTouchpadTerminal(result: TouchpadRecognitionResult): void {
         this.touchpadFeedback?.onComplete(result);
 
         // Invalid results are terminal for feedback only — never dispatched.
@@ -427,8 +472,8 @@ export class GestureFlowRuntime {
             return;
         }
 
-        // Safe-mode gate: 1/2-finger gestures stay with the system.
-        const decision = dispatchAllowed(spec, config.touchpad.safeMode);
+        // Core system gestures are never dispatched by the plugin.
+        const decision = dispatchAllowed(spec);
         if (!decision.allowed) {
             return;
         }
@@ -557,6 +602,19 @@ export class GestureFlowRuntime {
     }
 }
 
+/**
+ * Never claim Windows global gesture categories.  TouchpadGesturesController
+ * can only take over an entire finger-count manipulation category, not a
+ * recorded path inside it; claiming three fingers for one custom multiShape
+ * would also swallow Windows' ordinary three-finger app switching.
+ */
+function nativeTakeoverWithoutSystemClaims(): NativeTouchpadStartOptions {
+    return {
+        manipulationFingerCounts: [],
+        actionFingerCounts: [],
+    };
+}
+
 /** Canonical signature of a config binding. */
 function bindingSignatureOf(b: ConfigBinding): GestureSignatureKey {
     if (b.source === "mouse") {
@@ -589,11 +647,14 @@ function touchpadKindsFromBindings(bindings: readonly ConfigBinding[]): {
         if (b.source !== "touchpad") continue;
         const spec = b.gesture as TouchpadGestureSpec;
         if (!b.enabled) continue;
+        // Do not track or render common system gestures at all.  Uncommon
+        // two-finger independent paths remain eligible.
+        if (!dispatchAllowed(spec).allowed) continue;
         kinds.add(spec.kind);
         allowedFingerCounts.add(spec.fingerCount);
         if (spec.fingerCount < minFingerCount) minFingerCount = spec.fingerCount;
     }
-    if (minFingerCount === Number.POSITIVE_INFINITY) minFingerCount = 1;
+    if (minFingerCount === Number.POSITIVE_INFINITY) minFingerCount = 2;
     return {
         kinds,
         minFingerCount,

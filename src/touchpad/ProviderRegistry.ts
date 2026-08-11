@@ -7,6 +7,11 @@ import { probeRendererCapabilities } from "./probe";
 import { loadNativeTouchpadBridge } from "./nativeBridge";
 import { WindowsNativeTouchpadProvider } from "./WindowsNativeTouchpadProvider";
 import { ElectronInputEventProvider } from "./ElectronInputEventProvider";
+import type { NativeTouchpadStartOptions } from "./nativeBridge";
+
+export interface TouchpadProviderOptions {
+    nativeStartOptions?: NativeTouchpadStartOptions;
+}
 
 /**
  * Provider selection.
@@ -23,7 +28,10 @@ import { ElectronInputEventProvider } from "./ElectronInputEventProvider";
  *
  * Selecting a provider never throws and never breaks the mouse path.
  */
-export function createTouchpadProvider(events: TouchpadProviderEvents): TouchpadProvider {
+export function createTouchpadProvider(
+    events: TouchpadProviderEvents,
+    options: TouchpadProviderOptions = {},
+): TouchpadProvider {
     const probe = probeRendererCapabilities();
 
     // Windows-only for the native path this round; macOS / Linux get the
@@ -38,7 +46,12 @@ export function createTouchpadProvider(events: TouchpadProviderEvents): Touchpad
     // 1. Native bridge first.
     const bridge = loadNativeTouchpadBridge();
     if (bridge) {
-        return new WindowsNativeTouchpadProvider(bridge, events);
+        return new WindowsNativeTouchpadProvider(
+            bridge,
+            events,
+            null,
+            options.nativeStartOptions,
+        );
     }
     const nativeBlockedReason =
         probe.hasInputEventOnWebContents

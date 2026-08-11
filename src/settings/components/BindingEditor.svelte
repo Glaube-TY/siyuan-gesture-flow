@@ -15,9 +15,7 @@
     import type { TouchpadTrackerConfig } from "@/gesture/touchpad/recognition/TouchpadGestureTracker";
     import { touchpadDescriptorLabel } from "@/gesture/touchpad/labels";
     import type { TouchpadConfig } from "@/config/types";
-    import { computeConflictLevel } from "@/gesture/conflict/TouchpadConflictPolicy";
-    import { getTouchpadDiagnostics } from "@/runtime/TouchpadRuntimeState";
-    import { openWindowsTouchpadSettings } from "@/touchpad/systemSettings";
+    import { systemGestureConflict } from "@/gesture/conflict/TouchpadConflictPolicy";
 
     /**
      * Binding editor (version 2 — multi-input source).
@@ -248,6 +246,10 @@
         pinchThreshold: touchpad.pinchThreshold,
         rotateThresholdDeg: touchpad.rotateThresholdDeg,
         cooldownMs: touchpad.cooldownMs,
+        // Recording must use the exact same 4/8-direction quantisation as
+        // runtime recognition; otherwise a diagonal can be recorded in the
+        // default 4-direction mode and then fail validation/matching.
+        directionMode: recognizer.directionMode,
     };
 
     /**
@@ -257,17 +259,10 @@
     $: conflictNote = touchpadGesture ? touchpadConflictNote(touchpadGesture) : null;
 
     function touchpadConflictNote(spec: TouchpadGestureSpec): string | null {
-        const caps = getTouchpadDiagnostics().capabilities;
-        if (!caps) return null;
-        const level = computeConflictLevel(spec, caps);
-        if (level === "none") return null;
-        if (spec.fingerCount <= 2) {
-            return i18n.tpConflictHintTwoFinger ?? "该手势可能与系统滚动/缩放冲突";
+        if (systemGestureConflict(spec)) {
+            return i18n.tpConflictBlocked ?? "这是系统内置触控板手势，插件不会执行，请重新录制";
         }
-        if (!caps.canOverrideSystemGestures) {
-            return i18n.tpConflictHintSystem ?? "该手势可能同时触发 Windows 系统手势";
-        }
-        return i18n.tpConflictHintGeneric ?? "该手势可能与系统手势冲突";
+        return null;
     }
 </script>
 
@@ -356,22 +351,12 @@
         <TouchpadGestureRecorder
             {i18n}
             trackerConfig={touchpadTrackerConfig}
-            safeMode={touchpad.safeMode}
             on:update={onTouchpadRecord}
             on:clear={onClear}
         />
         {#if touchpadGesture && conflictNote}
             <p class="gf-tp-conflict-inline">
                 {conflictNote}
-                {#if !touchpad.safeMode}
-                    <button
-                        type="button"
-                        class="b3-button b3-button--text gf-tp-conflict-link"
-                        on:click={openWindowsTouchpadSettings}
-                    >
-                        {i18n.tpOpenSystemSettings ?? "Windows 触控板设置"}
-                    </button>
-                {/if}
             </p>
         {/if}
     {/if}
@@ -584,10 +569,6 @@
         align-items: center;
         gap: 8px;
         flex-wrap: wrap;
-    }
-    .gf-tp-conflict-link {
-        font-size: 12px;
-        padding: 0 4px;
     }
     .gf-binding-editor-actions {
         display: flex;

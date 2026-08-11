@@ -26,6 +26,7 @@ export type TouchpadGestureKind =
     | "hold"
     | "swipe"
     | "shape"
+    | "multiShape"
     | "anchorDraw"
     | "pinch"
     | "rotate";
@@ -69,6 +70,17 @@ export interface ShapeGestureSpec {
 }
 
 /**
+ * MultiShape: every moving contact contributes its own direction sequence.
+ * Contact ids are intentionally not persisted because hardware reassigns
+ * them between gestures; paths are matched as an unordered canonical set.
+ */
+export interface MultiShapeGestureSpec {
+    readonly kind: "multiShape";
+    readonly fingerCount: number;
+    readonly paths: readonly (readonly Direction[])[];
+}
+
+/**
  * AnchorDraw: one or more fingers stay roughly stationary (anchors) while
  * another finger draws a path.  The tracer path is recognised by the
  * GestureEngine.
@@ -101,6 +113,7 @@ export type TouchpadGestureSpec =
     | HoldGestureSpec
     | SwipeGestureSpec
     | ShapeGestureSpec
+    | MultiShapeGestureSpec
     | AnchorDrawGestureSpec
     | PinchGestureSpec
     | RotateGestureSpec;
@@ -120,6 +133,24 @@ export function hasDirections(
         spec.kind === "shape" ||
         spec.kind === "anchorDraw"
     );
+}
+
+/** Whether the descriptor stores one independently recognised path per contact. */
+export function hasContactPaths(spec: TouchpadGestureSpec): spec is MultiShapeGestureSpec {
+    return spec.kind === "multiShape";
+}
+
+/**
+ * Canonicalise per-contact paths without relying on transient hardware ids.
+ * Sorting keeps signatures stable even when the provider changes contact
+ * order or assigns different ids on the next performance.
+ */
+export function canonicalContactPaths(
+    paths: readonly (readonly Direction[])[],
+): Direction[][] {
+    return paths
+        .map((path) => path.slice())
+        .sort((a, b) => a.join("-").localeCompare(b.join("-")));
 }
 
 /** Directions of a direction-bearing descriptor (empty otherwise). */

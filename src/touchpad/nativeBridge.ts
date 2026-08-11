@@ -77,12 +77,20 @@ export interface NativeBridgeCapabilities {
     hardwareMaxContacts?: number;
 }
 
+/** Selective Windows system-gesture takeover requested by enabled bindings. */
+export interface NativeTouchpadStartOptions {
+    /** Finger counts whose manipulation gestures (swipe/shape/etc.) are owned. */
+    manipulationFingerCounts: readonly number[];
+    /** Finger counts whose tap/press actions are owned. */
+    actionFingerCounts: readonly number[];
+}
+
 /** What a native bridge must export. */
 export interface NativeTouchpadBridge {
     readonly id: string;
     readonly capabilities: NativeBridgeCapabilities;
     /** Start capture; frames/events are delivered to `onFrame`. */
-    start(onFrame: (frame: NativeBridgeFrame) => void): void;
+    start(onFrame: (frame: NativeBridgeFrame) => void, options?: NativeTouchpadStartOptions): void;
     /**
      * Stop capture and release every native resource (raw input
      * registration, hidden window, thread, WinRT controller, callbacks).
@@ -330,8 +338,8 @@ function normalizeBridge(raw: unknown, id: string): NativeTouchpadBridge | null 
         },
         // Wrappers keep `this` stable regardless of how the native module is
         // exported (e.g. a getter-backed object).
-        start: (onFrame: (frame: NativeBridgeFrame) => void): void => {
-            mod.start!(onFrame);
+        start: (onFrame: (frame: NativeBridgeFrame) => void, options?: NativeTouchpadStartOptions): void => {
+            mod.start!(onFrame, options);
         },
         stop: (): void => {
             mod.stop!();

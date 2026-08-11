@@ -47,9 +47,12 @@ function fingers(n: number, i18n: Record<string, string>): string {
     return `${n}${suffix}`;
 }
 
-/** Direction sequence with " → " separators and arrow symbols. */
+/**
+ * Direction sequence with neutral separators. Never use a right-arrow as the
+ * separator: for a real R segment, `↓ → →` looks like two recorded arrows.
+ */
 function dirsLabel(dirs: readonly string[]): string {
-    return dirs.map((d) => DIR_SYMBOL[d] ?? d).join(" → ");
+    return dirs.map((d) => DIR_SYMBOL[d] ?? d).join(" · ");
 }
 
 /** Localised label for a touchpad gesture descriptor. */
@@ -70,6 +73,10 @@ export function touchpadDescriptorLabel(
             return `${prefix} · ${swipeWord(spec.direction, i18n)}`;
         case "shape":
             return `${prefix} · ${dirsLabel(spec.directions)}`;
+        case "multiShape":
+            return `${prefix} · ${kindLabel("tpMultiTrail", "independent trails")} · ${spec.paths
+                .map((path) => dirsLabel(path))
+                .join(" + ")}`;
         case "anchorDraw": {
             const moving = Math.max(0, spec.fingerCount - spec.anchorCount);
             const fixed = `${fingers(spec.anchorCount, i18n)}${kindLabel("tpFixed", " fixed")}`;
@@ -97,6 +104,7 @@ export function touchpadKindLabel(kind: TouchpadGestureKind, i18n: Record<string
         case "hold": return i18n.tpHold ?? "hold";
         case "swipe": return i18n.tpSwipe ?? "swipe";
         case "shape": return i18n.tpTrail ?? "trail";
+        case "multiShape": return i18n.tpMultiTrail ?? "independent trails";
         case "anchorDraw": return i18n.tpCombined ?? "combined";
         case "pinch": return i18n.tpPinch ?? "pinch";
         case "rotate": return i18n.tpRotate ?? "rotate";

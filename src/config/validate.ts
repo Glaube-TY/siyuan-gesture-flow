@@ -14,6 +14,7 @@ import {
 import {
     MAX_TOUCHPAD_FINGERS,
     MIN_TOUCHPAD_FINGERS,
+    canonicalContactPaths,
     TouchpadGestureKind,
     TouchpadGestureSpec,
 } from "@/gesture/touchpad/types";
@@ -49,6 +50,7 @@ const TOUCHPAD_KINDS: readonly string[] = [
     "hold",
     "swipe",
     "shape",
+    "multiShape",
     "anchorDraw",
     "pinch",
     "rotate",
@@ -417,7 +419,6 @@ function validateTouchpad(
     const o = input as Record<string, unknown>;
     return {
         enabled: validateBoolean(o.enabled, defaults.enabled, "touchpad.enabled", notes),
-        safeMode: validateBoolean(o.safeMode, defaults.safeMode, "touchpad.safeMode", notes),
         tapMaxDurationMs: clampInt(o.tapMaxDurationMs, defaults.tapMaxDurationMs, 50, 2000, "touchpad.tapMaxDurationMs", notes, errors),
         tapMaxMovement: clampNumber(o.tapMaxMovement, defaults.tapMaxMovement, 0.005, 0.3, "touchpad.tapMaxMovement", notes, errors),
         holdDurationMs: clampInt(o.holdDurationMs, defaults.holdDurationMs, 100, 5000, "touchpad.holdDurationMs", notes, errors),
@@ -693,6 +694,11 @@ function validateTouchpadGesture(
             if (directions === null) return null;
             return { kind: "shape", fingerCount, directions };
         }
+        case "multiShape": {
+            const paths = validateContactPaths(input.paths, fingerCount, enabled, index, notes, errors);
+            if (paths === null) return null;
+            return { kind: "multiShape", fingerCount, paths: canonicalContactPaths(paths) };
+        }
         case "anchorDraw": {
             const anchorCount = validateAnchorCount(input.anchorCount, fingerCount, index, notes, errors);
             if (anchorCount === null) return null;
@@ -811,6 +817,27 @@ function validateDirections(
     }
     void notes;
     return directions;
+}
+
+function validateContactPaths(
+    value: unknown,
+    fingerCount: number,
+    enabled: boolean,
+    index: number,
+    notes: string[],
+    errors: string[],
+): Direction[][] | null {
+    if (!Array.isArray(value) || value.length !== fingerCount) {
+        errors.push(`bindings[${index}].gesture.paths must contain exactly ${fingerCount} contact paths`);
+        return null;
+    }
+    const paths: Direction[][] = [];
+    for (const path of value) {
+        const directions = validateDirections(path, 8, enabled, index, notes, errors);
+        if (directions === null) return null;
+        paths.push(directions);
+    }
+    return paths;
 }
 
 /** Validate the shared action structure (unchanged from v1 semantics). */

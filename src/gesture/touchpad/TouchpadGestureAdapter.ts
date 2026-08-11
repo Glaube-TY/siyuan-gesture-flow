@@ -25,12 +25,24 @@ import { isTouchpadRecording } from "@/runtime/TouchpadRuntimeState";
 /** Device-loss watchdog while POSSIBLE / TRACKING (contacts vanish mid-gesture). */
 const GESTURE_WATCHDOG_MS = 3000;
 /**
+ * Active movement followed by raw-frame silence is a missing finger-up report,
+ * not a three-second device loss. Complete it promptly so the next gesture can
+ * acquire a fresh run.
+ */
+const TRACKING_RELEASE_IDLE_MS = 450;
+/**
  * Release-recovery watchdog while WAIT_RELEASE: if no new frame arrives for
  * this long, the physical release is treated as finished even without an
  * explicit empty frame (devices may stop reporting after the last finger
  * lifts).
  */
 const RELEASE_WATCHDOG_MS = 450;
+/** Cross-provider duplicate window (Raw Input + Win11 controller, same gesture). */
+const CROSS_SOURCE_DEDUP_MS = 800;
+/** Ignore controller actions that arrive just after the recorder releases its gate. */
+const RECORDER_TAIL_SUPPRESS_MS = 800;
+
+type RecognitionOrigin = "raw" | "native" | "observer";
 
 /** Adapter-to-runtime callbacks. */
 export interface TouchpadAdapterEvents {
@@ -43,6 +55,8 @@ export interface TouchpadAdapterEvents {
     onTerminal?(result: TouchpadRecognitionResult): void;
     /** Live state changed (feedback / diagnostics). */
     onLive?(live: TouchpadLiveState): void;
+    /** An in-flight touchpad gesture was aborted (focus loss / explicit abort). */
+    onCancel?(): void;
     /** Provider capabilities/status changed. */
     onStatus?(capabilities: TouchpadCapabilities): void;
     /**
@@ -51,6 +65,12 @@ export interface TouchpadAdapterEvents {
      * dropped here.  Used by the settings recorder's raw-frame bus.
      */
     onFrame?(frame: TouchpadFrame): void;
+    /**
+     * Foreground/visibility gate.  Raw Input uses INPUTSINK and therefore also
+     * arrives while another application is active; callers must be able to
+     * reject those frames before they enter recognition or the recorder.
+     */
+    shouldProcessInput?(): boolean;
     /** Provider error (rare, concise). */
     onError?(err: { label: string }): void;
 }
@@ -88,6 +108,16 @@ export class TouchpadGestureAdapter {
     /** Release-recovery watchdog while the release tail is being awaited. */
     private releaseWatchdogHandle: ReturnType<typeof setTimeout> | null = null;
     private _releaseWatchdogActive = false;
+    /** Last signature used to collapse Raw Input + controller duplicates. */
+    private lastRecognition: {
+        signature: GestureSignatureKey;
+        origin: RecognitionOrigin;
+        receivedAt: number;
+    } | null = null;
+    /** Native controller tail events from the gesture owned by the recorder. */
+    private recorderTailSuppressionUntil = 0;
+    /** Last full raw-contact frame used to synthesize a missing finger-up. */
+    private lastRawContactFrame: TouchpadFrame | null = null;
 
     constructor(
         providerFactory: (events: TouchpadProviderEvents) => TouchpadProvider,
@@ -177,6 +207,8 @@ export class TouchpadGestureAdapter {
         this.clearGestureWatchdog();
         this.clearReleaseWatchdog();
         this.tracker.abort();
+        this.lastRecognition = null;
+        this.lastRawContactFrame = null;
         if (this.provider) {
             this.provider.stop();
             this.provider = null;
@@ -185,9 +217,13 @@ export class TouchpadGestureAdapter {
 
     /** Abort an in-progress gesture (window blur / escape). */
     abort(): void {
+        const wasBusy = this.busy;
         this.tracker.abort();
+        this.lastRecognition = null;
+        this.lastRawContactFrame = null;
         this.clearGestureWatchdog();
         this.clearReleaseWatchdog();
+        if (wasBusy) this.events.onCancel?.();
         this.events.onLive?.(this.tracker.getLiveState());
     }
 
@@ -195,10 +231,12 @@ export class TouchpadGestureAdapter {
 
     private handleFrame(frame: Parameters<TouchpadGestureTracker["feed"]>[0]): void {
         if (!this.attached) return;
+        const recordingAtFrameStart = isTouchpadRecording();
+        const inputAllowed = this.events.shouldProcessInput?.() !== false;
         // Controller pointer samples carry no per-contact geometry — they are
         // diagnostics only and must NOT reach the settings recorder's raw
         // frame bus (contacts would be empty / contactCount inconsistent).
-        if (!frame.pointer) {
+        if (!frame.pointer && inputAllowed) {
             this.events.onFrame?.(frame);
         }
         this.lastEventLabel = TouchpadGestureAdapter.eventLabelFor(frame);
@@ -206,11 +244,67 @@ export class TouchpadGestureAdapter {
         if (typeof frame.contactCount === "number") {
             this.lastContactCount = frame.contactCount;
         }
+        if (!inputAllowed) {
+            // INPUTSINK continues to receive Raw Input in the background.  A
+            // partial foreground run must not survive a focus transition and
+            // complete later as a command when SiYuan regains focus.
+            if (this.busy) {
+                this.tracker.abort();
+                this.clearGestureWatchdog();
+                this.clearReleaseWatchdog();
+                this.events.onCancel?.();
+                this.events.onLive?.(this.tracker.getLiveState());
+            }
+            this.lastRawContactFrame = null;
+            return;
+        }
+        if (recordingAtFrameStart || isTouchpadRecording()) {
+            // The settings recorder owns these frames completely. Merely
+            // suppressing terminal dispatch left a hidden runtime run alive;
+            // the first one-finger cursor movement after recording could then
+            // finish and execute that stale multi-finger gesture.
+            this.recorderTailSuppressionUntil = monotonicNow() + RECORDER_TAIL_SUPPRESS_MS;
+            if (this.busy) {
+                this.tracker.abort();
+                this.clearGestureWatchdog();
+                this.clearReleaseWatchdog();
+                this.events.onCancel?.();
+                this.events.onLive?.(this.tracker.getLiveState());
+            }
+            this.lastRawContactFrame = null;
+            return;
+        }
+        if (
+            frame.source === "raw-contacts" &&
+            !frame.pointer &&
+            !frame.nativeAction &&
+            frame.contacts.some((contact) => contact.touching !== false)
+        ) {
+            this.lastRawContactFrame = {
+                ...frame,
+                contacts: frame.contacts.map((contact) => ({ ...contact })),
+            };
+        }
+        const stageBefore = this.tracker.getLiveState().stage;
         const result = this.processFrame(frame);
+        const stageAfter = this.tracker.getLiveState().stage;
         this.refreshWatchdogs();
         if (result) {
-            this.onRecognized(result);
+            this.lastRawContactFrame = null;
+            this.onRecognized(
+                result,
+                frame.nativeAction ? "native" : frame.source === "gesture-events" ? "observer" : "raw",
+                recordingAtFrameStart,
+            );
         } else {
+            if (
+                (stageBefore === "POSSIBLE" || stageBefore === "TRACKING") &&
+                stageAfter === "WAIT_RELEASE"
+            ) {
+                // A finger-count mismatch is terminal even though it has no
+                // recognition result.  Explicitly cancel any visible trail.
+                this.events.onCancel?.();
+            }
             this.events.onLive?.(this.tracker.getLiveState());
         }
     }
@@ -234,6 +328,9 @@ export class TouchpadGestureAdapter {
         // Real 3/4/5-finger actions from the native TouchpadGesturesController
         // map directly to tap/press descriptors (the OS recognised them).
         if (frame.nativeAction) {
+            if (monotonicNow() <= this.recorderTailSuppressionUntil) {
+                return null;
+            }
             return resultFromNativeAction(frame.nativeAction, this.tracker.enabledKindsSet);
         }
         // Controller pointer samples carry no per-contact geometry — they are
@@ -248,22 +345,48 @@ export class TouchpadGestureAdapter {
                 frame,
                 { swipeMinDistance: cfg.swipeMinDistance, pinchThreshold: cfg.pinchThreshold },
                 this.tracker.enabledKindsSet,
+                cfg.allowedFingerCounts,
             );
         }
         return this.tracker.feed(frame);
     }
 
-    private onRecognized(result: TouchpadRecognitionResult): void {
+    private onRecognized(
+        result: TouchpadRecognitionResult,
+        origin: RecognitionOrigin,
+        recordingAtFrameStart: boolean,
+    ): void {
+        if (this.isCrossSourceDuplicate(result, origin)) {
+            return;
+        }
         // Recorder gate: while the settings recorder is active it owns its own
         // trail rendering AND its own recognition — never show the shared
         // overlay nor dispatch a real command.
-        if (isTouchpadRecording()) {
+        if (recordingAtFrameStart || isTouchpadRecording()) {
+            // Publish the terminal live state so a trail that started just
+            // before recording was armed is still cancelled by the runtime.
+            this.events.onLive?.(this.tracker.getLiveState());
             return;
         }
         // Forward EVERY terminal result, valid or invalid.  The feedback layer
         // must learn the gesture ended (to hide the trail) regardless of
         // validity; only dispatch decisions depend on validity.
         this.events.onTerminal?.(result);
+    }
+
+    /** Collapse only identical signatures reported by DIFFERENT native paths. */
+    private isCrossSourceDuplicate(result: TouchpadRecognitionResult, origin: RecognitionOrigin): boolean {
+        const signature = TouchpadGestureAdapter.resultSignature(result);
+        if (!signature) return false;
+        const receivedAt = monotonicNow();
+        const previous = this.lastRecognition;
+        const duplicate =
+            previous !== null &&
+            previous.origin !== origin &&
+            previous.signature === signature &&
+            receivedAt - previous.receivedAt <= CROSS_SOURCE_DEDUP_MS;
+        this.lastRecognition = { signature, origin, receivedAt };
+        return duplicate;
     }
 
     /** Convert a result into a config-layer descriptor (null when invalid). */
@@ -282,6 +405,13 @@ export class TouchpadGestureAdapter {
             case "shape":
                 if (result.directions.length === 0) return null;
                 return { kind: "shape", fingerCount: result.fingerCount, directions: result.directions.slice() };
+            case "multiShape":
+                if (!result.contactDirections || result.contactDirections.length !== result.fingerCount) return null;
+                return {
+                    kind: "multiShape",
+                    fingerCount: result.fingerCount,
+                    paths: result.contactDirections.map((path) => path.slice()),
+                };
             case "anchorDraw":
                 if (result.directions.length === 0) return null;
                 return {
@@ -365,14 +495,37 @@ export class TouchpadGestureAdapter {
     /** Arm the device-loss watchdog (no-op when already armed). */
     private armGestureWatchdog(): void {
         if (this.gestureWatchdogHandle !== null) return;
+        const initialStage = this.tracker.getLiveState().stage;
+        const inferMissingRelease =
+            initialStage === "TRACKING" && this.lastRawContactFrame !== null;
         this.gestureWatchdogHandle = setTimeout(() => {
             this.gestureWatchdogHandle = null;
             const stage = this.tracker.getLiveState().stage;
+            if (stage === "TRACKING" && inferMissingRelease && this.lastRawContactFrame) {
+                const lastFrame = this.lastRawContactFrame;
+                this.lastRawContactFrame = null;
+                const result = this.tracker.feed({
+                    timestamp: lastFrame.timestamp + TRACKING_RELEASE_IDLE_MS,
+                    contacts: [],
+                    source: "raw-contacts",
+                    ...(lastFrame.deviceId ? { deviceId: lastFrame.deviceId } : {}),
+                });
+                this.refreshWatchdogs();
+                if (result) {
+                    this.onRecognized(result, "raw", false);
+                } else {
+                    this.events.onCancel?.();
+                    this.events.onLive?.(this.tracker.getLiveState());
+                }
+                return;
+            }
             if (stage === "POSSIBLE" || stage === "TRACKING") {
                 this.tracker.abort();
+                this.lastRawContactFrame = null;
+                this.events.onCancel?.();
                 this.events.onLive?.(this.tracker.getLiveState());
             }
-        }, GESTURE_WATCHDOG_MS);
+        }, inferMissingRelease ? TRACKING_RELEASE_IDLE_MS : GESTURE_WATCHDOG_MS);
     }
 
     private clearGestureWatchdog(): void {
@@ -408,6 +561,14 @@ export class TouchpadGestureAdapter {
             this.releaseWatchdogHandle = null;
         }
         this._releaseWatchdogActive = false;
+    }
+}
+
+function monotonicNow(): number {
+    try {
+        return performance.now();
+    } catch {
+        return Date.now();
     }
 }
 

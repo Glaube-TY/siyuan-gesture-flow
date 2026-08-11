@@ -11,6 +11,7 @@ import {
     specDirections,
 } from "@/gesture/touchpad/types";
 import { GestureSource, GestureSignatureKey, mouseSignature, touchpadSignature } from "@/gesture/signature";
+import { systemGestureConflict } from "@/gesture/conflict/TouchpadConflictPolicy";
 import { isValidShortcut } from "@/shortcuts/shortcutUtils";
 
 /**
@@ -185,6 +186,10 @@ function validateTouchpadDescriptor(
     if (g.fingerCount < MIN_TOUCHPAD_FINGERS || g.fingerCount > MAX_TOUCHPAD_FINGERS) {
         return fail("invalid-gesture", `fingerCount must be between ${MIN_TOUCHPAD_FINGERS} and ${MAX_TOUCHPAD_FINGERS}`);
     }
+    const conflict = systemGestureConflict(g);
+    if (conflict) {
+        return fail("invalid-gesture", `gesture conflicts with a built-in touchpad action (${conflict})`);
+    }
     if (hasDirections(g)) {
         const dirs = specDirections(g);
         if (dirs.length === 0) {
@@ -205,6 +210,24 @@ function validateTouchpadDescriptor(
     if (g.kind === "anchorDraw") {
         if (g.anchorCount < 1 || g.anchorCount >= g.fingerCount) {
             return fail("invalid-gesture", "anchorCount must be at least 1 and less than fingerCount");
+        }
+    }
+    if (g.kind === "multiShape") {
+        if (g.paths.length !== g.fingerCount) {
+            return fail("invalid-gesture", "multiShape must contain one path per finger");
+        }
+        for (const path of g.paths) {
+            if (path.length === 0) {
+                return fail("empty-directions", "every contact path needs at least one direction");
+            }
+            if (path.length > options.maximumSegments) {
+                return fail("too-many-segments", `contact path exceeds maximumSegments (${options.maximumSegments})`);
+            }
+            for (const direction of path) {
+                if (!ALL_DIRECTIONS.includes(direction)) {
+                    return fail("direction-not-allowed", `unknown direction ${JSON.stringify(direction)}`);
+                }
+            }
         }
     }
     return null;
@@ -410,6 +433,9 @@ function cloneGesture(gesture: ConfigBinding["gesture"]): ConfigBinding["gesture
     if (spec.kind === "pinch") return { kind: "pinch", fingerCount: spec.fingerCount, direction: spec.direction };
     if (spec.kind === "rotate") return { kind: "rotate", fingerCount: spec.fingerCount, direction: spec.direction };
     if (spec.kind === "shape") return { kind: "shape", fingerCount: spec.fingerCount, directions: spec.directions.slice() };
+    if (spec.kind === "multiShape") {
+        return { kind: "multiShape", fingerCount: spec.fingerCount, paths: spec.paths.map((path) => path.slice()) };
+    }
     if (spec.kind === "anchorDraw") {
         return { kind: "anchorDraw", fingerCount: spec.fingerCount, anchorCount: spec.anchorCount, directions: spec.directions.slice() };
     }

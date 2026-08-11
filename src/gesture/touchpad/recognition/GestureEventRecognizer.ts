@@ -27,16 +27,19 @@ export function recognizeGestureEventFrame(
     frame: TouchpadFrame,
     config: Pick<TouchpadTrackerConfig, "swipeMinDistance" | "pinchThreshold">,
     enabledKinds: Set<TouchpadGestureKind> | null,
+    allowedFingerCounts?: ReadonlySet<number>,
 ): TouchpadRecognitionResult | null {
     if (frame.source !== "gesture-events" || !frame.gesture) return null;
     const gesture = frame.gesture;
     const all = enabledKinds === null;
-    const wants = (kind: TouchpadGestureKind): boolean => all || (enabledKinds?.has(kind) ?? false);
+    const wants = (kind: TouchpadGestureKind, fingerCount: number): boolean =>
+        (all || (enabledKinds?.has(kind) ?? false)) &&
+        (!allowedFingerCounts || allowedFingerCounts.has(fingerCount));
 
     switch (gesture.type) {
         case "scroll":
             if (gesture.state !== "end") return null;
-            if (!wants("swipe")) return null;
+            if (!wants("swipe", 2)) return null;
             {
                 const dx = gesture.deltaX;
                 const dy = gesture.deltaY;
@@ -49,7 +52,7 @@ export function recognizeGestureEventFrame(
             }
         case "pinch":
             if (gesture.state !== "end") return null;
-            if (!wants("pinch")) return null;
+            if (!wants("pinch", 2)) return null;
             {
                 const scale = gesture.scale;
                 if (scale <= 0 || !Number.isFinite(scale)) return null;
@@ -62,13 +65,14 @@ export function recognizeGestureEventFrame(
                 return null;
             }
         case "twoFingerTap":
-            if (!wants("tap")) return null;
+            if (!wants("tap", 2)) return null;
             return { valid: true, kind: "tap", fingerCount: 2, directions: [] };
         case "tap":
             // Single-finger tap conflicts with the system click; it is only
-            // produced when the caller explicitly enables 1-finger taps
-            // (safe mode off + a bound 1-finger tap).
-            if (!all) return null;
+            // produced only when the caller explicitly allows the one-finger
+            // count (safe mode off + a bound 1-finger tap).  Checking `all`
+            // here used to make an explicitly enabled runtime tap impossible.
+            if (!wants("tap", 1)) return null;
             return { valid: true, kind: "tap", fingerCount: 1, directions: [] };
         default:
             // longPress / longTap / doubleTap — ambiguous finger count, never

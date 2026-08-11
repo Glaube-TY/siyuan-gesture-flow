@@ -1,7 +1,10 @@
 #ifndef GESTURE_FLOW_TOUCHPAD_RAW_INPUT_CAPTURE_H_
 #define GESTURE_FLOW_TOUCHPAD_RAW_INPUT_CAPTURE_H_
 
+#include <atomic>
 #include <functional>
+#include <mutex>
+#include <unordered_map>
 #include <windows.h>
 
 #include "frame_assembler.h"
@@ -26,8 +29,19 @@ struct RawCaptureDiagnostics {
   ULONG descriptorParseAttemptCount = 0;
   ULONG descriptorParseSuccessCount = 0;
   ULONG descriptorParseFailureCount = 0;
+  ULONG deviceContextCount = 0;          // distinct Raw Input handles cached
+  ULONG deviceSwitchCount = 0;           // interleaved handle transitions
+  ULONG deviceArrivalCount = 0;          // WM_INPUT_DEVICE_CHANGE / GIDC_ARRIVAL
+  ULONG deviceRemovalCount = 0;          // WM_INPUT_DEVICE_CHANGE / GIDC_REMOVAL
   ULONG callbackDeliveryCount = 0;      // complete frames handed to JS
   ULONG invalidFrameDropCount = 0;      // frames rejected by ValidateNativeFrame
+};
+
+/** Cheap capability snapshot that does not copy diagnostic vectors. */
+struct TouchpadDescriptorStatus {
+  bool valid = false;
+  size_t contactFieldCount = 0;
+  int maxContacts = 0;
 };
 
 /**
@@ -57,38 +71,58 @@ class RawInputCapture {
   /** Stop capture and release all resources.  Safe to call twice. */
   void Stop();
 
-  bool running() const { return running_; }
+  bool running() const { return running_.load(); }
 
   /** Raw-input counters (independent of descriptor parse success). */
-  const RawCaptureDiagnostics& captureDiag() const { return captureDiag_; }
+  RawCaptureDiagnostics captureDiagSnapshot() const;
 
   /** Parser/assembler diagnostics (for native.getDiagnostics()). */
-  const ParserStats& parserStats() const { return assembler_.stats(); }
+  ParserStats parserStatsSnapshot() const;
 
   /** Parsed descriptor (for native.getDiagnostics()). */
-  const TouchpadDescriptor& descriptor() const { return descriptor_; }
+  TouchpadDescriptor descriptorSnapshot() const;
+
+  /** Minimal descriptor data used by the capabilities getter. */
+  TouchpadDescriptorStatus descriptorStatus() const;
 
  private:
   FrameCallback callback_;
   HWND hwnd_ = nullptr;
   HANDLE thread_ = nullptr;
   HANDLE startEvent_ = nullptr;
-  volatile bool running_ = false;
+  std::atomic<bool> running_{false};
 
-  TouchpadDescriptor descriptor_;
-  bool descriptorValid_ = false;
-  FrameAssembler assembler_;
+  /** Guards descriptor, assembler and diagnostics read from the JS thread. */
+  mutable std::mutex stateMutex_;
+
+  /**
+   * HID descriptors and Hybrid Reporting assembly state belong to one Raw
+   * Input device handle.  Precision-touchpad stacks can expose multiple TLC
+   * handles that interleave WM_INPUT; one global parser would be reset on every
+   * transition and could only ever deliver the first stationary sample.
+   */
+  struct DeviceCaptureState {
+    TouchpadDescriptor descriptor;
+    bool descriptorValid = false;
+    FrameAssembler assembler;
+  };
+  std::unordered_map<HANDLE, DeviceCaptureState> deviceStates_;
+  /** Most recently observed device, used only for detailed diagnostics. */
+  HANDLE diagnosticDevice_ = nullptr;
+  HANDLE lastInputDevice_ = nullptr;
   RawCaptureDiagnostics captureDiag_;
 
   void InvalidateDescriptor();
+  void RecordWmInput();
 
   /** Create the hidden window + register Raw Input ON the capture thread. */
   void SetupOnThread();
   bool RegisterRawInput();
+  void UnregisterRawInput();
   void PumpMessages();
   static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp);
   void HandleInput(HRAWINPUT rawInput);
-  void HandleDeviceChange();
+  void HandleDeviceChange(WPARAM change, HANDLE device);
   static DWORD WINAPI ThreadProc(LPVOID param);
 };
 

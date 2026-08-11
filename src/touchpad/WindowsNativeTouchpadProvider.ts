@@ -5,7 +5,7 @@ import {
     TouchpadProvider,
     TouchpadProviderEvents,
 } from "./types";
-import { NativeTouchpadBridge } from "./nativeBridge";
+import { NativeTouchpadBridge, NativeTouchpadStartOptions } from "./nativeBridge";
 
 /**
  * Windows Precision Touchpad provider (Windows 10 base + Windows 11
@@ -29,6 +29,7 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
     private readonly events: TouchpadProviderEvents;
     private readonly bridge: NativeTouchpadBridge | null;
     private readonly blockedReason: string | null;
+    private readonly startOptions: NativeTouchpadStartOptions;
     private started = false;
     /** Largest contact count observed in live frames (real data). */
     private observedMaxContacts = 0;
@@ -37,11 +38,17 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
     /** Last published capability signature (to avoid redundant onStatus). */
     private lastStatusSignature = "";
 
-    constructor(bridge: NativeTouchpadBridge | null, events: TouchpadProviderEvents, blockedReason: string | null = null) {
+    constructor(
+        bridge: NativeTouchpadBridge | null,
+        events: TouchpadProviderEvents,
+        blockedReason: string | null = null,
+        startOptions: NativeTouchpadStartOptions = { manipulationFingerCounts: [], actionFingerCounts: [] },
+    ) {
         super();
         this.events = events;
         this.bridge = bridge;
         this.blockedReason = blockedReason;
+        this.startOptions = startOptions;
     }
 
     get capabilities(): TouchpadCapabilities {
@@ -71,12 +78,19 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
         // Authoritative hardware cap comes ONLY from the HID descriptor /
         // Feature report.  The observed max is just what we have seen so far.
         const hardwareMax = Math.max(0, caps.hardwareMaxContacts ?? 0);
-        const observedMax = Math.max(0, caps.observedMaxContacts ?? 0);
+        const observedMax = Math.max(0, caps.observedMaxContacts ?? 0, this.observedMaxContacts);
         const maxContactsKnown = hardwareMax > 0;
         const maxContacts = Math.max(hardwareMax, observedMax);
-        const rawContacts = caps.rawContacts;
-        const multiContact = caps.multiContactGestures || (rawContacts && maxContacts > 0);
+        const rawCaptureActive = caps.rawContacts;
+        const multiContact = caps.multiContactGestures || (rawCaptureActive && maxContacts > 0);
+        // Registration alone is not enough: until the HID contact map parses,
+        // the provider cannot actually deliver the raw-contact contract.
+        const rawContacts = rawCaptureActive && multiContact;
         const controllerEnabled = caps.gesturesControllerEnabled === true;
+        const overriddenGestureFingerCounts = [...new Set([
+            ...this.startOptions.manipulationFingerCounts,
+            ...this.startOptions.actionFingerCounts,
+        ])].filter((count) => count >= 3 && count <= 5).sort((a, b) => a - b);
         return {
             providerType: "windows-native",
             platform: platformLabel(),
@@ -87,11 +101,12 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
             hardwareMaxContacts: hardwareMax,
             observedMaxContacts: observedMax,
             maxContactsKnown,
-            supportsMultiFingerTap: true,
+            supportsMultiFingerTap: rawContacts || controllerEnabled,
             // Press is only reported when a real, verified surface-press /
             // controller-press path exists.  It is not implemented yet.
             supportsPress: false,
-            canOverrideSystemGestures: controllerEnabled,
+            canOverrideSystemGestures: controllerEnabled && overriddenGestureFingerCounts.length > 0,
+            overriddenGestureFingerCounts: controllerEnabled ? overriddenGestureFingerCounts : [],
             observerMode: false,
             notes: [
                 "raw multi-contact input via Precision Touchpad HID (Windows 10 base path)",
@@ -110,7 +125,7 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
                 nativeModuleLoaded: true,
                 controllerSupported: caps.gesturesControllerAvailable,
                 controllerEnabled,
-                rawContactsActive: rawContacts,
+                rawContactsActive: rawCaptureActive,
                 parser: this.parserDiagnostics(),
                 providerInvalidFrameDropCount: this.invalidFrameDropCount,
             },
@@ -163,7 +178,7 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
                 }
                 this.events.onFrame?.(converted);
                 this.maybePublishStatus();
-            });
+            }, this.startOptions);
         } catch (err) {
             this.started = false;
             const label = err instanceof Error ? err.message : String(err);

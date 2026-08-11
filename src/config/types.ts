@@ -85,12 +85,6 @@ export interface OverlayConfig {
 export interface TouchpadConfig {
     /** Master switch for the touchpad gesture feature. */
     enabled: boolean;
-    /**
-     * Safe mode (default ON): 1/2-finger gestures are never dispatched, so
-     * the system's own click / scroll / right-click / pinch-zoom keep
-     * working untouched.  Only 3+ finger gestures dispatch.
-     */
-    safeMode: boolean;
     /** Tap: maximum duration between touch-down and lift (ms). */
     tapMaxDurationMs: number;
     /** Tap: maximum per-contact movement (normalised 0..1). */

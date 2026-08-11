@@ -50,17 +50,6 @@
         "src/**/*.vue",
         "src/**/*.svelte"
     ],
-    /**
-     * Production check scope: `pnpm check` (svelte-check --tsconfig
-     * ./tsconfig.json) must only type-check production code.  Test
-     * files live under `tests/` (smoke tests) and are excluded here;
-     * `tsconfig.test.json` covers them for editors and vitest.
-     */
-    "exclude": [
-        "tests",
-        "src/**/*.test.ts",
-        "src/**/*.spec.ts"
-    ],
     "references": [
         {
             "path": "./tsconfig.node.json"
