@@ -20,10 +20,10 @@ permissions:
 
 jobs:
   build:
-    # Windows runner: the touchpad release REQUIRES the native N-API addon
-    # (pnpm native:build needs MSVC + Windows SDK), and the final package.zip
-    # must contain native/gesture_flow_touchpad.node.
-    runs-on: windows-latest
+    # Pin VS 2022: windows-latest now uses VS 2026, which node-gyp 11.x
+    # cannot discover. The native addon still needs MSVC + Windows SDK, and
+    # the final package.zip must contain native/gesture_flow_touchpad.node.
+    runs-on: windows-2022
     env:
       RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
       BUILD_REF_INPUT: ${{ inputs.ref }}
