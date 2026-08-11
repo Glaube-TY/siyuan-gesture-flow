@@ -2,7 +2,7 @@
   "name": "siyuan-gesture-flow",
   "author": "Glaube-TY",
   "url": "https://github.com/Glaube-TY/siyuan-gesture-flow",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "minAppVersion": "3.7.0",
   "disabledInPublish": true,
   "backends": [

@@ -1,6 +1,6 @@
 # GestureFlow
 
-GestureFlow is a **gesture automation plugin** for SiYuan. Draw a gesture with your mouse and release — the bound action runs immediately.
+GestureFlow is a **gesture automation plugin** for SiYuan. Draw with the right mouse button or a Windows laptop touchpad, then release to run the bound action.
 
 ## What you can do
 
@@ -14,28 +14,57 @@ GestureFlow is a **gesture automation plugin** for SiYuan. Draw a gesture with y
 - Go back / forward through your navigation history.
 - Bind a gesture to a keyboard shortcut, with a custom action name.
 - Record single or multi-direction gestures of your own.
+- Record multi-finger taps, swipes, independent paths, anchor-and-draw gestures, pinches and rotations on a Windows touchpad.
 - Export, import and reset the configuration.
 
 ## Quick start
 
 1. Install and enable the plugin in SiYuan.
 2. Open **GestureFlow settings** from the plugin menu.
-3. Go to the **Bindings** tab.
-4. Click **New binding**.
-5. Hold the right mouse button and draw the trajectory.
-6. Choose an implementation type (built-in action or keyboard shortcut).
-7. Choose the built-in action, or enter an action name and record a keyboard shortcut.
-8. Save.
-9. Close the settings window and try the gesture for real.
+3. To use touchpad input, turn on **Enable touchpad** in **General**.
+4. Open **Bindings** and click **New binding**.
+5. Select the input source: mouse or touchpad.
+6. Mouse: hold the right button and draw. Touchpad: click the square recording panel, perform the gesture on the physical touchpad, then release every finger.
+7. Choose an implementation type (built-in action or keyboard shortcut).
+8. Choose the built-in action, or enter an action name and record a keyboard shortcut.
+9. Save, close the settings window, and try the gesture for real.
 
-## Drawing gestures
+## Right-button mouse gestures
 
-- The current version supports **right-button gesture input on desktop**.
 - Hold the right mouse button, move the mouse, then release.
 - Supported directions: **U**, **D**, **L**, **R** and combinations such as `R → D`.
 - With **8-direction mode** enabled, diagonal directions (e.g. `↖ ↗ ↘ ↙`) are also recognized.
 - Right-clicking without moving still shows SiYuan's normal context menu.
 - Holding the temporary disable key lets you use the ordinary right-click menu while gestures stay active.
+
+## Windows touchpad gestures
+
+### Recording and use
+
+- Add or edit a binding in **Bindings**, then switch its input source to **Touchpad**.
+- Click the square recording panel itself to start; there is no separate external start button.
+- You do not select a finger count beforehand. GestureFlow records the physical finger count and each contact path directly from device frames.
+- Recognition begins when fingers touch the pad. The recording finishes and freezes when **every finger has been released**.
+- Supported kinds include tap, hold, same-direction swipe, shared multi-segment shape, independent per-finger paths, anchor finger + drawing finger, pinch and rotate.
+- Recording and runtime feedback render one trail per finger and show the action that the recognised gesture will execute.
+
+### Relationship with Windows system gestures
+
+GestureFlow blocks only common, unavoidable interactions so Windows and the plugin do not execute the same input together:
+
+- **One finger:** pointer movement and clicks always remain with the system.
+- **Two fingers:** secondary click/press, same-direction scrolling or panning, and pinch zoom are blocked.
+- **Three fingers:** three-finger tap is blocked.
+- **Allowed:** different independent two-finger paths, anchor-and-draw and rotation, plus three-or-more-finger swipes, multi-segment or independent paths, holds, pinches and rotations other than the three-finger tap.
+
+An action being configurable in Windows Settings does not mean it is enabled on the current PC. GestureFlow never changes the system touchpad configuration and does not pre-emptively block a three/four/five-finger action merely because Windows can map it. See [Microsoft's touch gesture guide](https://support.microsoft.com/windows/hardware/input-devices/touch-gestures-for-windows).
+
+### Compatibility and installation requirements
+
+- Full per-contact and multi-finger trail support currently targets **SiYuan Desktop on Windows x64** and requires a compatible touchpad and driver recognised by Windows.
+- Release packages include a prebuilt `native/gesture_flow_touchpad.node`. Normal users only install and enable the plugin; they **do not need Node.js, Python, pnpm, Visual Studio, or the Windows SDK**.
+- If the native module cannot load, GestureFlow falls back to Electron event observation when possible. This exposes only some OS-level gestures and cannot fully record independent contact paths.
+- Windows ARM64, macOS, Linux, mobile and browser builds do not currently provide the full advanced touchpad path. Mouse gestures remain available.
 
 ## Implementation types
 
@@ -126,7 +155,7 @@ GestureFlow reuses SiYuan's own action capabilities, so each built-in action beh
 | Scroll to top | Scroll the current document to the top. |
 | Scroll to bottom | Scroll the current document to the bottom. |
 
-> The default gestures are unchanged: **L → previous tab**, **R → next tab**, **U → scroll to top**, **D → scroll to bottom**. Every other action has **no default gesture** — bind it to a trajectory of your choice in the Bindings tab.
+> The default mouse gestures are unchanged: **L → previous tab**, **R → next tab**, **U → scroll to top**, **D → scroll to bottom**. Every other action has **no default gesture** — bind it to a trajectory of your choice in the Bindings tab.
 
 ## Shortcut compatibility
 
@@ -140,10 +169,10 @@ GestureFlow reuses SiYuan's own action capabilities, so each built-in action beh
 
 | Tab | Purpose |
 | --- | --- |
-| General | Enable/disable the plugin, temporary disable key, activation distance and timeout. |
+| General | Enable/disable the plugin, enable touchpad input, temporary disable key, activation distance and timeout. |
 | Recognition | Direction mode (4/8), sampling and simplification sensitivity. |
 | Display | Trail and hint toggles, line width. |
-| Bindings | Record gestures and manage bindings (add / edit / delete / toggle). |
+| Bindings | Select mouse or touchpad input, record gestures, and manage bindings (add / edit / delete / toggle). |
 | Data | Export, import and reset the configuration. |
 
 ## FAQ
@@ -155,7 +184,16 @@ Yes — right-clicking without moving still shows SiYuan's context menu. Hold th
 The shortcut is dispatched to the current focus. Some shortcuts are context-sensitive (e.g. only work inside an editor), and plugins that reject synthetic events will ignore it. Close the settings window and verify with a real gesture in the context where the shortcut normally works.
 
 **Why is my gesture not recognized?**
-The trajectory may be too short, too long, or drawn too slowly. Check the activation distance and timeout settings, and make sure the direction sequence matches a saved binding (with 8-direction mode off, diagonals are not recognized).
+The trajectory may be too short, too long, or drawn too slowly. Check the activation distance and timeout settings, and make sure the input source, finger count and direction sequence match the saved binding (with 8-direction mode off, diagonals are not recognized). Touchpad recording needs native per-contact frames; if the UI reports observer mode, confirm that you are using SiYuan Desktop on Windows x64.
+
+**How do I record a touchpad gesture?**
+Create a binding, select **Touchpad**, click the square recording panel, then perform the gesture on the laptop touchpad. Finger count and individual paths are detected automatically; releasing every finger completes the recording.
+
+**Why can't I save some touchpad gestures?**
+They overlap Windows one-finger pointer input, two-finger secondary-click/scroll/zoom, or the three-finger tap. Use different per-finger paths, a multi-segment turn, anchor-and-draw, or another gesture with three or more fingers.
+
+**Do users need Node.js or a compiler toolchain?**
+No. The Windows x64 release package already contains the compiled native addon. Node.js, Python, Visual Studio and related tools are development and release-build requirements only.
 
 **How do I temporarily disable gestures?**
 Turn off the plugin in the General tab, or hold the configured temporary disable key while clicking.
@@ -171,7 +209,6 @@ JavaScript actions are still in development and are disabled for safety.
 These are plans, **not** current-version features:
 
 - Bind gestures to JavaScript code snippets;
-- Add laptop touchpad gesture input;
 - Support mouse side buttons and other configurable input buttons.
 
 ## Contributing
