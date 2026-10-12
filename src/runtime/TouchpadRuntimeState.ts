@@ -41,6 +41,7 @@ export interface TouchpadEventDetail {
 
 /** Snapshot of live touchpad diagnostics for the settings test area. */
 export interface TouchpadDiagnostics {
+    touchpadEnabled: boolean;
     capabilities: TouchpadCapabilities | null;
     /** Latest diagnostic snapshot (updated only while subscribed). */
     latest: {
@@ -77,7 +78,7 @@ const rawFrameListeners = new Set<RawFrameListener>();
 
 let recorderActive = false;
 let pollingActive = false;
-let current: TouchpadDiagnostics = { capabilities: null, latest: null };
+let current: TouchpadDiagnostics = { touchpadEnabled: false, capabilities: null, latest: null };
 
 /** Whether the touchpad gesture recorder is currently active. */
 export function isTouchpadRecording(): boolean {
@@ -89,6 +90,16 @@ export function setTouchpadRecording(active: boolean): void {
     recorderActive = active;
 }
 
+/** Publish the feature state without probing or loading any input provider. */
+export function publishTouchpadEnabled(touchpadEnabled: boolean): void {
+    current = { touchpadEnabled, capabilities: null, latest: null };
+    if (!touchpadEnabled) {
+        setTouchpadRecording(false);
+        setTouchpadDiagnosticsPolling(false);
+    }
+    notify();
+}
+
 /**
  * Publish provider capabilities.
  *
@@ -97,6 +108,7 @@ export function setTouchpadRecording(active: boolean): void {
  * are registered.
  */
 export function publishTouchpadCapabilities(capabilities: TouchpadCapabilities | null): void {
+    if (!current.touchpadEnabled) return;
     current = { ...current, capabilities };
     notify();
 }
@@ -108,7 +120,7 @@ export function publishTouchpadCapabilities(capabilities: TouchpadCapabilities |
  * subscriber so idle runtime never churns allocations.
  */
 export function publishTouchpadFrame(frame: Exclude<TouchpadDiagnostics["latest"], null>): void {
-    if (!hasTouchpadDiagnosticsListeners()) {
+    if (!current.touchpadEnabled || !hasTouchpadDiagnosticsListeners()) {
         return;
     }
     current = { ...current, latest: frame };
@@ -142,7 +154,7 @@ export function hasTouchpadDiagnosticsListeners(): boolean {
  * derived — recorders feed it straight into their own Tracker.
  */
 export function publishTouchpadRawFrame(frame: TouchpadFrame): void {
-    if (rawFrameListeners.size === 0) return;
+    if (!current.touchpadEnabled || rawFrameListeners.size === 0) return;
     for (const listener of rawFrameListeners) {
         try {
             listener(frame);
@@ -174,6 +186,7 @@ export function subscribeTouchpadRawFrames(listener: RawFrameListener): () => vo
  * delivered yet.  The tab must turn this OFF on destroy.
  */
 export function setTouchpadDiagnosticsPolling(active: boolean): void {
+    active = active && current.touchpadEnabled;
     if (pollingActive === active) return;
     pollingActive = active;
     for (const listener of pollingListeners) {

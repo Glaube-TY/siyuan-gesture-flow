@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import { setTimeout as wait } from "node:timers/promises";
 import ts from "typescript";
+import { compile } from "svelte/compiler";
 
 // Load real TS lifecycle code without mounting Svelte or loading a native addon.
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -301,3 +302,114 @@ try {
     else globalThis.document = originalDocument;
 }
 console.log("Stop/restart recovery and asynchronous plugin startup checks passed.");
+
+// Execute the actual Svelte-compiled instance/update functions with isolated UI hooks.
+// No DOM fragment or native DLL is created; mount dependencies use the real status bus.
+const bus = load("src/runtime/TouchpadRuntimeState.ts");
+function mountComponent(file, inspection, seed = "") {
+    let mounts = [], destroyers = [], dispatched = [];
+    const filename = path.join(root, file);
+    let source = fs.readFileSync(filename, "utf8");
+    source = source.replace(/<script lang="ts">([\s\S]*?)<\/script>/, (_, script) => {
+        const instrumented = script + "\nexport function inspectForTest() { return " + inspection + "; }\n" + seed;
+        return "<script>" + ts.transpileModule(instrumented, {
+            compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020, verbatimModuleSyntax: true },
+        }).outputText + "</script>";
+    });
+    const code = ts.transpileModule(compile(source, { filename, generate: "dom", discloseVersion: false }).js.code, {
+        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+    }).outputText;
+    const hooks = {
+        onMount(fn) { mounts.push(fn); }, onDestroy(fn) { destroyers.push(fn); },
+        createEventDispatcher: () => (type, detail) => dispatched.push({ type, detail }),
+    };
+    const internal = {
+        globals: globalThis,
+        SvelteComponent: class { $destroy() { for (const fn of destroyers.splice(0)) fn(); } },
+        init(component, options, instance) {
+            component.$$ = { ctx: [], dirty: Array(8).fill(-1), bound: {} };
+            component.$$.ctx = instance(component, options.props, (index, value, ...rest) => {
+                component.$$.ctx[index] = rest.length ? rest[rest.length - 1] : value;
+                return value;
+            });
+            for (const fn of mounts.splice(0)) fn();
+            component.$$.update?.();
+        },
+    };
+    const module = { exports: {} };
+    vm.runInThisContext("(function(require,module,exports){" + code + "\n})", { filename })(id => {
+        if (id === "svelte/internal") return internal;
+        if (id === "svelte") return hooks;
+        assert.ok(id.startsWith("@/"), "unexpected component dependency " + id);
+        return load("src/" + id.slice(2) + ".ts");
+    }, module, module.exports);
+    const component = new module.exports.default({ props: { i18n: {}, trackerConfig: {} } });
+    return { component, dispatched, update: () => component.$$.update?.() };
+}
+const originalRaf = globalThis.requestAnimationFrame, originalCancelRaf = globalThis.cancelAnimationFrame;
+const pendingRafs = new Map();
+let rafSequence = 0;
+globalThis.requestAnimationFrame = callback => { const id = ++rafSequence; pendingRafs.set(id, callback); return id; };
+globalThis.cancelAnimationFrame = id => pendingRafs.delete(id);
+function flushRafs() { for (const [id, callback] of [...pendingRafs]) { pendingRafs.delete(id); callback(); } }
+const caps = { providerType: "windows-native", supportsRawContacts: true, diagnostics: { parser: { assembler: { completedFrameCount: 1 } } } };
+const snapshot = { timestamp: 1, contacts: [{ id: 1, x: 0.2, y: 0.3, touching: true }],
+    displayPath: [{ x: 0.2, y: 0.3 }], displayContactPaths: [{ id: 1, points: [{ x: 0.2, y: 0.3 }] }],
+    event: null, eventLabel: "old event", currentKind: "swipe", stage: "TRACKING" };
+let area, recorder;
+try {
+    bus.publishTouchpadEnabled(true); bus.publishTouchpadCapabilities(caps);
+    const unsubscribe = bus.subscribeTouchpadDiagnostics(() => {});
+    bus.publishTouchpadFrame(snapshot); unsubscribe();
+    area = mountComponent("src/settings/components/TouchpadTestArea.svelte",
+        "{ mode, hintText, contacts, displayPath, displayContactPaths, contactCount, eventLabel, currentKind, stage }");
+    assert.equal(area.component.inspectForTest().mode, "contacts");
+    assert.equal(area.component.inspectForTest().contacts.length, 1);
+    recorder = mountComponent("src/settings/components/TouchpadGestureRecorder.svelte",
+        "{ touchpadEnabled, rawContacts, session, livePath, rawContactPaths, finalPath, finalContactPaths, finalContacts, pendingCompletion, lastPhysicalContactCount, waitTimer, prepareTimer, releaseWatchdogTimer }",
+        "export function seedForTest() { session = 'WAIT_RELEASE'; livePath = [{x:0.2,y:0.3}]; rawContactPaths = [{id:1,points:livePath}]; finalPath = livePath; finalContactPaths = rawContactPaths; finalContacts = [{id:1,x:0.2,y:0.3}]; pendingCompletion = {} as any; lastPhysicalContactCount = 1; waitTimer = setTimeout(() => {}, 1000); prepareTimer = setTimeout(() => {}, 1000); releaseWatchdogTimer = setTimeout(() => {}, 1000); setTouchpadRecording(true); }");
+    assert.equal(recorder.component.inspectForTest().rawContacts, true);
+    recorder.component.seedForTest(); recorder.update();
+    assert.equal(bus.isTouchpadRecording(), true);
+    bus.publishTouchpadEnabled(false); flushRafs(); area.update(); recorder.update();
+    const clearedArea = area.component.inspectForTest(), clearedRecorder = recorder.component.inspectForTest();
+    assert.equal(clearedArea.mode, "disabled"); assert.equal(clearedArea.hintText, "触控板手势未启用");
+    const english = JSON.parse(fs.readFileSync(path.join(root, "public/i18n/en.json"), "utf8"));
+    area.component.$$set({ i18n: english }); area.update();
+    assert.equal(area.component.inspectForTest().hintText, english.tpDisabled);
+    for (const key of ["contacts", "displayPath", "displayContactPaths"]) assert.equal(clearedArea[key].length, 0);
+    assert.equal(clearedArea.eventLabel, null); assert.equal(clearedArea.currentKind, null); assert.equal(clearedArea.stage, "IDLE");
+    assert.equal(clearedRecorder.rawContacts, false); assert.equal(clearedRecorder.touchpadEnabled, false);
+    assert.equal(clearedRecorder.session, "DISARMED"); assert.equal(clearedRecorder.lastPhysicalContactCount, 0);
+    for (const key of ["livePath", "rawContactPaths", "finalPath", "finalContactPaths", "finalContacts"]) assert.equal(clearedRecorder[key].length, 0);
+    for (const key of ["waitTimer", "prepareTimer", "releaseWatchdogTimer", "pendingCompletion"]) assert.equal(clearedRecorder[key], null);
+    assert.equal(bus.isTouchpadRecording(), false); assert.equal(recorder.dispatched.length, 0);
+    let rawFrames = 0; const unsubscribeRaw = bus.subscribeTouchpadRawFrames(() => rawFrames++);
+    bus.publishTouchpadCapabilities(caps); bus.publishTouchpadFrame(snapshot); bus.publishTouchpadRawFrame({});
+    assert.equal(rawFrames, 0); unsubscribeRaw();
+    assert.equal(bus.getTouchpadDiagnostics().capabilities, null); assert.equal(bus.getTouchpadDiagnostics().latest, null);
+    bus.publishTouchpadEnabled(true); flushRafs(); area.update(); recorder.update();
+    assert.equal(area.component.inspectForTest().mode, "initializing");
+    assert.equal(area.component.inspectForTest().hintText, english.tpInitializing);
+    assert.equal(recorder.component.inspectForTest().rawContacts, false);
+    bus.publishTouchpadCapabilities({ providerType: "none", supportsRawContacts: false });
+    flushRafs(); area.update(); recorder.update(); assert.equal(area.component.inspectForTest().mode, "none");
+    bus.publishTouchpadCapabilities(caps); flushRafs(); area.update(); recorder.update();
+    assert.equal(recorder.component.inspectForTest().rawContacts, true);
+    // Enabled state stays available to settings mounted after provider startup.
+    assert.equal(bus.getTouchpadDiagnostics().capabilities, caps);
+    bus.publishTouchpadCapabilities(null); flushRafs(); area.update(); recorder.update();
+    assert.equal(recorder.component.inspectForTest().rawContacts, false);
+    assert.equal(area.component.inspectForTest().mode, "initializing");
+} finally {
+    area?.component.$destroy(); recorder?.component.$destroy(); bus.publishTouchpadEnabled(false);
+    if (originalRaf === undefined) delete globalThis.requestAnimationFrame; else globalThis.requestAnimationFrame = originalRaf;
+    if (originalCancelRaf === undefined) delete globalThis.cancelAnimationFrame; else globalThis.cancelAnimationFrame = originalCancelRaf;
+}
+assert.equal(bus.hasTouchpadDiagnosticsListeners(), false); assert.equal(bus.hasTouchpadRawFrameListeners(), false);
+assert.equal(pendingRafs.size, 0);
+for (const language of ["en", "zh-CN"]) {
+    const i18n = JSON.parse(fs.readFileSync(path.join(root, "public/i18n", language + ".json"), "utf8"));
+    assert.ok(i18n.tpDisabled); assert.ok(i18n.tpInitializing);
+}
+console.log("Touchpad status and compiled Svelte checks passed: disabled/initializing/unavailable, stale contacts/trails, recorder timers and subscriptions.");

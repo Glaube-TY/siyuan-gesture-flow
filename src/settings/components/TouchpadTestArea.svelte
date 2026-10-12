@@ -33,6 +33,7 @@
     let currentKind: string | null = null;
     let stage: string = "IDLE";
     let caps: TouchpadCapabilities | null = null;
+    let touchpadEnabled = false;
     let contactCount: number | null = null;
 
     let rafId: number | null = null;
@@ -50,8 +51,9 @@
     function render(): void {
         const d = latest;
         if (!d) return;
-        caps = d.capabilities;
-        if (d.latest) {
+        touchpadEnabled = d.touchpadEnabled;
+        caps = touchpadEnabled ? d.capabilities : null;
+        if (touchpadEnabled && d.latest) {
             contacts = d.latest.contacts;
             contactCount = d.latest.contactCount ?? null;
             displayPath = d.latest.displayPath ?? [];
@@ -60,6 +62,15 @@
             eventLabel = d.latest.eventLabel;
             currentKind = d.latest.currentKind;
             stage = d.latest.stage;
+        } else {
+            contacts = [];
+            contactCount = null;
+            displayPath = [];
+            displayContactPaths = [];
+            event = null;
+            eventLabel = null;
+            currentKind = null;
+            stage = "IDLE";
         }
     }
 
@@ -120,27 +131,35 @@
     $: activeCount = contactCount ?? touchingContacts.length;
 
     /** Rendering mode derived from the provider capabilities. */
-    $: mode = nativeRaw
-        ? hasDeliveredFrames
-            ? "contacts"
-            : "native-raw"
-        : caps?.providerType === "electron-input-event"
-            ? "observer"
-            : caps?.providerType === "windows-native"
-                ? "controller"
-                : "none";
+    $: mode = !touchpadEnabled
+        ? "disabled"
+        : !caps
+            ? "initializing"
+            : nativeRaw
+                ? hasDeliveredFrames
+                    ? "contacts"
+                    : "native-raw"
+                : caps?.providerType === "electron-input-event"
+                    ? "observer"
+                    : caps?.providerType === "windows-native"
+                        ? "controller"
+                        : "none";
 
     /** Provider-appropriate hint text (never the wrong "touch the pad" hint). */
     $: hintText =
-        mode === "contacts"
-            ? (i18n.tpTestIdle ?? "将手指放到触控板上开始测试")
-            : mode === "native-raw"
-                ? (i18n.tpTestNativeRawHint ?? "在触控板上放置并移动 1～5 根手指进行检测")
-                : mode === "observer"
-                    ? (i18n.tpTestObserverHint ?? "使用双指滚动、捏合或点击测试触控板事件")
-                    : mode === "controller"
-                        ? (i18n.tpTestControllerHint ?? "放置三/四/五指以测试系统手势")
-                        : (i18n.tpTestNoProvider ?? "当前没有可用的触控板输入提供器");
+        mode === "disabled"
+            ? (i18n.tpDisabled ?? "触控板手势未启用")
+            : mode === "initializing"
+                ? (i18n.tpInitializing ?? "触控板输入尚未检测")
+                : mode === "contacts"
+                    ? (i18n.tpTestIdle ?? "将手指放到触控板上开始测试")
+                    : mode === "native-raw"
+                        ? (i18n.tpTestNativeRawHint ?? "在触控板上放置并移动 1～5 根手指进行检测")
+                        : mode === "observer"
+                            ? (i18n.tpTestObserverHint ?? "使用双指滚动、捏合或点击测试触控板事件")
+                            : mode === "controller"
+                                ? (i18n.tpTestControllerHint ?? "放置三/四/五指以测试系统手势")
+                                : (i18n.tpTestNoProvider ?? "当前没有可用的触控板输入提供器");
 
     // Live Raw Input counters for the native-raw state.
     $: rawWmInput = caps?.diagnostics?.parser?.capture?.wmInputCount ?? 0;

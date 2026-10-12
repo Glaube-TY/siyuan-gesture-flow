@@ -3,16 +3,23 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import crypto from "node:crypto";
-import { EventEmitter } from "node:events";
+import { EventEmitter, getEventListeners } from "node:events";
 import { fileURLToPath } from "node:url";
 import vm from "node:vm";
 import ts from "typescript";
+import { compile } from "svelte/compiler";
+import * as svelteInternal from "svelte/internal";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const testRoot = fs.mkdtempSync(path.join(os.tmpdir(), "gesture-flow-loader-check-"));
 const compiled = new Map();
 let fixtureNumber = 0;
 let checks = 0;
+// Node's boolean capture removal differs from browsers; normalize both boundaries.
+class BrowserTarget extends EventTarget {
+    addEventListener(type, listener, options) { super.addEventListener(type, listener, typeof options === "boolean" ? { capture: options } : options); }
+    removeEventListener(type, listener, options) { super.removeEventListener(type, listener, typeof options === "boolean" ? { capture: options } : options); }
+}
 function fixture(options = {}) {
     const directory = path.join(testRoot, String(++fixtureNumber));
     const dataDir = path.join(directory, "workspace", "data");
@@ -23,9 +30,12 @@ function fixture(options = {}) {
     fs.mkdirSync(temp, { recursive: true });
     if (!options.missing) fs.writeFileSync(source, "mock addon version one");
     const loads = [];
-    let writes = 0;
+    let writes = 0, nativeReads = 0;
+    let mountedDestroyers = [];
+    let settingsHtml = "";
     const mockFs = Object.assign(Object.create(fs), {
         writeFileSync(...args) { writes++; return fs.writeFileSync(...args); },
+        readFileSync(...args) { if (String(args[0]).endsWith(".node")) nativeReads++; return fs.readFileSync(...args); },
     }, options.fs);
     const processMock = { pid: process.pid, arch: options.arch ?? "x64", platform: "win32", env: {} };
     const webContents = new EventEmitter();
@@ -55,8 +65,8 @@ function fixture(options = {}) {
         throw new Error(`unexpected require: ${id}`);
     };
     nodeRequire.resolve = (id) => id;
-    const window = Object.assign(new EventTarget(), { require: nodeRequire, process: processMock });
-    const document = new EventTarget();
+    const window = Object.assign(new BrowserTarget(), { require: nodeRequire, process: processMock });
+    const document = new BrowserTarget();
     const context = vm.createContext({
         window, document, navigator: {}, process: processMock, Buffer, console, performance,
         EventTarget, HTMLElement: class {}, setTimeout, clearTimeout, setInterval, clearInterval,
@@ -68,16 +78,45 @@ function fixture(options = {}) {
         const module = { exports: {} };
         modules.set(filename, module);
         if (!compiled.has(filename)) {
-            compiled.set(filename, ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+            let source = fs.readFileSync(filename, "utf8");
+            if (filename.endsWith(".svelte")) {
+                source = source.replace(/<script lang="ts">([\s\S]*?)<\/script>/, (_, script) =>
+                    "<script>" + ts.transpileModule(script, {
+                        compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020, verbatimModuleSyntax: true },
+                    }).outputText + "</script>");
+                source = compile(source, { filename, generate: "ssr" }).js.code;
+            }
+            compiled.set(filename, ts.transpileModule(source, {
                 compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
                 fileName: filename,
             }).outputText);
         }
         const localRequire = (id) => {
-            if (id === "siyuan") return { globalCommand() {} };
+            if (id === "siyuan") return {
+                Plugin: class {}, globalCommand() {}, showMessage() {}, confirm() {},
+                Dialog: class {
+                    element = { classList: { add() {} }, querySelector: () => ({}) };
+                    destroy() {}
+                },
+            };
+            if (id.endsWith(".scss")) return {};
+            if (id === "svelte/internal") return svelteInternal;
+            if (id === "svelte") return {
+                onMount(fn) { fn(); }, onDestroy(fn) { mountedDestroyers.push(fn); },
+                createEventDispatcher: () => () => {},
+            };
             const resolved = id.startsWith("@/")
                 ? path.join(root, "src", id.slice(2))
                 : path.resolve(path.dirname(filename), id);
+            if (resolved.endsWith(".svelte")) {
+                const component = load(resolved).default;
+                // The real settings component renders with isolated lifecycle/host stubs.
+                if (resolved.endsWith("SettingsPanel.svelte")) return { default: class {
+                    constructor({ props }) { settingsHtml = component.render(props).html; }
+                    $destroy() { for (const destroy of mountedDestroyers.splice(0)) destroy(); }
+                } };
+                return { default: component };
+            }
             return load(resolved.endsWith(".ts") ? resolved : resolved + ".ts");
         };
         vm.runInContext(`(function(require, module, exports) {${compiled.get(filename)}\n})`, context, { filename })(
@@ -89,7 +128,7 @@ function fixture(options = {}) {
     bridge.setNativeBridgeContext({ pluginName: "siyuan-gesture-flow" });
     return {
         source, plugins, temp, loads, bridge, window, document, processMock, mockFs, webContents,
-        writes: () => writes,
+        writes: () => writes, nativeReads: () => nativeReads, settingsHtml: () => settingsHtml,
         cache: () => load(path.join(root, "src/touchpad/nativeAddonCache.ts"))
             .prepareNativeAddonCache(source, plugins, nodeRequire),
         provider: () => load(path.join(root, "src/touchpad/ProviderRegistry.ts")).createTouchpadProvider({}),
@@ -273,7 +312,8 @@ try {
             const { createDefaultConfig } = test.load("src/config/defaults.ts");
             const instance = new GestureFlowRuntime({ target: test.document, overlayI18n: {}, i18n: {} });
             try {
-                assert.doesNotThrow(() => instance.start(createDefaultConfig()));
+                const config = createDefaultConfig(); config.touchpad.enabled = true;
+                assert.doesNotThrow(() => instance.start(config));
                 assert.equal(instance.getState(), "running");
                 assert.ok(instance.adapter);
                 assert.ok(test.bridge.getNativeLoaderDiagnostics().lastError);
@@ -377,7 +417,7 @@ try {
         callback({ timestamp: 1, contacts: [] });
         assert.equal(firstFrames, 1); assert.equal(secondFrames, 0);
         second.stop(); second.dispose();
-        assert.equal(stops, 0); assert.equal(starts, 2);
+        assert.equal(stops, 0); assert.equal(starts, 1);
         first.stop(); first.stop();
         assert.equal(stops, 1);
     });
@@ -436,7 +476,7 @@ try {
                 assert.equal(effective.providerType, none ? "none" : "electron-input-event");
                 assert.equal(effective.supportsRawContacts, false);
                 assert.equal(test.webContents.listenerCount("input-event"), none ? 0 : 1);
-                assert.equal(starts, pending ? 0 : 1);
+                assert.equal(starts, pending || failure === "already-running" ? 0 : 1);
                 assert.equal(stops, failure === "already-running" ? 0 : 1);
                 if (pending) assert.ok(errors.some(label => label.includes("restart SiYuan")));
                 assert.equal(test.loads.length, 1);
@@ -463,8 +503,180 @@ try {
             assert.equal(runtime.touchpadAdapter.capabilities.providerType, "electron-input-event");
             assert.equal(test.webContents.listenerCount("input-event"), 1);
         } finally { runtime.dispose(); }
-        assert.equal(stops, 1); assert.equal(test.webContents.listenerCount("input-event"), 0);
+        assert.equal(stops, 2); // Failed lifecycle reads keep ownership until a bounded retry.
+        assert.equal(test.webContents.listenerCount("input-event"), 0);
     });
+    check("default runtime and real ordinary settings rendering never create a provider, read or load native bytes", () => {
+        const test = fixture();
+        const registry = test.load("src/touchpad/ProviderRegistry.ts");
+        let providers = 0, loaderCalls = 0;
+        const factory = registry.createTouchpadProvider;
+        registry.createTouchpadProvider = (...args) => { providers++; return factory(...args); };
+        const loader = test.bridge.loadNativeTouchpadBridge;
+        test.bridge.loadNativeTouchpadBridge = (...args) => { loaderCalls++; return loader(...args); };
+        const { GestureFlowRuntime } = test.load("src/runtime/GestureFlowRuntime.ts");
+        const { createDefaultConfig } = test.load("src/config/defaults.ts");
+        const state = test.load("src/runtime/TouchpadRuntimeState.ts");
+        const config = createDefaultConfig(); assert.equal(config.touchpad.enabled, false);
+        const runtime = new GestureFlowRuntime({ target: test.document, overlayI18n: {}, i18n: {} });
+        const { default: Plugin } = test.load("src/index.ts");
+        const plugin = new Plugin({ app: null });
+        plugin.configManager = { isLoaded: true, getConfig: () => config, subscribe: () => () => {} };
+        plugin.i18n = {}; plugin.commandCatalogSource = null;
+        try {
+            runtime.start(config);
+            assert.equal(runtime.getState(), "running"); assert.ok(runtime.adapter);
+            assert.equal(runtime.touchpadAdapter, null);
+            assert.equal(state.getTouchpadDiagnostics().touchpadEnabled, false);
+            plugin.openSetting();
+            assert.equal(plugin.settingsDialog.isOpen, true);
+            assert.ok(test.settingsHtml().includes("启用触控板手势"));
+            assert.equal(providers, 0); assert.equal(loaderCalls, 0);
+            assert.equal(test.nativeReads(), 0); assert.equal(test.loads.length, 0); assert.equal(test.writes(), 0);
+            assert.ok(!fs.existsSync(path.join(test.temp, "siyuan-gesture-flow-native")));
+        } finally { plugin.settingsDialog?.destroy(); runtime.dispose(); }
+    });
+    check("ten real runtime enable/disable cycles reuse one addon cache and clear status, polling and subscriptions", () => {
+        let starts = 0, stops = 0, callback;
+        const caps = { lifecycleState: "stopped", rawContacts: true, multiContactGestures: true, maxContacts: 5 };
+        const test = fixture({ addon: {
+            capabilities: caps,
+            start(fn) { starts++; callback = fn; caps.lifecycleState = "running"; return "started"; },
+            stop() { stops++; caps.lifecycleState = "stopped"; return "stopped"; },
+        } });
+        const registry = test.load("src/touchpad/ProviderRegistry.ts"), factory = registry.createTouchpadProvider;
+        let providers = 0;
+        registry.createTouchpadProvider = (...args) => { providers++; return factory(...args); };
+        const { GestureFlowRuntime } = test.load("src/runtime/GestureFlowRuntime.ts");
+        const { createDefaultConfig } = test.load("src/config/defaults.ts");
+        const state = test.load("src/runtime/TouchpadRuntimeState.ts");
+        const config = createDefaultConfig(), enabled = createDefaultConfig(); enabled.touchpad.enabled = true;
+        const runtime = new GestureFlowRuntime({ target: test.document, overlayI18n: {}, i18n: {} });
+        const { default: Plugin } = test.load("src/index.ts");
+        const plugin = new Plugin({ app: null });
+        plugin.configManager = { isLoaded: true, getConfig: () => config, subscribe: () => () => {} };
+        plugin.i18n = {}; plugin.commandCatalogSource = null;
+        const unsubscribe = state.subscribeTouchpadDiagnostics(() => {});
+        try {
+            runtime.start(config);
+            for (let cycle = 1; cycle <= 10; cycle++) {
+                assert.equal(runtime.restart(enabled).status, "applied");
+                assert.equal(state.getTouchpadDiagnostics().touchpadEnabled, true);
+                assert.equal(state.getTouchpadDiagnostics().capabilities.providerType, "windows-native");
+                assert.equal(state.getTouchpadDiagnostics().capabilities.supportsRawContacts, true);
+                assert.equal(starts, cycle); assert.equal(providers, cycle);
+                assert.equal(test.loads.length, 1); assert.equal(test.writes(), 1);
+                state.setTouchpadDiagnosticsPolling(true);
+                assert.ok(runtime.touchpadPollTimer !== null);
+                assert.ok(runtime.unsubscribeTouchpadPolling);
+                state.publishTouchpadFrame({ contacts: [{ id: 1, x: 0.2, y: 0.3 }], displayPath: [{ x: 0.2, y: 0.3 }], stage: "TRACKING" });
+                assert.ok(state.getTouchpadDiagnostics().latest);
+                assert.equal(runtime.restart(config).status, "applied");
+                assert.equal(stops, cycle); assert.ok(runtime.adapter);
+                assert.equal(getEventListeners(test.document, "pointerdown").length, 1);
+                assert.equal(getEventListeners(test.window, "contextmenu").length, 1);
+                assert.equal(runtime.touchpadPollTimer, null); assert.equal(runtime.unsubscribeTouchpadPolling, null);
+                assert.equal(runtime.touchpadAdapter, null);
+                assert.equal(state.getTouchpadDiagnostics().touchpadEnabled, false);
+                assert.equal(state.getTouchpadDiagnostics().capabilities, null); assert.equal(state.getTouchpadDiagnostics().latest, null);
+                const reads = test.nativeReads();
+                plugin.openSetting(); assert.equal(plugin.settingsDialog.isOpen, true); plugin.settingsDialog.close();
+                assert.equal(test.nativeReads(), reads); assert.equal(providers, cycle);
+                assert.equal(test.loads.length, 1); assert.equal(test.writes(), 1);
+                state.setTouchpadDiagnosticsPolling(true);
+                assert.equal(runtime.touchpadPollTimer, null);
+                callback({ timestamp: 1, contacts: [] });
+                assert.equal(state.getTouchpadDiagnostics().latest, null);
+                assert.equal(test.webContents.listenerCount("input-event"), 0);
+            }
+            // Removing our UI listener must leave no stale runtime subscriptions.
+            unsubscribe(); assert.equal(state.hasTouchpadDiagnosticsListeners(), false);
+        } finally { unsubscribe(); plugin.settingsDialog?.destroy(); runtime.dispose(); }
+        assert.equal(stops, 10); assert.equal(starts, 10);
+        for (const type of ["pointerdown", "pointermove", "pointerup", "visibilitychange"]) assert.equal(getEventListeners(test.document, type).length, 0);
+        for (const type of ["contextmenu", "keydown", "blur"]) assert.equal(getEventListeners(test.window, type).length, 0);
+    });
+    check("ten enable/disable cycles after native failure add one Electron listener and remove it every time", () => {
+        let starts = 0, stops = 0;
+        const test = fixture({ addon: {
+            capabilities: { lifecycleState: "stopped" },
+            start() { starts++; throw new Error("native unavailable"); },
+            stop() { stops++; return "stopped"; },
+        } });
+        const { GestureFlowRuntime } = test.load("src/runtime/GestureFlowRuntime.ts");
+        const { createDefaultConfig } = test.load("src/config/defaults.ts");
+        const state = test.load("src/runtime/TouchpadRuntimeState.ts");
+        const disabled = createDefaultConfig(), enabled = createDefaultConfig(); enabled.touchpad.enabled = true;
+        const runtime = new GestureFlowRuntime({ target: test.document, overlayI18n: {}, i18n: {} });
+        try {
+            runtime.start(disabled);
+            for (let cycle = 1; cycle <= 10; cycle++) {
+                assert.equal(runtime.restart(enabled).status, "applied"); assert.ok(runtime.adapter);
+                assert.equal(state.getTouchpadDiagnostics().capabilities.providerType, "electron-input-event");
+                assert.equal(test.webContents.listenerCount("input-event"), 1);
+                assert.equal(runtime.restart(disabled).status, "applied"); assert.ok(runtime.adapter);
+                assert.equal(test.webContents.listenerCount("input-event"), 0);
+                assert.equal(starts, cycle); assert.equal(stops, cycle);
+                assert.equal(test.loads.length, 1); assert.equal(test.writes(), 1);
+                assert.equal(state.getTouchpadDiagnostics().touchpadEnabled, false);
+            }
+        } finally { runtime.dispose(); }
+        assert.equal(test.webContents.listenerCount("input-event"), 0);
+    });
+    check("explicit running state prevents even void injected start from stealing callbacks or ownership", () => {
+        let starts = 0, stops = 0, callback;
+        const caps = { lifecycleState: "stopped" };
+        const test = fixture({ addon: {
+            capabilities: caps,
+            start(fn) { starts++; callback = fn; caps.lifecycleState = "running"; },
+            stop() { stops++; caps.lifecycleState = "stopped"; },
+        } });
+        const first = test.provider(), second = test.provider();
+        assert.equal(first.start(), "started"); const ownedCallback = callback;
+        assert.equal(first.start(), "started"); assert.equal(second.start(), "unavailable");
+        assert.equal(starts, 1); assert.equal(callback, ownedCallback);
+        second.dispose(); assert.equal(stops, 0);
+        first.stop(); assert.equal(stops, 1);
+        assert.equal(first.start(), "started"); assert.equal(starts, 2); first.dispose();
+        assert.equal(stops, 2);
+    });
+    check("already-running native return still rejects a raced or legacy bridge without lifecycle state", () => {
+        let starts = 0, stops = 0;
+        const test = fixture({ addon: {
+            capabilities: {}, start() { starts++; return "already-running"; }, stop() { stops++; },
+        } });
+        const provider = test.provider(); assert.equal(provider.start(), "unavailable");
+        provider.stop(); provider.dispose(); assert.equal(starts, 1); assert.equal(stops, 0);
+    });
+    for (const stopResult of ["stopped", "already-stopped", "stop-pending", "throws", undefined]) {
+        for (const lifecycleState of ["stopped", "running", "stop-pending", undefined]) {
+            check("stop " + stopResult + " cross-checks lifecycle " + lifecycleState + " before releasing ownership", () => {
+                let starts = 0, stops = 0;
+                const caps = { lifecycleState: undefined };
+                const errors = [];
+                const test = fixture({ addon: {
+                    capabilities: caps, start() { starts++; return "started"; },
+                    stop() { stops++; if (stopResult === "throws" && stops === 1) throw new Error("stop failed"); return stops === 1 ? stopResult : "stopped"; },
+                } });
+                const { WindowsNativeTouchpadProvider: Provider } = test.load("src/touchpad/WindowsNativeTouchpadProvider.ts");
+                const bridge = test.bridge.loadNativeTouchpadBridge(), first = new Provider(bridge, { onError: error => errors.push(error.label) });
+                assert.equal(first.start(), "started"); caps.lifecycleState = lifecycleState;
+                first.stop();
+                const pending = stopResult === "stop-pending" || stopResult === "throws" || lifecycleState === "running" || lifecycleState === "stop-pending";
+                assert.equal(first.stopPending, pending);
+                if (pending) assert.ok(errors.length > 0);
+                if (lifecycleState === "running") {
+                    const second = new Provider(bridge, {});
+                    assert.equal(second.start(), "unavailable"); second.stop();
+                    assert.equal(starts, 1); assert.equal(stops, 1);
+                }
+                caps.lifecycleState = "stopped";
+                first.stop(); first.stop(); assert.equal(stops, pending ? 2 : 1);
+                assert.equal(first.start(), "started"); assert.equal(starts, 2);
+                first.dispose(); assert.equal(stops, pending ? 3 : 2);
+            });
+        }
+    }
     check("N-API null guard precedes all API calls and producer shutdown stays first", () => {
         const source = fs.readFileSync(path.join(root, "native/touchpad/src/main.cpp"), "utf8");
         const callback = source.slice(source.indexOf("void CallJsFrame("), source.indexOf("// ------------------------------------------------------------- N-API exports"));

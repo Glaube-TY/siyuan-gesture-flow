@@ -159,7 +159,6 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
         const bridge = this.bridge;
         if (!bridge) return "unavailable";
         this.startFailure = null;
-        let wasRunning = false;
         try {
             const initialState = bridge.capabilities.lifecycleState;
             if (initialState === "stop-pending") {
@@ -171,7 +170,9 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
                 captureOwners.delete(bridge);
                 this.stopPending = false;
             }
-            wasRunning = bridge.capabilities.lifecycleState === "running";
+            if (bridge.capabilities.lifecycleState === "running") {
+                return this.unavailable("native touchpad capture belongs to another provider");
+            }
         } catch {
             return this.unavailable("native touchpad lifecycle check failed; fully restart SiYuan if it persists");
         }
@@ -203,12 +204,10 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
                 this.maybePublishStatus();
             }, this.startOptions);
         } catch {
-            // Only this attempt can own partial startup when no capture was running.
-            if (!wasRunning) {
-                captureOwners.set(bridge, this.ownershipToken);
-                this.stopPending = true;
-                this.stop();
-            }
+            // A running capture was rejected before this attempt; roll back partial startup.
+            captureOwners.set(bridge, this.ownershipToken);
+            this.stopPending = true;
+            this.stop();
             return this.unavailable(this.stopPending
                 ? "native touchpad bridge start failed; shutdown is incomplete; fully restart SiYuan if it persists"
                 : "native touchpad bridge start failed (Raw Input conflict or initialization error)");
@@ -242,7 +241,11 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
             return;
         }
         try {
-            this.stopPending = bridge.stop() === "stop-pending";
+            const result = bridge.stop();
+            const state = bridge.capabilities.lifecycleState;
+            // Legacy void bridges cannot confirm native release; accept only best-effort JS teardown.
+            this.stopPending = result === "stop-pending" || state === "running" || state === "stop-pending" ||
+                (result !== "stopped" && result !== "already-stopped" && result !== undefined);
             if (!this.stopPending) captureOwners.delete(bridge);
             if (this.stopPending) this.events.onError?.({ label: "native touchpad shutdown is incomplete; fully restart SiYuan if it persists" });
         } catch {

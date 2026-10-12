@@ -223,6 +223,8 @@
   "tpOpenSettingsUnavailable": "Could not open the system touchpad settings",
   "tpUnsupportedByProvider": "not supported by the current input source",
   "tpSectionTest": "Live test",
+  "tpDisabled": "Touchpad gestures are disabled",
+  "tpInitializing": "Touchpad input has not been detected yet",
   "tpTestArea": "Touchpad test area",
   "tpTestNoContacts": "The current input source does not provide per-contact data",
   "tpTestIdle": "Place fingers on the touchpad to begin",

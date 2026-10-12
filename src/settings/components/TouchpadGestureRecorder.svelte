@@ -136,6 +136,7 @@
     let finalContacts: Array<{ id: number; x: number; y: number }> = [];
 
     let rawContacts = false;
+    let touchpadEnabled = false;
     let waitTimer: ReturnType<typeof setTimeout> | null = null;
     let prepareTimer: ReturnType<typeof setTimeout> | null = null;
     let releaseWatchdogTimer: ReturnType<typeof setTimeout> | null = null;
@@ -533,8 +534,20 @@
     }
 
     function handleDiagnostics(diag: ReturnType<typeof getTouchpadDiagnostics>): void {
-        if (diag.capabilities) {
-            rawContacts = diag.capabilities.supportsRawContacts === true;
+        const wasEnabled = touchpadEnabled;
+        const hadRawContacts = rawContacts;
+        touchpadEnabled = diag.touchpadEnabled;
+        rawContacts = touchpadEnabled && diag.capabilities?.supportsRawContacts === true;
+        if (!rawContacts && (hadRawContacts || wasEnabled !== touchpadEnabled)) {
+            drainToDisarmed();
+            finalPath = [];
+            finalContactPaths = [];
+            finalAnchorIds = [];
+            finalMovingIds = [];
+            finalContacts = [];
+            lastPhysicalContactCount = 0;
+            releaseGate = null;
+            setTouchpadRecording(false);
         }
     }
 
@@ -762,7 +775,9 @@
             class:gf-tp-recorder-status--done={session === "DONE"}
             class:gf-tp-recorder-status--error={session === "ERROR"}
         >
-            {#if session === "DISARMED"}
+            {#if !touchpadEnabled}
+                {i18n.tpDisabled ?? "触控板手势未启用"}
+            {:else if session === "DISARMED"}
                 {i18n.tpRecorderDisarmed ?? "点击此面板开始录制"}
             {:else if session === "PREPARING"}
                 {message}
@@ -794,7 +809,9 @@
         {/if}
     </div>
 
-    {#if !rawContacts}
+    {#if !touchpadEnabled}
+        <p class="gf-tp-recorder-note">{i18n.tpDisabled ?? "触控板手势未启用"}</p>
+    {:else if !rawContacts}
         <p class="gf-tp-recorder-note">{i18n.tpRecorderNeedsNative ?? "需要原生触点数据才能录制"}</p>
     {/if}
 

@@ -223,6 +223,8 @@
   "tpOpenSettingsUnavailable": "无法打开系统触控板设置",
   "tpUnsupportedByProvider": "当前输入源不支持",
   "tpSectionTest": "实时测试",
+  "tpDisabled": "触控板手势未启用",
+  "tpInitializing": "触控板输入尚未检测",
   "tpTestArea": "触控测试区",
   "tpTestNoContacts": "当前输入源不提供逐触点数据",
   "tpTestIdle": "将手指放到触控板上开始测试",

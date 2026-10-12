@@ -30,6 +30,7 @@ import type { NativeTouchpadStartOptions } from "@/touchpad/nativeBridge";
 import { dispatchAllowed, providerSupportsKind } from "@/gesture/conflict/TouchpadConflictPolicy";
 import {
     publishTouchpadCapabilities,
+    publishTouchpadEnabled,
     publishTouchpadFrame,
     publishTouchpadRawFrame,
     subscribeTouchpadDiagnosticsPolling,
@@ -163,6 +164,7 @@ export class GestureFlowRuntime {
         }
         this.config = config;
         if (!config.enabled) {
+            publishTouchpadEnabled(false);
             this.state = "disabled";
             return;
         }
@@ -310,17 +312,8 @@ export class GestureFlowRuntime {
         overlay: GestureOverlay,
         signatureLabelResolver: SignatureLabelResolver,
     ): void {
-        // Always probe and publish the *potential* provider so the settings
-        // page shows the real provider ("Electron 事件观察", "Windows 原生",
-        // or "无") even while the touchpad feature is still disabled.  The
-        // probe provider is never started — constructing it has no side
-        // effects; only its capabilities are read.
-        const probeProvider = createTouchpadProvider({});
-        publishTouchpadCapabilities(probeProvider.capabilities);
-
-        if (!config.touchpad.enabled) {
-            return;
-        }
+        publishTouchpadEnabled(config.touchpad.enabled);
+        if (!config.touchpad.enabled) return;
         const trackerConfig = this.toTrackerConfig(config);
         const { kinds, minFingerCount, allowedFingerCounts } = touchpadKindsFromBindings(config.bindings);
         const nativeStartOptions = nativeTakeoverWithoutSystemClaims();
@@ -552,6 +545,7 @@ export class GestureFlowRuntime {
         if (this.shortcutExecutor) this.shortcutExecutor = null;
         this.dispatcher = null;
         try {
+            publishTouchpadEnabled(false);
             for (const [label, cleanup] of [
                 ["touchpad timer cleanup failed", () => { if (touchpadPollTimer !== null) clearInterval(touchpadPollTimer); }],
                 ["touchpad subscription cleanup failed", () => unsubscribeTouchpadPolling?.()],
@@ -574,6 +568,7 @@ export class GestureFlowRuntime {
         this.unsubscribeTouchpadPolling = null;
         this.touchpadAdapter = null;
         this.touchpadFeedback = null;
+        publishTouchpadEnabled(this.config?.touchpad.enabled === true);
         for (const [label, cleanup] of [
             ["touchpad timer cleanup failed", () => { if (touchpadPollTimer !== null) clearInterval(touchpadPollTimer); }],
             ["touchpad subscription cleanup failed", () => unsubscribeTouchpadPolling?.()],
