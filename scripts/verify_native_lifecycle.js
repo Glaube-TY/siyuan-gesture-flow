@@ -22,6 +22,17 @@ if (process.argv[2] === "--smoke-child") {
         assert.equal(addon.capabilities.tsfnActive, false);
         assert.equal(addon.capabilities.lifecycleState, "stopped");
     }
+    const other = createRequire(import.meta.url)(process.argv[4]);
+    assert.equal(addon.start(() => {}, {}), "started");
+    assert.throws(() => other.start(() => {}, {}), { code: "GF_START_FAILED" });
+    assert.equal(other.capabilities.rawThreadError, 170); // ERROR_BUSY: another DLL owns the usage.
+    assert.equal(other.capabilities.lifecycleState, "stopped");
+    assert.equal(addon.capabilities.lifecycleState, "running");
+    assert.equal(other.stop(), "already-stopped");
+    assert.equal(addon.stop(), "stopped");
+    assert.equal(other.start(() => {}, {}), "started");
+    assert.equal(other.stop(), "stopped");
+    console.log("Windows two-DLL smoke passed: distinct module window classes, refused Raw Input takeover, subsequent recovery.");
     console.log("Windows addon smoke passed: 10 real Start/Stop cycles, one TSFN release per cycle; no gesture takeover.");
 } else {
     const raw = fs.readFileSync(path.join(native, "raw_input_capture.cpp"), "utf8");
@@ -81,7 +92,9 @@ if (process.argv[2] === "--smoke-child") {
             console.log(threads.stdout.trim());
             const binary = path.join(isolated, "gesture_flow_touchpad.node");
             fs.copyFileSync(path.join(root, "native/gesture_flow_touchpad.node"), binary);
-            const smoke = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--smoke-child", binary], {
+            const otherBinary = path.join(isolated, "gesture_flow_touchpad_other.node");
+            fs.copyFileSync(binary, otherBinary);
+            const smoke = spawnSync(process.execPath, [fileURLToPath(import.meta.url), "--smoke-child", binary, otherBinary], {
                 encoding: "utf8", windowsHide: true, timeout: 20000,
             });
             assert.equal(smoke.status, 0, smoke.stdout + smoke.stderr);

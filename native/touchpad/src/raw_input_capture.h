@@ -91,6 +91,7 @@ class RawInputCapture {
  private:
   FrameCallback callback_;
   HWND hwnd_ = nullptr;
+  HINSTANCE moduleInstance_ = nullptr;
   bool registered_ = false;
   bool classRegistered_ = false;
   HANDLE thread_ = nullptr;
@@ -131,6 +132,7 @@ class RawInputCapture {
 
   /** Create the hidden window + register Raw Input ON the capture thread. */
   bool SetupOnThread();
+  bool QueryRawInputRegistration(HWND& target, bool& found);
   bool RegisterRawInput();
   void UnregisterRawInput();
   void PumpMessages();

@@ -58,6 +58,8 @@ export interface NativeBridgeFrame {
 /** Native-layer capabilities (from real runtime probes). */
 export interface NativeBridgeCapabilities {
     precisionTouchpad: boolean;
+    lifecycleState?: "stopped" | "running" | "stop-pending";
+    rawThreadError?: number;
     /** Hardware maximum contact count from the descriptor / Feature report. */
     maxContacts: number;
     /** Largest contact count observed at runtime (diagnostic only). */
@@ -86,12 +88,14 @@ export interface NativeTouchpadStartOptions {
     actionFingerCounts: readonly number[];
 }
 
+export type NativeTouchpadStartResult = "started" | "already-running" | void;
+
 /** What a native bridge must export. */
 export interface NativeTouchpadBridge {
     readonly id: string;
     readonly capabilities: NativeBridgeCapabilities;
     /** Start capture; frames/events are delivered to `onFrame`. */
-    start(onFrame: (frame: NativeBridgeFrame) => void, options?: NativeTouchpadStartOptions): void;
+    start(onFrame: (frame: NativeBridgeFrame) => void, options?: NativeTouchpadStartOptions): NativeTouchpadStartResult;
     /**
      * Stop capture and release every native resource (raw input
      * registration, hidden window, thread, WinRT controller, callbacks).
@@ -362,8 +366,8 @@ function normalizeBridge(raw: unknown, id: string): NativeTouchpadBridge | null 
         },
         // Wrappers keep `this` stable regardless of how the native module is
         // exported (e.g. a getter-backed object).
-        start: (onFrame: (frame: NativeBridgeFrame) => void, options?: NativeTouchpadStartOptions): void => {
-            mod.start!(onFrame, options);
+        start: (onFrame: (frame: NativeBridgeFrame) => void, options?: NativeTouchpadStartOptions): NativeTouchpadStartResult => {
+            return mod.start!(onFrame, options);
         },
         stop: () => mod.stop!(),
     };
@@ -387,6 +391,9 @@ function normalizeCapabilities(
               : 0;
     return {
         precisionTouchpad: caps?.precisionTouchpad === true,
+        lifecycleState: caps?.lifecycleState === "stopped" || caps?.lifecycleState === "running" || caps?.lifecycleState === "stop-pending"
+            ? caps.lifecycleState : undefined,
+        rawThreadError: typeof caps?.rawThreadError === "number" ? caps.rawThreadError : undefined,
         maxContacts: hardwareMax,
         hardwareMaxContacts: hardwareMax,
         observedMaxContacts:

@@ -81,14 +81,15 @@ export class ElectronInputEventProvider extends TouchpadProvider {
         };
     }
 
-    start(): void {
-        if (this.started) return;
+    start(): "started" | "unavailable" {
+        if (this.started) return "started";
         this.started = true;
         if (!this.tryAttach()) {
             this.started = false;
             this.events.onError?.({ label: "electron input-event provider could not attach" });
         }
         this.events.onStatus?.(this.capabilities);
+        return this.started ? "started" : "unavailable";
     }
 
     stop(): void {
@@ -118,9 +119,10 @@ export class ElectronInputEventProvider extends TouchpadProvider {
         if (!wc || typeof wc.on !== "function") return false;
         this.webContents = wc;
         try {
-            wc.on("input-event", this.onInputEvent);
             this.listenerAttached = true;
+            wc.on("input-event", this.onInputEvent);
         } catch {
+            this.detach();
             return false;
         }
         return true;

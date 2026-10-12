@@ -334,7 +334,7 @@ export class GestureFlowRuntime {
         let recorderFeedbackSuppressed = false;
 
         const adapter = new TouchpadGestureAdapter(
-            (providerEvents) => createTouchpadProvider(providerEvents, { nativeStartOptions }),
+            (providerEvents, provider) => createTouchpadProvider(providerEvents, { nativeStartOptions, provider }),
             {
                 onTerminal: (result) => {
                     this.handleTouchpadTerminal(result);

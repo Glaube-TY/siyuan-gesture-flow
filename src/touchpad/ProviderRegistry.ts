@@ -11,6 +11,7 @@ import type { NativeTouchpadStartOptions } from "./nativeBridge";
 
 export interface TouchpadProviderOptions {
     nativeStartOptions?: NativeTouchpadStartOptions;
+    provider?: "electron-input-event" | "none";
 }
 
 /**
@@ -36,15 +37,17 @@ export function createTouchpadProvider(
 
     // Windows-only for the native path this round; macOS / Linux get the
     // honest "none" provider (their native providers are planned).
-    if (probe.platform !== "win32") {
+    if (probe.platform !== "win32" || options.provider === "none") {
         return new NoneTouchpadProvider(events, [
-            `advanced touchpad support is Windows-only in this build (current platform: ${probe.platform})`,
+            options.provider === "none"
+                ? "no touchpad provider could start in this renderer"
+                : `advanced touchpad support is Windows-only in this build (current platform: ${probe.platform})`,
             "mouse gestures remain fully functional",
         ]);
     }
 
     // 1. Native bridge first.
-    const bridge = loadNativeTouchpadBridge();
+    const bridge = options.provider ? null : loadNativeTouchpadBridge();
     if (bridge) {
         return new WindowsNativeTouchpadProvider(
             bridge,
@@ -53,12 +56,6 @@ export function createTouchpadProvider(
             options.nativeStartOptions,
         );
     }
-    const nativeBlockedReason =
-        probe.hasInputEventOnWebContents
-            ? null
-            : "renderer cannot reach @electron/remote / webContents input-event";
-    void nativeBlockedReason;
-
     // 2. Electron observer fallback.
     if (probe.hasInputEventOnWebContents) {
         return new ElectronInputEventProvider(events, probe);
@@ -105,10 +102,11 @@ class NoneTouchpadProvider extends TouchpadProvider {
         return this.caps;
     }
 
-    start(): void {
-        if (this.started) return;
+    start(): "unavailable" {
+        if (this.started) return "unavailable";
         this.started = true;
         this.events.onStatus?.(this.caps);
+        return "unavailable";
     }
 
     stop(): void {

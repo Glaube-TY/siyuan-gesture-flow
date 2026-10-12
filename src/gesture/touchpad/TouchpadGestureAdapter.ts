@@ -91,7 +91,7 @@ export interface TouchpadAdapterEvents {
  * this adapter only ever reports the raw recognition result.
  */
 export class TouchpadGestureAdapter {
-    private readonly factory: (events: TouchpadProviderEvents) => TouchpadProvider;
+    private readonly factory: (events: TouchpadProviderEvents, provider?: "electron-input-event" | "none") => TouchpadProvider;
     private readonly events: TouchpadAdapterEvents;
     private readonly tracker: TouchpadGestureTracker;
     private provider: TouchpadProvider | null = null;
@@ -120,7 +120,7 @@ export class TouchpadGestureAdapter {
     private lastRawContactFrame: TouchpadFrame | null = null;
 
     constructor(
-        providerFactory: (events: TouchpadProviderEvents) => TouchpadProvider,
+        providerFactory: (events: TouchpadProviderEvents, provider?: "electron-input-event" | "none") => TouchpadProvider,
         events: TouchpadAdapterEvents = {},
         trackerConfig?: Partial<TouchpadTrackerConfig>,
     ) {
@@ -194,7 +194,17 @@ export class TouchpadGestureAdapter {
             onError: (err) => this.events.onError?.(err),
         };
         this.provider = this.factory(providerEvents);
-        this.provider.start();
+        let result = this.provider.start();
+        if (result === "unavailable" && this.provider.id === "windows-native") {
+            this.provider.dispose();
+            this.provider = this.factory(providerEvents, "electron-input-event");
+            result = this.provider.start();
+        }
+        if (result === "unavailable" && this.provider.id !== "none") {
+            this.provider.dispose();
+            this.provider = this.factory(providerEvents, "none");
+            this.provider.start();
+        }
         // Publish capabilities immediately — the provider emits onStatus
         // synchronously during start(), but double-publish is harmless.
         this.events.onStatus?.(this.provider.capabilities);

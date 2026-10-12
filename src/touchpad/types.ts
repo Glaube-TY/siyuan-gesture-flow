@@ -136,6 +136,7 @@ export interface TouchpadCapabilities {
         nativeAddonPath?: string;
         /** Whether the native addon module was loaded. */
         nativeModuleLoaded?: boolean;
+        lifecycleState?: "stopped" | "running" | "stop-pending";
         /** TouchpadGesturesController::IsSupported() result. */
         controllerSupported?: boolean;
         /** Whether the controller was created + enabled. */
@@ -231,6 +232,8 @@ export interface TouchpadProviderEvents {
     onError?(err: { label: string }): void;
 }
 
+export type TouchpadProviderStartResult = "started" | "unavailable" | void;
+
 /**
  * Base class for touchpad input providers.
  *
@@ -246,7 +249,7 @@ export abstract class TouchpadProvider {
     abstract get capabilities(): TouchpadCapabilities;
 
     /** Start delivering frames.  Must be idempotent. */
-    abstract start(): void;
+    abstract start(): TouchpadProviderStartResult;
 
     /**
      * Stop delivering frames and release every native resource.

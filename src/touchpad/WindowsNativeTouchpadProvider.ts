@@ -4,8 +4,12 @@ import {
     TouchpadFrame,
     TouchpadProvider,
     TouchpadProviderEvents,
+    TouchpadProviderStartResult,
 } from "./types";
-import { NativeTouchpadBridge, NativeTouchpadStartOptions } from "./nativeBridge";
+import { NativeBridgeCapabilities, NativeTouchpadBridge, NativeTouchpadStartOptions } from "./nativeBridge";
+
+// Tokens prevent a discarded pending provider from stopping its replacement.
+const captureOwners = new WeakMap<NativeTouchpadBridge, object>();
 
 /**
  * Windows Precision Touchpad provider (Windows 10 base + Windows 11
@@ -32,6 +36,8 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
     private readonly startOptions: NativeTouchpadStartOptions;
     private started = false;
     private stopPending = false;
+    private readonly ownershipToken = {};
+    private startFailure: string | null = null;
     /** Largest contact count observed in live frames (real data). */
     private observedMaxContacts = 0;
     /** Frames rejected by the second-layer invariant (diagnostics). */
@@ -53,8 +59,9 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
     }
 
     get capabilities(): TouchpadCapabilities {
-        const bridge = this.bridge;
-        if (!bridge) {
+        let caps: NativeBridgeCapabilities | undefined;
+        try { caps = this.bridge?.capabilities; } catch { /* diagnostics must not prevent fallback */ }
+        if (!caps) {
             return {
                 providerType: "windows-native",
                 platform: platformLabel(),
@@ -70,24 +77,23 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
                 canOverrideSystemGestures: false,
                 observerMode: true,
                 notes: [
-                    this.blockedReason ??
+                    this.startFailure ?? this.blockedReason ??
                         "native addon not loadable — run `pnpm native:build` on a machine with MSVC + Windows SDK",
                 ],
             };
         }
-        const caps = bridge.capabilities;
         // Authoritative hardware cap comes ONLY from the HID descriptor /
         // Feature report.  The observed max is just what we have seen so far.
         const hardwareMax = Math.max(0, caps.hardwareMaxContacts ?? 0);
         const observedMax = Math.max(0, caps.observedMaxContacts ?? 0, this.observedMaxContacts);
         const maxContactsKnown = hardwareMax > 0;
         const maxContacts = Math.max(hardwareMax, observedMax);
-        const rawCaptureActive = caps.rawContacts;
-        const multiContact = caps.multiContactGestures || (rawCaptureActive && maxContacts > 0);
+        const rawCaptureActive = this.started && caps.rawContacts;
+        const multiContact = this.started && (caps.multiContactGestures || (rawCaptureActive && maxContacts > 0));
         // Registration alone is not enough: until the HID contact map parses,
         // the provider cannot actually deliver the raw-contact contract.
         const rawContacts = rawCaptureActive && multiContact;
-        const controllerEnabled = caps.gesturesControllerEnabled === true;
+        const controllerEnabled = this.started && caps.gesturesControllerEnabled === true;
         const overriddenGestureFingerCounts = [...new Set([
             ...this.startOptions.manipulationFingerCounts,
             ...this.startOptions.actionFingerCounts,
@@ -108,8 +114,9 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
             supportsPress: false,
             canOverrideSystemGestures: controllerEnabled && overriddenGestureFingerCounts.length > 0,
             overriddenGestureFingerCounts: controllerEnabled ? overriddenGestureFingerCounts : [],
-            observerMode: false,
+            observerMode: !this.started,
             notes: [
+                ...(this.startFailure ? [this.startFailure] : []),
                 "raw multi-contact input via Precision Touchpad HID (Windows 10 base path)",
                 ...(multiContact
                     ? [`raw contacts: ${maxContacts > 0 ? `${maxContacts} contacts` : "active"}`]
@@ -124,6 +131,7 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
             diagnostics: {
                 nativeAddonPath: caps.loadInfo,
                 nativeModuleLoaded: true,
+                lifecycleState: caps.lifecycleState,
                 controllerSupported: caps.gesturesControllerAvailable,
                 controllerEnabled,
                 rawContactsActive: rawCaptureActive,
@@ -146,17 +154,30 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
         }
     }
 
-    start(): void {
-        if (this.started) return;
-        this.started = true;
+    start(): TouchpadProviderStartResult {
+        if (this.started) return "started";
         const bridge = this.bridge;
-        if (!bridge) {
-            this.events.onStatus?.(this.capabilities);
-            return;
-        }
-        this.stopPending = true;
+        if (!bridge) return "unavailable";
+        this.startFailure = null;
+        let wasRunning = false;
         try {
-            bridge.start((frame) => {
+            const initialState = bridge.capabilities.lifecycleState;
+            if (initialState === "stop-pending") {
+                const stopped = bridge.stop();
+                if ((stopped !== "stopped" && stopped !== "already-stopped") ||
+                    bridge.capabilities.lifecycleState !== "stopped") {
+                    return this.unavailable("native touchpad shutdown is incomplete; fully restart SiYuan if it persists");
+                }
+                captureOwners.delete(bridge);
+                this.stopPending = false;
+            }
+            wasRunning = bridge.capabilities.lifecycleState === "running";
+        } catch {
+            return this.unavailable("native touchpad lifecycle check failed; fully restart SiYuan if it persists");
+        }
+        let result;
+        try {
+            result = bridge.start((frame) => {
                 if (!this.started) return;
                 const converted = this.toFrame(frame);
                 // Controller pointer / contact-count samples (no per-contact
@@ -182,23 +203,48 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
                 this.maybePublishStatus();
             }, this.startOptions);
         } catch {
-            this.started = false;
-            this.stop();
-            this.events.onError?.({ label: "native touchpad bridge start failed" });
-            this.events.onStatus?.(this.capabilities);
-            return;
+            // Only this attempt can own partial startup when no capture was running.
+            if (!wasRunning) {
+                captureOwners.set(bridge, this.ownershipToken);
+                this.stopPending = true;
+                this.stop();
+            }
+            return this.unavailable(this.stopPending
+                ? "native touchpad bridge start failed; shutdown is incomplete; fully restart SiYuan if it persists"
+                : "native touchpad bridge start failed (Raw Input conflict or initialization error)");
         }
+        if (result === "already-running") {
+            return this.unavailable("native touchpad capture belongs to another provider");
+        }
+        if (result !== "started" && result !== undefined) {
+            return this.unavailable("native touchpad bridge returned an invalid start status");
+        }
+        captureOwners.set(bridge, this.ownershipToken);
+        this.started = true;
+        this.stopPending = false;
         this.events.onStatus?.(this.capabilities);
+        return "started";
+    }
+
+    private unavailable(label: string): "unavailable" {
+        this.startFailure = label;
+        this.events.onError?.({ label });
+        this.events.onStatus?.(this.capabilities);
+        return "unavailable";
     }
 
     stop(): void {
         if (!this.started && !this.stopPending) return;
         this.started = false;
         const bridge = this.bridge;
-        if (!bridge) { this.stopPending = false; return; }
+        if (!bridge || captureOwners.get(bridge) !== this.ownershipToken) {
+            this.stopPending = false;
+            return;
+        }
         try {
             this.stopPending = bridge.stop() === "stop-pending";
-            if (this.stopPending) this.events.onError?.({ label: "native touchpad shutdown is incomplete" });
+            if (!this.stopPending) captureOwners.delete(bridge);
+            if (this.stopPending) this.events.onError?.({ label: "native touchpad shutdown is incomplete; fully restart SiYuan if it persists" });
         } catch {
             this.stopPending = true;
             this.events.onError?.({ label: "native touchpad bridge stop failed" });

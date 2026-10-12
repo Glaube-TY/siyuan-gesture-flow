@@ -114,7 +114,13 @@ ThreadStopResult RawInputCapture::StopLocked() {
 
 bool RawInputCapture::SetupOnThread() {
   if (stopRequested_) return false;
-  HINSTANCE hInst = GetModuleHandleW(nullptr);
+  if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                          GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                          reinterpret_cast<LPCWSTR>(&RawInputCapture::WndProc), &moduleInstance_)) {
+    lastError_ = GetLastError();
+    return false;
+  }
+  const HINSTANCE hInst = moduleInstance_;
   WNDCLASSW wc = {};
   wc.lpfnWndProc = &RawInputCapture::WndProc;
   wc.hInstance = hInst;
@@ -126,6 +132,7 @@ bool RawInputCapture::SetupOnThread() {
     // Older cached DLLs can have incompatible window userdata layouts.
     if (lastError_ != ERROR_CLASS_ALREADY_EXISTS ||
         !GetClassInfoW(hInst, wc.lpszClassName, &existing) ||
+        existing.hInstance != moduleInstance_ ||
         existing.lpfnWndProc != &RawInputCapture::WndProc) return false;
   }
   if (stopRequested_) return false;
@@ -139,7 +146,6 @@ bool RawInputCapture::SetupOnThread() {
     if (!stopRequested_) lastError_ = GetLastError();
     return false;
   }
-  registered_ = true;
   return true;
 }
 
@@ -151,29 +157,62 @@ void RawInputCapture::CleanupOnThread() {
     hwnd_ = nullptr;
   }
   if (classRegistered_) {
-    if (!UnregisterClassW(L"GestureFlowTouchpadCaptureWnd", GetModuleHandleW(nullptr))) {
+    if (!UnregisterClassW(L"GestureFlowTouchpadCaptureWnd", moduleInstance_)) {
       lastError_ = GetLastError();
     }
     classRegistered_ = false;
   }
+  moduleInstance_ = nullptr;
+}
+
+bool RawInputCapture::QueryRawInputRegistration(HWND& target, bool& found) {
+  found = false;
+  target = nullptr;
+  UINT count = 0;
+  if (GetRegisteredRawInputDevices(nullptr, &count, sizeof(RAWINPUTDEVICE)) == static_cast<UINT>(-1)) return false;
+  if (count == 0) return true;
+  std::vector<RAWINPUTDEVICE> devices(count);
+  const UINT read = GetRegisteredRawInputDevices(devices.data(), &count, sizeof(RAWINPUTDEVICE));
+  if (read == static_cast<UINT>(-1)) return false;
+  if (read > devices.size()) { SetLastError(ERROR_INVALID_DATA); return false; }
+  for (UINT i = 0; i < read; ++i) {
+    if (devices[i].usUsagePage != kDigitizerUsagePage || devices[i].usUsage != kTouchpadUsage) continue;
+    if (found) { SetLastError(ERROR_INVALID_DATA); return false; }
+    found = true;
+    target = devices[i].hwndTarget;
+  }
+  return true;
 }
 
 bool RawInputCapture::RegisterRawInput() {
+  HWND target = nullptr;
+  bool found = false;
+  if (!QueryRawInputRegistration(target, found)) return false;
+  if (found && target != hwnd_) { SetLastError(ERROR_BUSY); return false; }
   RAWINPUTDEVICE rid = {};
   rid.usUsagePage = kDigitizerUsagePage;
   rid.usUsage = kTouchpadUsage;
   rid.dwFlags = RIDEV_INPUTSINK | RIDEV_DEVNOTIFY;
   rid.hwndTarget = hwnd_;
-  return RegisterRawInputDevices(&rid, 1, sizeof(rid)) != FALSE;
+  if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) return false;
+  registered_ = true;
+  // Query/register is not atomic across modules; recheck before claiming capture.
+  if (!QueryRawInputRegistration(target, found)) return false;
+  if (!found || target != hwnd_) { SetLastError(ERROR_BUSY); return false; }
+  return true;
 }
 
 void RawInputCapture::UnregisterRawInput() {
+  HWND target = nullptr;
+  bool found = false;
+  if (!QueryRawInputRegistration(target, found)) { lastError_ = GetLastError(); return; }
+  if (!found || target != hwnd_) return;
   RAWINPUTDEVICE rid = {};
   rid.usUsagePage = kDigitizerUsagePage;
   rid.usUsage = kTouchpadUsage;
   rid.dwFlags = RIDEV_REMOVE;
   rid.hwndTarget = nullptr;
-  RegisterRawInputDevices(&rid, 1, sizeof(rid));
+  if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) lastError_ = GetLastError();
 }
 
 void RawInputCapture::PumpMessages() {
@@ -208,6 +247,7 @@ LRESULT CALLBACK RawInputCapture::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
         // actually arrived.
         self->RecordWmInput();
         self->HandleInput(reinterpret_cast<HRAWINPUT>(lp));
+        if (GET_RAWINPUT_CODE_WPARAM(wp) == RIM_INPUT) return DefWindowProcW(hwnd, msg, wp, lp);
         return 0;
       case WM_INPUT_DEVICE_CHANGE:
         self->HandleDeviceChange(wp, reinterpret_cast<HANDLE>(lp));
