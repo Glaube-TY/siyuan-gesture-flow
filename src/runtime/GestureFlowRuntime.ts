@@ -115,6 +115,7 @@ export class GestureFlowRuntime {
     private readonly onTouchpadError: (label: string) => void;
 
     private state: RuntimeState = "stopped";
+    private cleaningUp = false;
     private config: GestureFlowConfig | null = null;
 
     // Owned components (created on start, destroyed on stop).
@@ -156,6 +157,7 @@ export class GestureFlowRuntime {
      * `enabled: false`, the runtime enters the `disabled` state.
      */
     start(config: GestureFlowConfig): void {
+        if (this.cleaningUp) throw new Error("runtime cleanup in progress");
         if (this.state === "running" || this.state === "disabled") {
             return;
         }
@@ -164,85 +166,45 @@ export class GestureFlowRuntime {
             this.state = "disabled";
             return;
         }
-        this.doStart(config);
+        try {
+            this.doStart(config);
+        } catch (err) {
+            this.doStop();
+            throw err;
+        }
     }
 
     /** Stop the runtime and tear down all components.  Idempotent. */
     stop(): void {
         this.doStop();
-        this.state = "stopped";
-        this.config = null;
     }
 
-    /** Release owned JS resources on unload, even if one cleanup fails. */
+    /** Final teardown uses the same exception-isolated cleanup as stop/restart. */
     dispose(): void {
-        const {
-            touchpadPollTimer, unsubscribeTouchpadPolling, adapter,
-            touchpadAdapter, controller, touchpadFeedback, commandExecutor,
-        } = this;
-        // Detach ownership first so reentrant or repeated disposal is harmless.
-        this.state = "stopped";
-        this.config = null;
-        this.touchpadPollTimer = null;
-        this.unsubscribeTouchpadPolling = null;
-        this.adapter = null;
-        this.touchpadAdapter = null;
-        this.controller = null;
-        this.touchpadFeedback = null;
-        this.commandExecutor = null;
-        this.shortcutExecutor = null;
-        this.dispatcher = null;
-
-        for (const cleanup of [
-            () => { if (touchpadPollTimer !== null) clearInterval(touchpadPollTimer); },
-            () => unsubscribeTouchpadPolling?.(),
-            () => adapter?.detach(),
-            () => touchpadAdapter?.dispose(),
-            () => controller?.destroy(),
-            () => touchpadFeedback?.destroy(),
-            () => commandExecutor?.reset(),
-        ]) {
-            try {
-                cleanup();
-            } catch {
-                // A failing component must not strand the remaining resources.
-            }
-        }
+        this.doStop(true);
     }
 
     /** Restart the runtime with a new configuration. */
     restart(newConfig: GestureFlowConfig): RestartResult {
         const previousConfig = this.config;
-        this.doStop();
-        this.state = "stopped";
-        this.config = null;
-
-        this.config = newConfig;
-        if (!newConfig.enabled) {
-            this.state = "disabled";
-            return { status: "applied", config: newConfig };
-        }
+        this.stop();
         try {
-            this.doStart(newConfig);
+            this.start(newConfig);
             return { status: "applied", config: newConfig };
-        } catch (err) {
-            const label = err instanceof Error ? err.message : String(err);
-            if (previousConfig && previousConfig.enabled) {
+        } catch {
+            const label = "runtime start failed";
+            if (previousConfig) {
                 try {
-                    this.doStart(previousConfig);
+                    this.start(previousConfig);
                     return {
-                        status: "rolled-back",
-                        config: previousConfig,
-                        rollbackConfig: newConfig,
-                        error: label,
+                        status: "rolled-back", config: previousConfig,
+                        rollbackConfig: newConfig, error: label,
                     };
                 } catch {
-                    // rollback failed — fall through to total failure
+                    this.reportError("runtime rollback failed");
                 }
             }
-            this.doStop();
-            this.state = "stopped";
-            this.config = null;
+            this.stop();
             return { status: "failed", error: label };
         }
     }
@@ -332,7 +294,12 @@ export class GestureFlowRuntime {
         this.adapter.attach(this.target);
 
         // --- Touchpad path (independent lifecycle) ---
-        this.startTouchpad(config, overlay, signatureLabelResolver);
+        try {
+            this.startTouchpad(config, overlay, signatureLabelResolver);
+        } catch {
+            this.stopFailedTouchpad();
+            this.reportError("touchpad initialization failed; mouse gestures remain active");
+        }
 
         this.state = "running";
     }
@@ -566,39 +533,60 @@ export class GestureFlowRuntime {
     /**
      * Tear down all owned components.  Idempotent.
      */
-    private doStop(): void {
-        if (this.touchpadPollTimer !== null) {
-            clearInterval(this.touchpadPollTimer);
-            this.touchpadPollTimer = null;
-        }
-        if (this.unsubscribeTouchpadPolling) {
-            this.unsubscribeTouchpadPolling();
-            this.unsubscribeTouchpadPolling = null;
-        }
-        if (this.adapter) {
-            this.adapter.detach();
-            this.adapter = null;
-        }
-        if (this.touchpadAdapter) {
-            this.touchpadAdapter.detach();
-            this.touchpadAdapter = null;
-        }
-        if (this.controller) {
-            this.controller.destroy();
-            this.controller = null;
-        }
-        if (this.touchpadFeedback) {
-            this.touchpadFeedback.destroy();
-            this.touchpadFeedback = null;
-        }
-        if (this.commandExecutor) {
-            this.commandExecutor.reset();
-            this.commandExecutor = null;
-        }
-        if (this.shortcutExecutor) {
-            this.shortcutExecutor = null;
-        }
+    private doStop(dispose = false): void {
+        if (this.cleaningUp) return;
+        this.cleaningUp = true;
+        const {
+            touchpadPollTimer, unsubscribeTouchpadPolling, adapter,
+            touchpadAdapter, controller, touchpadFeedback, commandExecutor,
+        } = this;
+        this.state = "stopped";
+        this.config = null;
+        this.touchpadPollTimer = null;
+        this.unsubscribeTouchpadPolling = null;
+        this.adapter = null;
+        this.touchpadAdapter = null;
+        this.controller = null;
+        this.touchpadFeedback = null;
+        this.commandExecutor = null;
+        if (this.shortcutExecutor) this.shortcutExecutor = null;
         this.dispatcher = null;
+        try {
+            for (const [label, cleanup] of [
+                ["touchpad timer cleanup failed", () => { if (touchpadPollTimer !== null) clearInterval(touchpadPollTimer); }],
+                ["touchpad subscription cleanup failed", () => unsubscribeTouchpadPolling?.()],
+                ["mouse listener cleanup failed", () => adapter?.detach()],
+                ["touchpad provider cleanup failed", () => dispose ? touchpadAdapter?.dispose() : touchpadAdapter?.detach()],
+                ["mouse feedback cleanup failed", () => controller?.destroy()],
+                ["touchpad feedback cleanup failed", () => touchpadFeedback?.destroy()],
+                ["command cleanup failed", () => commandExecutor?.reset()],
+            ] as const) {
+                try { cleanup(); } catch { this.reportError(label); }
+            }
+        } finally {
+            this.cleaningUp = false;
+        }
+    }
+
+    private stopFailedTouchpad(): void {
+        const { touchpadPollTimer, unsubscribeTouchpadPolling, touchpadAdapter, touchpadFeedback } = this;
+        this.touchpadPollTimer = null;
+        this.unsubscribeTouchpadPolling = null;
+        this.touchpadAdapter = null;
+        this.touchpadFeedback = null;
+        for (const [label, cleanup] of [
+            ["touchpad timer cleanup failed", () => { if (touchpadPollTimer !== null) clearInterval(touchpadPollTimer); }],
+            ["touchpad subscription cleanup failed", () => unsubscribeTouchpadPolling?.()],
+            ["touchpad provider cleanup failed", () => touchpadAdapter?.dispose()],
+            // The shared overlay still belongs to the healthy mouse controller.
+            ["touchpad feedback cleanup failed", () => touchpadFeedback?.onCancel()],
+        ] as const) {
+            try { cleanup(); } catch { this.reportError(label); }
+        }
+    }
+
+    private reportError(label: string): void {
+        try { this.onTouchpadError(label); } catch { /* A failing error sink cannot interrupt cleanup. */ }
     }
 
     /**

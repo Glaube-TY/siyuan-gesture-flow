@@ -26,6 +26,9 @@
         "GESTURE_FLOW_NATIVE_EXPORTS",
         "GESTURE_FLOW_HAVE_TG_CONTROLLER=<(have_tg_controller)"
       ],
+      "msvs_settings": {
+        "VCCLCompilerTool": { "ExceptionHandling": 1 }
+      },
       "cflags_cc": [
         "/std:c++17",
         "/EHsc",

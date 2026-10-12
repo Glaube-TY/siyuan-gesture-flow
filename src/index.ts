@@ -161,7 +161,12 @@ export default class GestureFlowPlugin extends Plugin {
                 return; // replaced by a newer lifecycle
             }
 
-            runtime.start(result.config);
+            try {
+                runtime.start(result.config);
+            } catch {
+                runtime.dispose();
+                console.warn("[GestureFlow] runtime initialization failed");
+            }
 
             // A saved configuration exists on disk but this version
             // cannot read it.  Show a one-time hint; the original data
@@ -184,7 +189,17 @@ export default class GestureFlowPlugin extends Plugin {
             // not trigger a redundant restart.
             this.unsubscribeConfig = configManager.subscribe((next) => {
                 if (token !== this.lifecycleToken) return;
-                const restartResult = runtime.restart(next);
+                let restartResult: ReturnType<GestureFlowRuntime["restart"]>;
+                try {
+                    restartResult = runtime.restart(next);
+                } catch {
+                    runtime.stop();
+                    console.warn("[GestureFlow] runtime restart failed");
+                    return;
+                }
+                if (restartResult.status === "failed") {
+                    console.warn("[GestureFlow] runtime restart could not recover");
+                }
                 if (restartResult.status === "rolled-back") {
                     // Consistency: the new config was persisted and shown
                     // in the settings UI, but the runtime could not apply
@@ -204,6 +219,10 @@ export default class GestureFlowPlugin extends Plugin {
                     );
                 }
             });
+        }).catch(() => {
+            if (token !== this.lifecycleToken || this.runtime !== runtime) return;
+            runtime.dispose();
+            console.warn("[GestureFlow] configuration initialization failed");
         });
     }
 
@@ -232,6 +251,9 @@ export default class GestureFlowPlugin extends Plugin {
             if (token !== this.lifecycleToken) return; // unloaded while waiting
             if (this.configManager === null) return;
             this.doOpenSetting();
+        }).catch(() => {
+            if (token !== this.lifecycleToken) return;
+            console.warn("[GestureFlow] settings initialization failed");
         });
     }
 

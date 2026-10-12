@@ -60,36 +60,78 @@ bool GesturesController::IsAvailable() {
 #endif
 }
 
-bool GesturesController::Start(PointerCallback onPointer, ActionCallback onAction,
-                               const GesturesControllerConfig& config) {
-  if (running_) return true;
-  if (!config.any() || !IsAvailable()) return false;
+ThreadStartResult GesturesController::Start(PointerCallback onPointer, ActionCallback onAction,
+                                          const GesturesControllerConfig& config) {
+  std::unique_lock<std::mutex> lock(lifecycleMutex_);
+  if (thread_) return running_ && !stopRequested_
+      ? ThreadStartResult::kAlreadyRunning : ThreadStartResult::kStopPending;
+  if (!config.any() || !IsAvailable()) return ThreadStartResult::kUnavailable;
   onPointer_ = std::move(onPointer);
   onAction_ = std::move(onAction);
   config_ = config;
-  enabled_ = false;
-  running_ = true;
+  enabled_ = running_ = false;
+  lastError_ = ERROR_SUCCESS;
+  stopRequested_ = startSucceeded_ = false;
+  stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  startEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+  if (!stopEvent_ || !startEvent_) {
+    lastError_ = GetLastError();
+    if (stopEvent_) CloseHandle(stopEvent_);
+    if (startEvent_) CloseHandle(startEvent_);
+    stopEvent_ = startEvent_ = nullptr;
+    onPointer_ = {}; onAction_ = {};
+    return ThreadStartResult::kFailed;
+  }
   thread_ = CreateThread(nullptr, 0, &GesturesController::ThreadProc, this, 0, nullptr);
   if (!thread_) {
-    running_ = false;
-    return false;
+    lastError_ = GetLastError();
+    CloseHandle(startEvent_); CloseHandle(stopEvent_);
+    startEvent_ = stopEvent_ = nullptr;
+    onPointer_ = {}; onAction_ = {};
+    return ThreadStartResult::kFailed;
   }
-  return true;
+  startWaiting_ = true;
+  HANDLE events[] = {startEvent_, stopEvent_};
+  lock.unlock();
+  const DWORD wait = WaitForMultipleObjects(2, events, FALSE, 3000);
+  lock.lock();
+  startWaiting_ = false;
+  if (wait == WAIT_OBJECT_0 && startSucceeded_ && !stopRequested_) return ThreadStartResult::kStarted;
+  if (wait == WAIT_FAILED) lastError_ = GetLastError();
+  const auto stopped = StopLocked();
+  if (wait == WAIT_TIMEOUT) return ThreadStartResult::kTimedOut;
+  return stopped == ThreadStopResult::kPending
+      ? ThreadStartResult::kStopPending : ThreadStartResult::kFailed;
 }
 
-void GesturesController::Stop() {
-  if (!running_ && !thread_) return;
-  running_ = false;
-  enabled_ = false;
-  if (thread_) {
-    PostThreadMessageW(GetThreadId(thread_), WM_QUIT, 0, 0);
-    DWORD wait = WaitForSingleObject(thread_, 1500);
-    if (wait == WAIT_TIMEOUT) {
-      TerminateThread(thread_, 0);
-    }
-    CloseHandle(thread_);
-    thread_ = nullptr;
+void GesturesController::RequestStopLocked() {
+  stopRequested_ = true;
+  running_ = enabled_ = false;
+  if (stopEvent_ && !SetEvent(stopEvent_)) lastError_ = GetLastError();
+}
+
+void GesturesController::RequestStop() {
+  std::lock_guard<std::mutex> lock(lifecycleMutex_);
+  RequestStopLocked();
+}
+
+ThreadStopResult GesturesController::Stop() {
+  std::lock_guard<std::mutex> lock(lifecycleMutex_);
+  return StopLocked();
+}
+
+ThreadStopResult GesturesController::StopLocked() {
+  RequestStopLocked();
+  if (!thread_) return ThreadStopResult::kAlreadyStopped;
+  const DWORD wait = WaitForSingleObject(thread_, 1500);
+  if (wait != WAIT_OBJECT_0 || startWaiting_) {
+    if (wait == WAIT_FAILED) lastError_ = GetLastError();
+    return ThreadStopResult::kPending;
   }
+  CloseHandle(thread_); CloseHandle(startEvent_); CloseHandle(stopEvent_);
+  thread_ = startEvent_ = stopEvent_ = nullptr;
+  onPointer_ = {}; onAction_ = {};
+  return ThreadStopResult::kStopped;
 }
 
 void GesturesController::RunLoop() {
@@ -97,11 +139,14 @@ void GesturesController::RunLoop() {
   bool roOk = SUCCEEDED(hr);
   if (!roOk) {
     // Without COM the controller cannot be created.
+    lastError_ = static_cast<DWORD>(hr);
     running_ = false;
+    SetEvent(startEvent_);
     return;
   }
 #if GESTURE_FLOW_HAVE_CPPWINRT
   try {
+    if (stopRequested_) { SetEvent(startEvent_); RoUninitialize(); return; }
     using namespace winrt::Windows::UI::Input;
     auto controller = TouchpadGesturesController::CreateForProcess();
     // Take over ONLY finger counts/kinds with enabled GestureFlow bindings.
@@ -114,17 +159,16 @@ void GesturesController::RunLoop() {
     if (config_.actions[1]) supported |= TouchpadGesturesConfiguration::FourFingerActions;
     if (config_.actions[2]) supported |= TouchpadGesturesConfiguration::FiveFingerActions;
     controller.SupportedGestures(supported);
-    controller.Enabled(true);
-    winrt::event_token tokenPressed =
-        controller.PointerPressed([this](auto&&, auto&& args) {          if (!running_) return;
+    auto tokenPressed =
+        controller.PointerPressed(winrt::auto_revoke, [this](auto&&, auto&& args) {          if (!running_) return;
           auto pt = args.CurrentPosition();
           if (onPointer_) {
             onPointer_(static_cast<int>(args.ContactCount()), NowMs(),
                        static_cast<double>(pt.X), static_cast<double>(pt.Y));
           }
         });
-    winrt::event_token tokenMoved =
-        controller.PointerMoved([this](auto&&, auto&& args) {
+    auto tokenMoved =
+        controller.PointerMoved(winrt::auto_revoke, [this](auto&&, auto&& args) {
           if (!running_) return;
           auto pt = args.CurrentPosition();
           if (onPointer_) {
@@ -132,8 +176,8 @@ void GesturesController::RunLoop() {
                        static_cast<double>(pt.X), static_cast<double>(pt.Y));
           }
         });
-    winrt::event_token tokenReleased =
-        controller.PointerReleased([this](auto&&, auto&& args) {
+    auto tokenReleased =
+        controller.PointerReleased(winrt::auto_revoke, [this](auto&&, auto&& args) {
           if (!running_) return;
           auto pt = args.CurrentPosition();
           if (onPointer_) {
@@ -141,8 +185,8 @@ void GesturesController::RunLoop() {
                        static_cast<double>(pt.X), static_cast<double>(pt.Y));
           }
         });
-    winrt::event_token tokenAction =
-        controller.GlobalActionPerformed([this](auto&&, auto&& args) {
+    auto tokenAction =
+        controller.GlobalActionPerformed(winrt::auto_revoke, [this](auto&&, auto&& args) {
           if (!running_) return;
           int action = static_cast<int>(args.GestureType());
           int fingers = args.ContactCount() > 0
@@ -152,28 +196,39 @@ void GesturesController::RunLoop() {
             onAction_(MapActionKind(action), fingers);
           }
         });
-    // Controller creation + SupportedGestures + Enabled(true) + all event
-    // subscriptions succeeded — only now is it genuinely active.
-    enabled_ = true;
-    // Keep the apartment alive and pump messages until stop.
-    MSG msg;
-    while (running_ && GetMessageW(&msg, nullptr, 0, 0) > 0) {
-      TranslateMessage(&msg);
-      DispatchMessageW(&msg);
+    if (!stopRequested_) controller.Enabled(true);
+    startSucceeded_ = !stopRequested_.load();
+    running_ = enabled_ = startSucceeded_.load();
+    SetEvent(startEvent_);
+    while (!stopRequested_ && startSucceeded_) {
+      const DWORD wait = MsgWaitForMultipleObjectsEx(1, &stopEvent_, 250,
+                                                    QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+      if (wait == WAIT_OBJECT_0) break;
+      if (wait == WAIT_FAILED) { lastError_ = GetLastError(); break; }
+      MSG msg;
+      while (!stopRequested_ && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        if (msg.message == WM_QUIT) { stopRequested_ = true; break; }
+        TranslateMessage(&msg);
+        DispatchMessageW(&msg);
+      }
     }
-    enabled_ = false;
+    running_ = enabled_ = false;
     controller.Enabled(false);
-    controller.PointerPressed(tokenPressed);
-    controller.PointerMoved(tokenMoved);
-    controller.PointerReleased(tokenReleased);
-    controller.GlobalActionPerformed(tokenAction);
+    tokenPressed.revoke();
+    tokenMoved.revoke();
+    tokenReleased.revoke();
+    tokenAction.revoke();
     controller = nullptr;
+  } catch (const winrt::hresult_error& error) {
+    lastError_ = static_cast<DWORD>(error.code().value);
+    startSucceeded_ = false;
   } catch (...) {
-    // Controller creation or event subscription failed -- degrade gracefully.
-    enabled_ = false;
-    running_ = false;
+    lastError_ = ERROR_UNHANDLED_EXCEPTION;
+    startSucceeded_ = false;
   }
 #endif
+  running_ = enabled_ = false;
+  SetEvent(startEvent_);
   if (roOk) {
     RoUninitialize();
   }

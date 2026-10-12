@@ -20,7 +20,7 @@ function loadModule(filename) {
         fileName: filename,
     }).outputText;
     const localRequire = (id) => {
-        if (id === "siyuan") return { Plugin: class {}, globalCommand() {} };
+        if (id === "siyuan") return { Plugin: class {}, globalCommand() {}, showMessage() {} };
         if (id.endsWith(".scss")) return {};
         if (id.endsWith(".svelte")) return { default: class {} };
         if (!id.startsWith(".") && !id.startsWith("@/")) return require(id);
@@ -82,6 +82,11 @@ reentrantRuntime.unsubscribeTouchpadPolling = () => reentrantRuntime.dispose();
 reentrantRuntime.commandExecutor = { reset: () => resets++ };
 reentrantRuntime.dispose();
 assert.equal(resets, 1);
+const restartDuringCleanup = runtime();
+restartDuringCleanup.unsubscribeTouchpadPolling = () => restartDuringCleanup.start({ enabled: false });
+restartDuringCleanup.stop();
+assert.equal(restartDuringCleanup.getState(), "stopped");
+assert.equal(restartDuringCleanup.config, null);
 const stoppedRuntime = runtime();
 stoppedRuntime.start({ enabled: false });
 stoppedRuntime.stop();
@@ -191,3 +196,108 @@ try {
     confirms.closeAllSafeConfirms = originalClose;
 }
 console.log("Runtime lifecycle checks passed: exception isolation, repeated disposal, timers, listeners, provider release, unload order.");
+
+// Ordinary stops/restarts use the same cleanup guarantees as final disposal.
+for (const operation of ["stop", "restart"]) {
+    const instance = runtime();
+    const attempts = [];
+    instance.config = { enabled: false };
+    instance.adapter = { detach() { attempts.push("mouse"); throw new Error("cleanup failure"); } };
+    instance.touchpadAdapter = { detach() { attempts.push("touchpad"); } };
+    instance.controller = { destroy() { attempts.push("feedback"); } };
+    instance.commandExecutor = { reset() { attempts.push("commands"); } };
+    const result = operation === "stop" ? instance.stop() : instance.restart({ enabled: false });
+    assert.deepEqual(attempts, ["mouse", "touchpad", "feedback", "commands"]);
+    if (operation === "restart") assert.equal(result.status, "applied");
+    instance.stop();
+    assert.equal(instance.getState(), "stopped");
+}
+for (const rollbackFails of [false, true]) {
+    const instance = runtime();
+    const previous = { enabled: true, name: "previous" };
+    const next = { enabled: true, name: "next" };
+    let cleanups = 0;
+    let failuresEnabled = false;
+    instance.doStart = (config) => {
+        instance.adapter = { detach() { cleanups++; } };
+        if (config === next || (rollbackFails && failuresEnabled)) throw new Error("startup failure");
+        instance.state = "running";
+    };
+    instance.start(previous);
+    failuresEnabled = true;
+    assert.equal(instance.restart(next).status, rollbackFails ? "failed" : "rolled-back");
+    assert.equal(instance.getState(), rollbackFails ? "stopped" : "running");
+    assert.equal(instance.config, rollbackFails ? null : previous);
+    assert.equal(cleanups, rollbackFails ? 3 : 2);
+    instance.dispose();
+}
+
+// index.ts must catch load/start/restart/settings failures and reject late mounts.
+const configModule = load("src/config/ConfigManager.ts");
+const runtimeModule = load("src/runtime/GestureFlowRuntime.ts");
+const savedConfigManager = configModule.ConfigManager;
+const savedRuntime = runtimeModule.GestureFlowRuntime;
+const unhandled = [];
+const onUnhandled = (error) => unhandled.push(error);
+process.on("unhandledRejection", onUnhandled);
+globalThis.window = new EventTarget();
+globalThis.document = new EventTarget();
+console.warn = () => {};
+try {
+    for (const scenario of ["unload-before-load", "load-rejection", "start-failure", "restart-failure", "settings-failure"]) {
+        let resolve, reject;
+        const pending = new Promise((yes, no) => { resolve = yes; reject = no; });
+        const counts = { starts: 0, stops: 0, disposals: 0, settings: 0, subscriptions: 0 };
+        let subscribed;
+        configModule.ConfigManager = class {
+            isLoaded = false;
+            load() { return pending; }
+            subscribe(callback) { counts.subscriptions++; subscribed = callback; return () => {}; }
+            destroy() {}
+        };
+        runtimeModule.GestureFlowRuntime = class {
+            start() { counts.starts++; if (scenario === "start-failure") throw new Error("start failed"); }
+            stop() { counts.stops++; }
+            dispose() { counts.disposals++; }
+            restart() { throw new Error("restart failed"); }
+        };
+        const plugin = new GestureFlowPlugin({ app: null });
+        plugin.i18n = {};
+        plugin.doOpenSetting = () => {
+            counts.settings++;
+            if (scenario === "settings-failure") throw new Error("settings failed");
+        };
+        plugin.onload();
+        plugin.openSetting();
+        if (scenario === "unload-before-load") plugin.onunload();
+        if (scenario === "load-rejection") reject(new Error("load failed"));
+        else resolve({ config: { enabled: false }, source: "storage" });
+        await new Promise(setImmediate);
+        if (scenario === "unload-before-load" || scenario === "load-rejection") {
+            assert.equal(counts.starts, 0);
+            assert.equal(counts.settings, 0);
+            assert.equal(counts.subscriptions, 0);
+        } else {
+            assert.equal(counts.starts, 1);
+            assert.equal(counts.subscriptions, 1);
+        }
+        if (scenario === "start-failure") assert.equal(counts.disposals, 1);
+        if (scenario === "restart-failure") {
+            assert.doesNotThrow(() => subscribed({ enabled: false }));
+            assert.equal(counts.stops, 1);
+        }
+        plugin.onunload();
+    }
+    await new Promise(setImmediate);
+    assert.deepEqual(unhandled, []);
+} finally {
+    process.removeListener("unhandledRejection", onUnhandled);
+    configModule.ConfigManager = savedConfigManager;
+    runtimeModule.GestureFlowRuntime = savedRuntime;
+    console.warn = originalWarn;
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+}
+console.log("Stop/restart recovery and asynchronous plugin startup checks passed.");

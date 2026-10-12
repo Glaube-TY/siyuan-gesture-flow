@@ -97,7 +97,7 @@ export interface NativeTouchpadBridge {
      * registration, hidden window, thread, WinRT controller, callbacks).
      * Fully reversible.
      */
-    stop(): void;
+    stop(): "stopped" | "already-stopped" | "stop-pending" | void;
     /** Optional low-level parser diagnostics (descriptor map + assembler). */
     getDiagnostics?(): Record<string, unknown>;
 }
@@ -365,9 +365,7 @@ function normalizeBridge(raw: unknown, id: string): NativeTouchpadBridge | null 
         start: (onFrame: (frame: NativeBridgeFrame) => void, options?: NativeTouchpadStartOptions): void => {
             mod.start!(onFrame, options);
         },
-        stop: (): void => {
-            mod.stop!();
-        },
+        stop: () => mod.stop!(),
     };
     if (typeof mod.getDiagnostics === "function") {
         bridge.getDiagnostics = (): Record<string, unknown> => mod.getDiagnostics!();

@@ -11,7 +11,6 @@ namespace gestureflow {
 
 namespace {
 constexpr USHORT kTouchpadUsage = 0x05;
-constexpr UINT kShutdownMessage = WM_APP + 0x475;
 
 double NowSeconds() {
   using namespace std::chrono;
@@ -32,98 +31,131 @@ RawInputCapture::RawInputCapture() = default;
 
 RawInputCapture::~RawInputCapture() { Stop(); }
 
-bool RawInputCapture::Start(FrameCallback callback) {
-  if (running_) return true;
-  callback_ = std::move(callback);
+ThreadStartResult RawInputCapture::Start(FrameCallback callback) {
+  std::unique_lock<std::mutex> lock(lifecycleMutex_);
+  if (thread_) return running_ && !stopRequested_
+      ? ThreadStartResult::kAlreadyRunning : ThreadStartResult::kStopPending;
   {
-    std::lock_guard<std::mutex> lock(stateMutex_);
-    // A restart begins a new physical acquisition epoch.  Retaining a pending
-    // hybrid frame or previous-contact latch across plugin restarts can emit a
-    // bogus continuation/empty frame into the new tracker.
+    std::lock_guard<std::mutex> stateLock(stateMutex_);
     InvalidateDescriptor();
   }
+  lastError_ = ERROR_SUCCESS;
+  stopRequested_ = false;
+  startSucceeded_ = false;
+  running_ = false;
+  callback_ = std::move(callback);
+  stopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
   startEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
-  if (!startEvent_) return false;
-  running_ = true;
+  if (!stopEvent_ || !startEvent_) {
+    lastError_ = GetLastError();
+    if (stopEvent_) CloseHandle(stopEvent_);
+    if (startEvent_) CloseHandle(startEvent_);
+    stopEvent_ = startEvent_ = nullptr;
+    callback_ = {};
+    return ThreadStartResult::kFailed;
+  }
   thread_ = CreateThread(nullptr, 0, &RawInputCapture::ThreadProc, this, 0, nullptr);
   if (!thread_) {
-    running_ = false;
+    lastError_ = GetLastError();
     CloseHandle(startEvent_);
-    startEvent_ = nullptr;
-    return false;
+    CloseHandle(stopEvent_);
+    startEvent_ = stopEvent_ = nullptr;
+    callback_ = {};
+    return ThreadStartResult::kFailed;
   }
-  // Wait for the thread to create the window and register Raw Input.
-  DWORD startWait = WaitForSingleObject(startEvent_, 3000);
-  if (startWait != WAIT_OBJECT_0) {
-    running_ = false;
-    // Do not close startEvent_ until the setup thread is gone: it may still be
-    // about to signal the handle.
-    PostThreadMessageW(GetThreadId(thread_), WM_QUIT, 0, 0);
-    DWORD wait = WaitForSingleObject(thread_, 1000);
-    if (wait == WAIT_TIMEOUT) TerminateThread(thread_, 0);
-    CloseHandle(thread_);
-    thread_ = nullptr;
-    CloseHandle(startEvent_);
-    startEvent_ = nullptr;
-    hwnd_ = nullptr;
-    return false;
+  // Stop can signal cancellation while Start waits; it cannot close these handles yet.
+  startWaiting_ = true;
+  HANDLE events[] = {startEvent_, stopEvent_};
+  lock.unlock();
+  const DWORD wait = WaitForMultipleObjects(2, events, FALSE, 3000);
+  lock.lock();
+  startWaiting_ = false;
+  if (wait == WAIT_OBJECT_0 && startSucceeded_ && !stopRequested_) {
+    return ThreadStartResult::kStarted;
   }
-  CloseHandle(startEvent_);
-  startEvent_ = nullptr;
-  if (!hwnd_) {
-    // SetupOnThread failed (window creation or Raw Input registration).
-    running_ = false;
-    WaitForSingleObject(thread_, 1000);
-    CloseHandle(thread_);
-    thread_ = nullptr;
-    return false;
-  }
-  return true;
+  if (wait == WAIT_FAILED) lastError_ = GetLastError();
+  const auto stopped = StopLocked();
+  if (wait == WAIT_TIMEOUT) return ThreadStartResult::kTimedOut;
+  return stopped == ThreadStopResult::kPending
+      ? ThreadStartResult::kStopPending : ThreadStartResult::kFailed;
 }
 
-void RawInputCapture::Stop() {
-  if (!running_ && !thread_) return;
+void RawInputCapture::RequestStopLocked() {
+  stopRequested_ = true;
   running_ = false;
-  if (thread_) {
-    // Ask the owning thread to unregister + destroy its window.  DestroyWindow
-    // from the JS thread fails because windows are thread-affine.
-    if (hwnd_) {
-      PostMessageW(hwnd_, kShutdownMessage, 0, 0);
-    } else {
-      PostThreadMessageW(GetThreadId(thread_), WM_QUIT, 0, 0);
-    }
-    DWORD wait = WaitForSingleObject(thread_, 1500);
-    if (wait == WAIT_TIMEOUT) {
-      TerminateThread(thread_, 0);
-    }
-    CloseHandle(thread_);
-    thread_ = nullptr;
-  }
-  hwnd_ = nullptr;
+  if (stopEvent_ && !SetEvent(stopEvent_)) lastError_ = GetLastError();
 }
 
-/** Runs on the capture thread: create the window + register Raw Input. */
-void RawInputCapture::SetupOnThread() {
+void RawInputCapture::RequestStop() {
+  std::lock_guard<std::mutex> lock(lifecycleMutex_);
+  RequestStopLocked();
+}
+
+ThreadStopResult RawInputCapture::Stop() {
+  std::lock_guard<std::mutex> lock(lifecycleMutex_);
+  return StopLocked();
+}
+
+ThreadStopResult RawInputCapture::StopLocked() {
+  RequestStopLocked();
+  if (!thread_) return ThreadStopResult::kAlreadyStopped;
+  const DWORD wait = WaitForSingleObject(thread_, 1500);
+  if (wait != WAIT_OBJECT_0 || startWaiting_) {
+    if (wait == WAIT_FAILED) lastError_ = GetLastError();
+    return ThreadStopResult::kPending;
+  }
+  CloseHandle(thread_);
+  CloseHandle(startEvent_);
+  CloseHandle(stopEvent_);
+  thread_ = startEvent_ = stopEvent_ = nullptr;
+  callback_ = {};
+  return ThreadStopResult::kStopped;
+}
+
+bool RawInputCapture::SetupOnThread() {
+  if (stopRequested_) return false;
   HINSTANCE hInst = GetModuleHandleW(nullptr);
   WNDCLASSW wc = {};
   wc.lpfnWndProc = &RawInputCapture::WndProc;
   wc.hInstance = hInst;
   wc.lpszClassName = L"GestureFlowTouchpadCaptureWnd";
-  if (!RegisterClassW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) {
-    SetEvent(startEvent_);
-    return;
+  classRegistered_ = RegisterClassW(&wc) != 0;
+  if (!classRegistered_) {
+    lastError_ = GetLastError();
+    WNDCLASSW existing = {};
+    // Older cached DLLs can have incompatible window userdata layouts.
+    if (lastError_ != ERROR_CLASS_ALREADY_EXISTS ||
+        !GetClassInfoW(hInst, wc.lpszClassName, &existing) ||
+        existing.lpfnWndProc != &RawInputCapture::WndProc) return false;
   }
+  if (stopRequested_) return false;
   hwnd_ = CreateWindowExW(0, wc.lpszClassName, L"GestureFlowTouchpadCapture",
                           WS_OVERLAPPED, 0, 0, 0, 0, nullptr, nullptr, hInst, this);
   if (!hwnd_) {
-    SetEvent(startEvent_);
-    return;
+    lastError_ = GetLastError();
+    return false;
   }
-  if (!RegisterRawInput()) {
-    DestroyWindow(hwnd_);
+  if (stopRequested_ || !RegisterRawInput()) {
+    if (!stopRequested_) lastError_ = GetLastError();
+    return false;
+  }
+  registered_ = true;
+  return true;
+}
+
+void RawInputCapture::CleanupOnThread() {
+  if (hwnd_) {
+    if (registered_) UnregisterRawInput();
+    registered_ = false;
+    if (!DestroyWindow(hwnd_)) lastError_ = GetLastError();
     hwnd_ = nullptr;
   }
-  SetEvent(startEvent_);
+  if (classRegistered_) {
+    if (!UnregisterClassW(L"GestureFlowTouchpadCaptureWnd", GetModuleHandleW(nullptr))) {
+      lastError_ = GetLastError();
+    }
+    classRegistered_ = false;
+  }
 }
 
 bool RawInputCapture::RegisterRawInput() {
@@ -145,10 +177,17 @@ void RawInputCapture::UnregisterRawInput() {
 }
 
 void RawInputCapture::PumpMessages() {
-  MSG msg;
-  while (GetMessageW(&msg, nullptr, 0, 0) > 0) {
-    TranslateMessage(&msg);
-    DispatchMessageW(&msg);
+  while (!stopRequested_) {
+    const DWORD wait = MsgWaitForMultipleObjectsEx(1, &stopEvent_, 250,
+                                                  QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+    if (wait == WAIT_OBJECT_0) return;
+    if (wait == WAIT_FAILED) { lastError_ = GetLastError(); return; }
+    MSG msg;
+    while (!stopRequested_ && PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
+      if (msg.message == WM_QUIT) return;
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
   }
 }
 
@@ -172,10 +211,6 @@ LRESULT CALLBACK RawInputCapture::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM
         return 0;
       case WM_INPUT_DEVICE_CHANGE:
         self->HandleDeviceChange(wp, reinterpret_cast<HANDLE>(lp));
-        return 0;
-      case kShutdownMessage:
-        self->UnregisterRawInput();
-        DestroyWindow(hwnd);
         return 0;
       case WM_DESTROY:
         self->hwnd_ = nullptr;
@@ -376,8 +411,18 @@ TouchpadDescriptorStatus RawInputCapture::descriptorStatus() const {
 
 DWORD WINAPI RawInputCapture::ThreadProc(LPVOID param) {
   RawInputCapture* self = static_cast<RawInputCapture*>(param);
-  self->SetupOnThread();
-  self->PumpMessages();
+  try {
+    self->startSucceeded_ = self->SetupOnThread() && !self->stopRequested_;
+    self->running_ = self->startSucceeded_.load();
+    SetEvent(self->startEvent_);
+    if (self->startSucceeded_ && !self->stopRequested_) self->PumpMessages();
+  } catch (...) {
+    self->lastError_ = ERROR_UNHANDLED_EXCEPTION;
+    self->startSucceeded_ = false;
+    SetEvent(self->startEvent_);
+  }
+  self->running_ = false;
+  self->CleanupOnThread();
   return 0;
 }
 

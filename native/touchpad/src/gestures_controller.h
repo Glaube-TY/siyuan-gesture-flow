@@ -4,9 +4,11 @@
 #include <array>
 #include <atomic>
 #include <functional>
+#include <mutex>
 #include <windows.h>
 
 #include "native_events.h"
+#include "thread_lifecycle.h"
 
 namespace gestureflow {
 
@@ -53,9 +55,11 @@ class GesturesController {
   /** True when the controller API is available on this system (probe only). */
   static bool IsAvailable();
 
-  bool Start(PointerCallback onPointer, ActionCallback onAction,
+  ThreadStartResult Start(PointerCallback onPointer, ActionCallback onAction,
              const GesturesControllerConfig& config);
-  void Stop();
+  void RequestStop();
+  ThreadStopResult Stop();
+  DWORD lastError() const { return lastError_.load(); }
   bool running() const { return running_; }
 
   /**
@@ -71,6 +75,15 @@ class GesturesController {
   ActionCallback onAction_;
   GesturesControllerConfig config_;
   HANDLE thread_ = nullptr;
+  HANDLE startEvent_ = nullptr;
+  HANDLE stopEvent_ = nullptr;
+  std::mutex lifecycleMutex_;
+  bool startWaiting_ = false;
+  std::atomic<bool> stopRequested_{false};
+  std::atomic<bool> startSucceeded_{false};
+  std::atomic<DWORD> lastError_{ERROR_SUCCESS};
+  void RequestStopLocked();
+  ThreadStopResult StopLocked();
   std::atomic<bool> running_{false};
   std::atomic<bool> enabled_{false};
 

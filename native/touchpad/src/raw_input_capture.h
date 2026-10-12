@@ -10,6 +10,7 @@
 #include "frame_assembler.h"
 #include "hid_descriptor.h"
 #include "native_events.h"
+#include "thread_lifecycle.h"
 
 namespace gestureflow {
 
@@ -66,10 +67,12 @@ class RawInputCapture {
   ~RawInputCapture();
 
   /** Start capture.  Returns false when registration failed. */
-  bool Start(FrameCallback callback);
+  ThreadStartResult Start(FrameCallback callback);
 
   /** Stop capture and release all resources.  Safe to call twice. */
-  void Stop();
+  void RequestStop();
+  ThreadStopResult Stop();
+  DWORD lastError() const { return lastError_.load(); }
 
   bool running() const { return running_.load(); }
 
@@ -88,8 +91,19 @@ class RawInputCapture {
  private:
   FrameCallback callback_;
   HWND hwnd_ = nullptr;
+  bool registered_ = false;
+  bool classRegistered_ = false;
   HANDLE thread_ = nullptr;
   HANDLE startEvent_ = nullptr;
+  HANDLE stopEvent_ = nullptr;
+  std::mutex lifecycleMutex_;
+  bool startWaiting_ = false;
+  std::atomic<bool> stopRequested_{false};
+  std::atomic<bool> startSucceeded_{false};
+  std::atomic<DWORD> lastError_{ERROR_SUCCESS};
+  void RequestStopLocked();
+  ThreadStopResult StopLocked();
+  void CleanupOnThread();
   std::atomic<bool> running_{false};
 
   /** Guards descriptor, assembler and diagnostics read from the JS thread. */
@@ -116,7 +130,7 @@ class RawInputCapture {
   void RecordWmInput();
 
   /** Create the hidden window + register Raw Input ON the capture thread. */
-  void SetupOnThread();
+  bool SetupOnThread();
   bool RegisterRawInput();
   void UnregisterRawInput();
   void PumpMessages();

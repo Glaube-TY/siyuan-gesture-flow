@@ -275,6 +275,69 @@ try {
             }
         });
     }
+    check("partial native start rolls back once while the real mouse runtime keeps running", () => {
+        let starts = 0, stops = 0;
+        const test = fixture({ addon: {
+            start() { starts++; throw new Error("partial native start"); },
+            stop() { stops++; return "stopped"; },
+            capabilities: { precisionTouchpad: true, maxContacts: 5 },
+        } });
+        const { GestureFlowRuntime } = test.load("src/runtime/GestureFlowRuntime.ts");
+        const { createDefaultConfig } = test.load("src/config/defaults.ts");
+        const config = createDefaultConfig();
+        config.touchpad.enabled = true;
+        const errors = [];
+        const instance = new GestureFlowRuntime({
+            target: test.document, overlayI18n: {}, i18n: {}, onTouchpadError: (label) => errors.push(label),
+        });
+        try {
+            instance.start(config);
+            assert.equal(instance.getState(), "running");
+            assert.ok(instance.adapter);
+            assert.equal(starts, 1);
+            assert.equal(stops, 1);
+            assert.ok(errors.some((label) => label.includes("start failed")));
+        } finally { instance.dispose(); }
+        assert.equal(stops, 1);
+    });
+    check("native stop-pending is reported and repeated Stop safely retries", () => {
+        let stops = 0;
+        const test = fixture({ addon: {
+            start() {},
+            stop() { return ++stops === 1 ? "stop-pending" : "stopped"; },
+            capabilities: { precisionTouchpad: true, maxContacts: 5 },
+        } });
+        const { WindowsNativeTouchpadProvider } = test.load("src/touchpad/WindowsNativeTouchpadProvider.ts");
+        const errors = [];
+        const provider = new WindowsNativeTouchpadProvider(test.bridge.loadNativeTouchpadBridge(), {
+            onError: (error) => errors.push(error.label),
+        });
+        provider.start();
+        provider.stop();
+        assert.ok(errors.some((label) => label.includes("incomplete")));
+        provider.stop();
+        provider.stop();
+        assert.equal(stops, 2);
+    });
+    check("touchpad attachment exception preserves the mouse feedback overlay", () => {
+        const test = fixture();
+        const { TouchpadGestureAdapter } = test.load("src/gesture/touchpad/TouchpadGestureAdapter.ts");
+        const attach = TouchpadGestureAdapter.prototype.attach;
+        TouchpadGestureAdapter.prototype.attach = function () { attach.call(this); throw new Error("attach failed"); };
+        const { GestureFlowRuntime } = test.load("src/runtime/GestureFlowRuntime.ts");
+        const { createDefaultConfig } = test.load("src/config/defaults.ts");
+        const config = createDefaultConfig();
+        config.touchpad.enabled = true;
+        const instance = new GestureFlowRuntime({ target: test.document, overlayI18n: {}, i18n: {} });
+        try {
+            instance.start(config);
+            assert.equal(instance.getState(), "running");
+            assert.ok(instance.adapter);
+            assert.equal(instance.controller.overlay.destroyed, false);
+            assert.equal(instance.touchpadAdapter, null);
+            assert.equal(instance.touchpadFeedback, null);
+        } finally { instance.dispose(); }
+    });
     check("N-API null guard precedes all API calls and producer shutdown stays first", () => {
         const source = fs.readFileSync(path.join(root, "native/touchpad/src/main.cpp"), "utf8");
         const callback = source.slice(source.indexOf("void CallJsFrame("), source.indexOf("// ------------------------------------------------------------- N-API exports"));
@@ -282,7 +345,7 @@ try {
         const guard = callback.indexOf("if (!f || !env || !js_cb) return;");
         const firstApi = callback.search(/\bnapi_\w+\s*\(/);
         assert.ok(ownership >= 0 && guard > ownership && firstApi > guard);
-        const stop = source.slice(source.indexOf("napi_value Stop("), source.indexOf("napi_value GetCapabilities("));
+        const stop = source.slice(source.indexOf("ThreadStopResult StopNative("), source.indexOf("napi_value GetCapabilities("));
         assert.ok(stop.indexOf("g_controller.Stop()") < stop.indexOf("napi_release_threadsafe_function"));
         assert.ok(stop.indexOf("g_rawCapture.Stop()") < stop.indexOf("napi_release_threadsafe_function"));
     });

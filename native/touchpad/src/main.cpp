@@ -6,6 +6,7 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -18,9 +19,15 @@ namespace {
 
 napi_env g_env = nullptr;
 napi_threadsafe_function g_tsfn = nullptr;
-RawInputCapture g_rawCapture;
-GesturesController g_controller;
-bool g_started = false;
+// Process-lifetime owners retain objects if a driver prevents bounded shutdown.
+RawInputCapture& g_rawCapture = *new RawInputCapture();
+GesturesController& g_controller = *new GesturesController();
+enum class AddonState { kStopped, kRunning, kStopping };
+std::atomic<AddonState> g_state{AddonState::kStopped};
+std::atomic<bool> g_acceptFrames{false};
+std::mutex g_lifecycleMutex;
+unsigned long g_tsfnReleaseCount = 0;
+bool g_releaseFailed = false;
 bool g_rawActive = false;
 std::atomic<int> g_maxContactsSeen{0};
 std::atomic<unsigned long> g_deliveryQueueDropCount{0};
@@ -73,13 +80,14 @@ bool FindPrecisionTouchpad() {
 
 NativeCapabilities ProbeCapabilities() {
   NativeCapabilities caps;
+  if (g_state == AddonState::kStopping) return caps;
   caps.precisionTouchpad = FindPrecisionTouchpad();
   caps.gesturesControllerAvailable = GesturesController::IsAvailable();
   // System-gesture takeover is real only after the controller thread really
   // enabled it — IsAvailable() is merely a probe.
   caps.gesturesControllerEnabled = g_controller.enabled();
   caps.canOverrideSystemGestures = caps.gesturesControllerEnabled;
-  caps.rawContacts = g_rawActive;
+  caps.rawContacts = g_rawActive && g_rawCapture.running();
   // Raw multi-contact input is available once the HID descriptor contact map
   // has been parsed (independent of the Windows 11 controller).
   const TouchpadDescriptorStatus desc = g_rawCapture.descriptorStatus();
@@ -95,7 +103,7 @@ NativeCapabilities ProbeCapabilities() {
 
 // Called by the Raw Input / controller threads with a NativeFrame*.
 void EmitFrame(NativeFrame* frame) {
-  if (!g_tsfn) {
+  if (!g_acceptFrames || !g_tsfn) {
     delete frame;
     return;
   }
@@ -143,6 +151,7 @@ void OnAction(ActionKind kind, int fingers) {
 void CallJsFrame(napi_env env, napi_value js_cb, void* /*context*/, void* data) {
   std::unique_ptr<NativeFrame> f(static_cast<NativeFrame*>(data));
   if (!f || !env || !js_cb) return;
+  if (!g_acceptFrames) return;
   napi_value global;
   napi_get_global(env, &global);
 
@@ -251,65 +260,89 @@ GesturesControllerConfig ReadControllerConfig(napi_env env, size_t argc,
   return config;
 }
 
+const char* LifecycleState() {
+  switch (g_state.load()) {
+    case AddonState::kRunning: return "running";
+    case AddonState::kStopping: return "stop-pending";
+    default: return "stopped";
+  }
+}
+
+// The caller serializes lifecycle changes; producer joins are the TSFN release barrier.
+ThreadStopResult StopNative() {
+  g_acceptFrames = false;
+  if (g_state == AddonState::kStopped) return ThreadStopResult::kAlreadyStopped;
+  g_state = AddonState::kStopping;
+  g_rawActive = false;
+  g_controller.RequestStop();
+  g_rawCapture.RequestStop();
+  const auto controllerStop = g_controller.Stop();
+  const auto rawStop = g_rawCapture.Stop();
+  if (controllerStop == ThreadStopResult::kPending || rawStop == ThreadStopResult::kPending ||
+      g_releaseFailed) return ThreadStopResult::kPending;
+  if (g_tsfn) {
+    const napi_status status = napi_release_threadsafe_function(g_tsfn, napi_tsfn_abort);
+    ++g_tsfnReleaseCount;
+    if (status != napi_ok) { g_releaseFailed = true; return ThreadStopResult::kPending; }
+    g_tsfn = nullptr;
+  }
+  g_state = AddonState::kStopped;
+  return ThreadStopResult::kStopped;
+}
+
+napi_value StatusValue(napi_env env, const char* status) {
+  napi_value value;
+  napi_create_string_utf8(env, status, NAPI_AUTO_LENGTH, &value);
+  return value;
+}
+
 napi_value Start(napi_env env, napi_callback_info info) {
+  std::lock_guard<std::mutex> lock(g_lifecycleMutex);
   size_t argc = 2;
   napi_value args[2];
   napi_get_cb_info(env, info, &argc, args, nullptr, nullptr);
-  if (argc < 1) {
-    napi_throw_type_error(env, nullptr, "start(callback) requires a callback");
-    return nullptr;
-  }
   napi_valuetype type;
-  napi_typeof(env, args[0], &type);
-  if (type != napi_function) {
+  if (argc < 1 || napi_typeof(env, args[0], &type) != napi_ok || type != napi_function) {
     napi_throw_type_error(env, nullptr, "start(callback) requires a function");
     return nullptr;
   }
-  if (g_started) {
-    napi_value undef;
-    napi_get_undefined(env, &undef);
-    return undef;
+  if (g_state == AddonState::kStopping) {
+    napi_throw_error(env, "GF_STOP_PENDING", "native touchpad shutdown is incomplete");
+    return nullptr;
   }
+  if (g_state == AddonState::kRunning) return StatusValue(env, "already-running");
   g_env = env;
   napi_value resourceName;
   napi_create_string_utf8(env, "GestureFlowTouchpad", NAPI_AUTO_LENGTH, &resourceName);
   if (napi_create_threadsafe_function(env, args[0], nullptr, resourceName, 256, 1, nullptr,
                                       nullptr, nullptr, CallJsFrame, &g_tsfn) != napi_ok) {
-    napi_throw_error(env, nullptr, "failed to create thread-safe function");
+    napi_throw_error(env, "GF_TSFN_CREATE_FAILED", "failed to create thread-safe function");
     return nullptr;
   }
-
-  g_started = true;
-  const GesturesControllerConfig controllerConfig =
-      ReadControllerConfig(env, argc, args);
-  // Raw Input contact frames (best effort).
-  g_rawActive = g_rawCapture.Start(OnRawFrame);
-  // TouchpadGesturesController 3/4/5-finger actions (best effort).
-  g_controller.Start(OnPointer, OnAction, controllerConfig);
-
-  napi_value undef;
-  napi_get_undefined(env, &undef);
-  return undef;
+  g_state = AddonState::kRunning;
+  g_acceptFrames = true;
+  const auto rawStart = g_rawCapture.Start(OnRawFrame);
+  const auto controllerStart = g_controller.Start(OnPointer, OnAction,
+                                                  ReadControllerConfig(env, argc, args));
+  g_rawActive = rawStart == ThreadStartResult::kStarted;
+  const bool controllerActive = controllerStart == ThreadStartResult::kStarted;
+  if (rawStart == ThreadStartResult::kStopPending || rawStart == ThreadStartResult::kTimedOut ||
+      controllerStart == ThreadStartResult::kStopPending || controllerStart == ThreadStartResult::kTimedOut ||
+      (!g_rawActive && !controllerActive)) {
+    const auto stopped = StopNative();
+    napi_throw_error(env, stopped == ThreadStopResult::kPending ? "GF_STOP_PENDING" : "GF_START_FAILED",
+                     "native touchpad initialization did not complete");
+    return nullptr;
+  }
+  return StatusValue(env, "started");
 }
 
 napi_value Stop(napi_env env, napi_callback_info info) {
   (void)info;
-  if (!g_started) {
-    napi_value undef;
-    napi_get_undefined(env, &undef);
-    return undef;
-  }
-  g_started = false;
-  g_controller.Stop();
-  g_rawCapture.Stop();
-  g_rawActive = false;
-  if (g_tsfn) {
-    napi_release_threadsafe_function(g_tsfn, napi_tsfn_abort);
-    g_tsfn = nullptr;
-  }
-  napi_value undef;
-  napi_get_undefined(env, &undef);
-  return undef;
+  std::lock_guard<std::mutex> lock(g_lifecycleMutex);
+  const auto stopped = StopNative();
+  return StatusValue(env, stopped == ThreadStopResult::kPending ? "stop-pending" :
+                          stopped == ThreadStopResult::kAlreadyStopped ? "already-stopped" : "stopped");
 }
 
 napi_value GetCapabilities(napi_env env, napi_callback_info info) {
@@ -336,7 +369,7 @@ napi_value GetCapabilities(napi_env env, napi_callback_info info) {
   napi_set_named_property(env, out, "gesturesControllerEnabled", v);
   napi_get_boolean(env, caps.canOverrideSystemGestures, &v);
   napi_set_named_property(env, out, "canOverrideSystemGestures", v);
-  napi_get_boolean(env, g_rawActive, &v);
+  napi_get_boolean(env, caps.rawContacts, &v);
   napi_set_named_property(env, out, "rawContacts", v);
   napi_get_boolean(env, caps.multiContactGestures, &v);
   napi_set_named_property(env, out, "multiContactGestures", v);
@@ -348,6 +381,12 @@ napi_value GetCapabilities(napi_env env, napi_callback_info info) {
   }
   napi_set_named_property(env, out, "supportedGestureFingerCounts", counts);
   SetStr(out, "nativeBuildId", kNativeBuildId);
+  SetStr(out, "lifecycleState", LifecycleState());
+  SetInt(out, "tsfnReleaseCount", static_cast<int>(g_tsfnReleaseCount));
+  SetBool(out, "tsfnActive", g_tsfn != nullptr);
+  SetBool(out, "tsfnReleaseFailed", g_releaseFailed);
+  SetInt(out, "rawThreadError", static_cast<int>(g_rawCapture.lastError()));
+  SetInt(out, "controllerThreadError", static_cast<int>(g_controller.lastError()));
   return out;
 }
 
@@ -420,6 +459,14 @@ napi_value GetDiagnostics(napi_env env, napi_callback_info info) {
   g_env = env;
   napi_value out;
   napi_create_object(env, &out);
+  SetStr(out, "lifecycleState", LifecycleState());
+  SetInt(out, "tsfnReleaseCount", static_cast<int>(g_tsfnReleaseCount));
+  SetBool(out, "tsfnActive", g_tsfn != nullptr);
+  SetBool(out, "tsfnReleaseFailed", g_releaseFailed);
+  SetInt(out, "rawThreadError", static_cast<int>(g_rawCapture.lastError()));
+  SetInt(out, "controllerThreadError", static_cast<int>(g_controller.lastError()));
+  // Pending producers may still own the parser mutex; only report lock-free lifecycle state.
+  if (g_state == AddonState::kStopping) return out;
   SetStr(out, "buildId", kNativeBuildId);
 
   // --- capture (independent of descriptor parse success) -------------------

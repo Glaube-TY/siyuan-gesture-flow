@@ -200,29 +200,30 @@ export class TouchpadGestureAdapter {
         this.events.onStatus?.(this.provider.capabilities);
     }
 
-    /** Stop the provider and release everything.  Idempotent. */
+    /** Stop capture for a reversible runtime restart. */
     detach(): void {
-        if (!this.attached) return;
+        this.cleanup(false);
+    }
+
+    /** Release the provider on final unload. */
+    dispose(): void {
+        this.cleanup(true);
+    }
+
+    private cleanup(dispose: boolean): void {
+        if (!this.attached && !this.provider) return;
+        const provider = this.provider;
+        this.provider = null;
         this.attached = false;
         this.clearGestureWatchdog();
         this.clearReleaseWatchdog();
-        this.tracker.abort();
         this.lastRecognition = null;
         this.lastRawContactFrame = null;
-        if (this.provider) {
-            this.provider.stop();
-            this.provider = null;
-        }
-    }
-
-    /** Release the provider on unload, including when adapter cleanup fails. */
-    dispose(): void {
-        const provider = this.provider;
-        this.provider = null;
         try {
-            this.detach();
+            this.tracker.abort();
         } finally {
-            provider?.dispose();
+            if (dispose) provider?.dispose();
+            else provider?.stop();
         }
     }
 

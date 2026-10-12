@@ -31,6 +31,7 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
     private readonly blockedReason: string | null;
     private readonly startOptions: NativeTouchpadStartOptions;
     private started = false;
+    private stopPending = false;
     /** Largest contact count observed in live frames (real data). */
     private observedMaxContacts = 0;
     /** Frames rejected by the second-layer invariant (diagnostics). */
@@ -153,6 +154,7 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
             this.events.onStatus?.(this.capabilities);
             return;
         }
+        this.stopPending = true;
         try {
             bridge.start((frame) => {
                 if (!this.started) return;
@@ -179,10 +181,10 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
                 this.events.onFrame?.(converted);
                 this.maybePublishStatus();
             }, this.startOptions);
-        } catch (err) {
+        } catch {
             this.started = false;
-            const label = err instanceof Error ? err.message : String(err);
-            this.events.onError?.({ label: `native touchpad bridge start failed (${label})` });
+            this.stop();
+            this.events.onError?.({ label: "native touchpad bridge start failed" });
             this.events.onStatus?.(this.capabilities);
             return;
         }
@@ -190,15 +192,16 @@ export class WindowsNativeTouchpadProvider extends TouchpadProvider {
     }
 
     stop(): void {
-        if (!this.started) return;
+        if (!this.started && !this.stopPending) return;
         this.started = false;
         const bridge = this.bridge;
-        if (!bridge) return;
+        if (!bridge) { this.stopPending = false; return; }
         try {
-            bridge.stop();
+            this.stopPending = bridge.stop() === "stop-pending";
+            if (this.stopPending) this.events.onError?.({ label: "native touchpad shutdown is incomplete" });
         } catch {
-            // Native teardown failures are non-fatal; the runtime is
-            // shutting down anyway.
+            this.stopPending = true;
+            this.events.onError?.({ label: "native touchpad bridge stop failed" });
         }
     }
 
