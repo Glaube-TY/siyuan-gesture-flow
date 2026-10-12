@@ -142,6 +142,7 @@ void OnAction(ActionKind kind, int fingers) {
 // Runs on the JS thread (dispatched by the TSFN).
 void CallJsFrame(napi_env env, napi_value js_cb, void* /*context*/, void* data) {
   std::unique_ptr<NativeFrame> f(static_cast<NativeFrame*>(data));
+  if (!f || !env || !js_cb) return;
   napi_value global;
   napi_get_global(env, &global);
 

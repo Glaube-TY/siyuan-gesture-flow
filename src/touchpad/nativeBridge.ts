@@ -1,7 +1,7 @@
 /**
  * Native Windows Precision Touchpad bridge.
  *
- * The native addon lives in this plugin's own directory:
+ * The native addon is bundled in this plugin's own directory:
  *
  *   <workspace>/data/plugins/siyuan-gesture-flow/native/gesture_flow_touchpad.node
  *
@@ -16,11 +16,12 @@
  *      the only path that can take over the Windows default 3/4/5-finger
  *      global gestures while SiYuan is the foreground app.
  *
- * The loader prefers the bundled addon, then falls back to the
- * `window.__GESTURE_FLOW_NATIVE__` dev/test injection hook.  It never throws:
- * when nothing is loadable the Windows native provider reports a precise
- * `blocked` capability instead.
+ * The bundled binary is copied to a verified external runtime cache before
+ * loading, so Windows does not lock the installed plugin's source file.
+ * Dev/test injection stays available; failures fall back to Electron input.
  */
+
+import { prepareNativeAddonCache } from "./nativeAddonCache";
 
 /** A single contact as reported by the native layer. */
 export interface NativeBridgeContact {
@@ -130,7 +131,12 @@ export function setNativeBridgeContext(context: NativeBridgeContext): void {
 export interface NativeLoaderDiagnostics {
     /** Every path / id the loader attempted to require. */
     attemptedPaths: string[];
-    /** The path that actually produced a usable bridge (null on failure). */
+    /** Original addon source and cache preparation state (null means not checked). */
+    sourcePath: string | null;
+    sourceFound: boolean | null;
+    cachePath: string | null;
+    cacheReady: boolean;
+    /** The cache path successfully required (or the dev injection id). */
     loadedPath: string | null;
     /** Short label for the most recent failure (error.name / code / message). */
     lastError: string | null;
@@ -143,7 +149,13 @@ let loaderDiagnostics: NativeLoaderDiagnostics = {
     loadedPath: null,
     lastError: null,
     blockedReason: null,
+    sourcePath: null,
+    sourceFound: null,
+    cachePath: null,
+    cacheReady: false,
 };
+
+const loadedBridges = new Map<string, NativeTouchpadBridge>();
 
 /** Read the latest loader diagnostics (dev panel). */
 export function getNativeLoaderDiagnostics(): NativeLoaderDiagnostics {
@@ -180,9 +192,10 @@ function currentArch(): string | null {
  *  1. `window.__GESTURE_FLOW_NATIVE__` (dev/test injection).
  *  2. The addon bundled with this plugin:
  *       <dataDir>/plugins/<name>/native/gesture_flow_touchpad.node
- *     loaded via `window.require(<absolute path>)`.  `dataDir` comes from
- *     `window.siyuan.config.system.dataDir` (absolute filesystem path).
- *  3. `window.require(process.env.GESTURE_FLOW_NATIVE_MODULE)` if set.
+ *     copied into a SHA-256/PID cache outside workspace plugins, then required.
+ *     `dataDir` comes from `window.siyuan.config.system.dataDir`.
+ *  3. `process.env.GESTURE_FLOW_NATIVE_MODULE` as an alternative addon source,
+ *     also copied and verified before loading.
  *
  * Only x64 addons ship today — on another architecture the loader declines
  * with a precise reason (so the failure is never a vague MODULE_NOT_FOUND)
@@ -192,77 +205,88 @@ function currentArch(): string | null {
  * `blocked` status instead of throwing.
  */
 export function loadNativeTouchpadBridge(): NativeTouchpadBridge | null {
-    loaderDiagnostics = { attemptedPaths: [], loadedPath: null, lastError: null, blockedReason: null };
+    loaderDiagnostics = {
+        attemptedPaths: [], loadedPath: null, lastError: null, blockedReason: null,
+        sourcePath: null, sourceFound: null, cachePath: null, cacheReady: false,
+    };
     const win = typeof window !== "undefined" ? (window as NativeBridgeGlobals) : undefined;
     if (!win) {
         loaderDiagnostics.blockedReason = "no window (non-renderer context)";
         return null;
     }
 
-    const globals = win as NativeBridgeGlobals;
-    if (globals.__GESTURE_FLOW_NATIVE__) {
-        const bridge = normalizeBridge(globals.__GESTURE_FLOW_NATIVE__, "global-injection");
-        if (bridge) {
-            loaderDiagnostics.loadedPath = "global-injection";
-            return bridge;
+    try {
+        if (win.__GESTURE_FLOW_NATIVE__) {
+            const bridge = normalizeBridge(win.__GESTURE_FLOW_NATIVE__, "global-injection");
+            if (bridge) {
+                void bridge.capabilities;
+                loaderDiagnostics.loadedPath = "global-injection";
+                return bridge;
+            }
+            loaderDiagnostics.lastError = "global-injection module did not match the bridge shape";
         }
-        loaderDiagnostics.lastError = "global-injection module did not match the bridge shape";
+    } catch (err) {
+        loaderDiagnostics.lastError = errorLabel(err);
     }
 
-    // Native addons are currently built for x64 only — decline with a clear
-    // reason on other architectures (observer fallback stays available).
     const arch = currentArch();
     if (arch !== null && arch !== "x64") {
         loaderDiagnostics.blockedReason = `unsupported native architecture (${arch}); addon is x64-only — falling back to the Electron observer`;
         return null;
     }
-
     const req = (win as unknown as { require?: (id: string) => unknown }).require;
     if (typeof req !== "function") {
         loaderDiagnostics.blockedReason = "window.require unavailable";
         return null;
     }
-
-    // 2. Bundled addon path (no manual install into SiYuan node_modules).
-    const bundled = bundledAddonPath();
-    if (bundled) {
-        loaderDiagnostics.attemptedPaths.push(bundled);
-        try {
-            const mod = req(bundled);
-            if (mod) {
-                const bridge = normalizeBridge(mod, bundled);
-                if (bridge) {
-                    loaderDiagnostics.loadedPath = bundled;
-                    return bridge;
-                }
-            }
-            loaderDiagnostics.lastError = "bundled addon did not match the bridge shape";
-        } catch (err) {
-            loaderDiagnostics.lastError = errorLabel(err);
-        }
+    const dataDir = readDataDir();
+    const pathMod = tryRequirePath();
+    if (!dataDir || !pathMod) {
+        loaderDiagnostics.blockedReason = "workspace data directory or Node path unavailable";
+        return null;
     }
-
     const candidates: string[] = [];
+    const bundled = bundledAddonPath();
+    if (bundled) candidates.push(bundled);
     try {
-        const envModule = (globalThis as { process?: { env?: Record<string, string> } }).process?.env
-            ?.GESTURE_FLOW_NATIVE_MODULE;
-        if (envModule) candidates.push(envModule);
-    } catch {
-        // env may be unavailable — skip the env candidate.
+        const process = req("process") as typeof import("node:process");
+        const envModule = process.env.GESTURE_FLOW_NATIVE_MODULE;
+        if (envModule) {
+            const resolve = (req as { resolve?: (id: string) => string }).resolve;
+            candidates.push(resolve ? resolve(envModule) : envModule);
+        }
+    } catch (err) {
+        loaderDiagnostics.lastError = errorLabel(err);
     }
-
-    for (const id of candidates) {
-        loaderDiagnostics.attemptedPaths.push(id);
+    for (const source of candidates) {
+        loaderDiagnostics.sourcePath = source;
+        const cache = prepareNativeAddonCache(source, pathMod.join(dataDir, "plugins"), req);
+        loaderDiagnostics.sourceFound = cache.sourceFound;
+        loaderDiagnostics.cachePath = cache.cachePath;
+        loaderDiagnostics.cacheReady = cache.cacheReady;
+        if (!cache.cacheReady || !cache.cachePath) {
+            loaderDiagnostics.lastError = cache.error;
+            continue;
+        }
+        const cachedPath = cache.cachePath;
         try {
-            const mod = req(id);
-            if (mod) {
-                const bridge = normalizeBridge(mod, id);
-                if (bridge) {
-                    loaderDiagnostics.loadedPath = id;
-                    return bridge;
+            let bridge = loadedBridges.get(cachedPath);
+            if (!bridge) {
+                loaderDiagnostics.attemptedPaths.push(cachedPath);
+                const mod = req(cachedPath);
+                loaderDiagnostics.loadedPath = cachedPath;
+                bridge = normalizeBridge(mod, cachedPath) ?? undefined;
+                if (!bridge) {
+                    loaderDiagnostics.lastError = "cached addon did not match the bridge shape";
+                    continue;
                 }
+                // Capability getter failures must not escape into mouse runtime startup.
+                void bridge.capabilities;
+                loadedBridges.set(cachedPath, bridge);
             }
-            loaderDiagnostics.lastError = "env module did not match the bridge shape";
+            loaderDiagnostics.loadedPath = cachedPath;
+            loaderDiagnostics.lastError = null;
+            return bridge;
         } catch (err) {
             loaderDiagnostics.lastError = errorLabel(err);
         }

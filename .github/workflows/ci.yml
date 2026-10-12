@@ -35,6 +35,12 @@ jobs:
       - name: Check
         run: pnpm check
 
+      - name: Check runtime lifecycle
+        run: pnpm test:lifecycle
+
+      - name: Check native loader
+        run: pnpm test:native-loader
+
       - name: Build
         run: pnpm build
 

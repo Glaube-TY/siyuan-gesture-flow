@@ -66,6 +66,8 @@ An action being configurable in Windows Settings does not mean it is enabled on 
 - If the native module cannot load, GestureFlow falls back to Electron event observation when possible. This exposes only some OS-level gestures and cannot fully record independent contact paths.
 - Windows ARM64, macOS, Linux, mobile and browser builds do not currently provide the full advanced touchpad path. Mouse gestures remain available.
 
+On Windows, the native module remains bundled with the plugin but loads from a separate temporary runtime cache outside the workspace. Normally, this prevents the plugin itself from locking its installed `.node` file. A module already loaded by an older version may require one full exit from SiYuan to release the existing lock. Cache or module failures still allow Electron fallback input and mouse gestures. Cached modules are not guaranteed to leave the Windows process immediately when the plugin unloads, and are never forcibly unloaded or deleted.
+
 ## Implementation types
 
 | Type | Description |
