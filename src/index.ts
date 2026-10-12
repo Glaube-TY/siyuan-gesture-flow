@@ -266,18 +266,26 @@ export default class GestureFlowPlugin extends Plugin {
         this.lifecycleToken++;
         this.configLoadPromise = null;
 
-        if (this.unsubscribeConfig) {
-            this.unsubscribeConfig();
-            this.unsubscribeConfig = null;
-        }
-        this.settingsDialog?.destroy();
+        const { unsubscribeConfig, settingsDialog, runtime, configManager } = this;
+        this.unsubscribeConfig = null;
         this.settingsDialog = null;
-        // Close any safe-confirm dialog we opened (e.g. delete-binding
-        // confirmation) so it cannot outlive the plugin.
-        closeAllSafeConfirms();
-        this.runtime?.stop();
         this.runtime = null;
-        this.configManager?.destroy();
         this.configManager = null;
+        this.commandCatalogSource = null;
+
+        // Keep settings teardown before ConfigManager.destroy so pending edits can flush.
+        for (const cleanup of [
+            () => unsubscribeConfig?.(),
+            () => settingsDialog?.destroy(),
+            closeAllSafeConfirms,
+            () => runtime?.dispose(),
+            () => configManager?.destroy(),
+        ]) {
+            try {
+                cleanup();
+            } catch {
+                console.warn("[GestureFlow] plugin cleanup failed");
+            }
+        }
     }
 }

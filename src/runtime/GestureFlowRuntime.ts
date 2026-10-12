@@ -174,6 +174,42 @@ export class GestureFlowRuntime {
         this.config = null;
     }
 
+    /** Release owned JS resources on unload, even if one cleanup fails. */
+    dispose(): void {
+        const {
+            touchpadPollTimer, unsubscribeTouchpadPolling, adapter,
+            touchpadAdapter, controller, touchpadFeedback, commandExecutor,
+        } = this;
+        // Detach ownership first so reentrant or repeated disposal is harmless.
+        this.state = "stopped";
+        this.config = null;
+        this.touchpadPollTimer = null;
+        this.unsubscribeTouchpadPolling = null;
+        this.adapter = null;
+        this.touchpadAdapter = null;
+        this.controller = null;
+        this.touchpadFeedback = null;
+        this.commandExecutor = null;
+        this.shortcutExecutor = null;
+        this.dispatcher = null;
+
+        for (const cleanup of [
+            () => { if (touchpadPollTimer !== null) clearInterval(touchpadPollTimer); },
+            () => unsubscribeTouchpadPolling?.(),
+            () => adapter?.detach(),
+            () => touchpadAdapter?.dispose(),
+            () => controller?.destroy(),
+            () => touchpadFeedback?.destroy(),
+            () => commandExecutor?.reset(),
+        ]) {
+            try {
+                cleanup();
+            } catch {
+                // A failing component must not strand the remaining resources.
+            }
+        }
+    }
+
     /** Restart the runtime with a new configuration. */
     restart(newConfig: GestureFlowConfig): RestartResult {
         const previousConfig = this.config;

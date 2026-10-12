@@ -215,6 +215,17 @@ export class TouchpadGestureAdapter {
         }
     }
 
+    /** Release the provider on unload, including when adapter cleanup fails. */
+    dispose(): void {
+        const provider = this.provider;
+        this.provider = null;
+        try {
+            this.detach();
+        } finally {
+            provider?.dispose();
+        }
+    }
+
     /** Abort an in-progress gesture (window blur / escape). */
     abort(): void {
         const wasBusy = this.busy;

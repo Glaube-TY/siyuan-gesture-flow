@@ -253,4 +253,9 @@ export abstract class TouchpadProvider {
      * Must be idempotent and fully reversible.
      */
     abstract stop(): void;
+
+    /** Unload lifecycle hook; providers can override it for additional cleanup. */
+    dispose(): void {
+        this.stop();
+    }
 }

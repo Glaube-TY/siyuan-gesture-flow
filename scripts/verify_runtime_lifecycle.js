@@ -1,0 +1,193 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import vm from "node:vm";
+import { setTimeout as wait } from "node:timers/promises";
+import ts from "typescript";
+
+// Load real TS lifecycle code without mounting Svelte or loading a native addon.
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const require = createRequire(import.meta.url);
+const modules = new Map();
+function loadModule(filename) {
+    if (modules.has(filename)) return modules.get(filename).exports;
+    const module = { exports: {} };
+    modules.set(filename, module);
+    const code = ts.transpileModule(fs.readFileSync(filename, "utf8"), {
+        compilerOptions: { module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2020 },
+        fileName: filename,
+    }).outputText;
+    const localRequire = (id) => {
+        if (id === "siyuan") return { Plugin: class {}, globalCommand() {} };
+        if (id.endsWith(".scss")) return {};
+        if (id.endsWith(".svelte")) return { default: class {} };
+        if (!id.startsWith(".") && !id.startsWith("@/")) return require(id);
+        const resolved = id.startsWith("@/")
+            ? path.join(root, "src", id.slice(2))
+            : path.resolve(path.dirname(filename), id);
+        return loadModule(resolved.endsWith(".ts") ? resolved : resolved + ".ts");
+    };
+    vm.runInThisContext(`(function(require, module, exports) {${code}\n})`, { filename })(
+        localRequire, module, module.exports,
+    );
+    return module.exports;
+}
+const load = (file) => loadModule(path.join(root, file));
+const { GestureFlowRuntime } = load("src/runtime/GestureFlowRuntime.ts");
+const { MouseGestureAdapter } = load("src/gesture/input/MouseGestureAdapter.ts");
+const { TouchpadGestureAdapter } = load("src/gesture/touchpad/TouchpadGestureAdapter.ts");
+const { TouchpadProvider } = load("src/touchpad/types.ts");
+const { default: GestureFlowPlugin } = load("src/index.ts");
+const confirms = load("src/settings/confirmDialog.ts");
+const runtime = () => new GestureFlowRuntime({ target: new EventTarget(), overlayI18n: {}, i18n: {} });
+
+// Every owned component is attempted even when any single cleanup throws.
+for (let failing = 0; failing < 6; failing++) {
+    const instance = runtime();
+    const calls = [];
+    const cleanup = (id) => () => {
+        calls.push(id);
+        if (id === failing) throw new Error("injected cleanup failure");
+    };
+    instance.unsubscribeTouchpadPolling = cleanup(0);
+    instance.adapter = { detach: cleanup(1) };
+    instance.touchpadAdapter = { dispose: cleanup(2) };
+    instance.controller = { destroy: cleanup(3) };
+    instance.touchpadFeedback = { destroy: cleanup(4) };
+    instance.commandExecutor = { reset: cleanup(5) };
+    instance.dispatcher = {};
+    instance.shortcutExecutor = {};
+    instance.config = {};
+    assert.doesNotThrow(() => instance.dispose());
+    assert.doesNotThrow(() => instance.dispose());
+    assert.deepEqual(calls, [0, 1, 2, 3, 4, 5]);
+    for (const field of ["unsubscribeTouchpadPolling", "adapter", "touchpadAdapter", "controller",
+        "touchpadFeedback", "commandExecutor", "dispatcher", "shortcutExecutor", "config"]) {
+        assert.equal(instance[field], null);
+    }
+    assert.equal(instance.getState(), "stopped");
+}
+const timerRuntime = runtime();
+let ticks = 0;
+timerRuntime.touchpadPollTimer = setInterval(() => ticks++, 1);
+timerRuntime.dispose();
+await wait(20);
+assert.equal(ticks, 0);
+assert.equal(timerRuntime.touchpadPollTimer, null);
+const reentrantRuntime = runtime();
+let resets = 0;
+reentrantRuntime.unsubscribeTouchpadPolling = () => reentrantRuntime.dispose();
+reentrantRuntime.commandExecutor = { reset: () => resets++ };
+reentrantRuntime.dispose();
+assert.equal(resets, 1);
+const stoppedRuntime = runtime();
+stoppedRuntime.start({ enabled: false });
+stoppedRuntime.stop();
+stoppedRuntime.start({ enabled: false });
+assert.equal(stoppedRuntime.getState(), "disabled");
+
+// Real mouse listeners are removed, and the actual provider disposal hook runs.
+class TrackedTarget extends EventTarget {
+    listeners = new Map();
+    addEventListener(type, listener, options) {
+        super.addEventListener(type, listener, options);
+        if (!this.listeners.has(type)) this.listeners.set(type, new Set());
+        this.listeners.get(type).add(listener);
+    }
+    removeEventListener(type, listener, options) {
+        super.removeEventListener(type, listener, options);
+        this.listeners.get(type)?.delete(listener);
+    }
+    get count() { return [...this.listeners.values()].reduce((sum, set) => sum + set.size, 0); }
+}
+const originalWindow = globalThis.window;
+const originalDocument = globalThis.document;
+globalThis.window = new TrackedTarget();
+globalThis.document = new TrackedTarget();
+try {
+    const target = new TrackedTarget();
+    const instance = runtime();
+    instance.adapter = new MouseGestureAdapter({}, {});
+    instance.adapter.attach(target);
+    assert.ok(target.count + window.count + document.count > 0);
+    instance.dispose();
+    assert.equal(target.count + window.count + document.count, 0);
+} finally {
+    if (originalWindow === undefined) delete globalThis.window;
+    else globalThis.window = originalWindow;
+    if (originalDocument === undefined) delete globalThis.document;
+    else globalThis.document = originalDocument;
+}
+class Provider extends TouchpadProvider {
+    stops = 0;
+    start() {}
+    stop() { this.stops++; }
+    get capabilities() { return { providerType: "none" }; }
+}
+for (const abortFails of [false, true]) {
+    const provider = new Provider();
+    const adapter = new TouchpadGestureAdapter(() => provider);
+    adapter.attach();
+    let watchdogTicks = 0;
+    adapter.gestureWatchdogHandle = setTimeout(() => watchdogTicks++, 1);
+    adapter.releaseWatchdogHandle = setTimeout(() => watchdogTicks++, 1);
+    if (abortFails) adapter.tracker.abort = () => { throw new Error("injected abort failure"); };
+    const instance = runtime();
+    instance.touchpadAdapter = adapter;
+    instance.dispose();
+    instance.dispose();
+    await wait(20);
+    assert.equal(provider.stops, 1);
+    assert.equal(watchdogTicks, 0);
+    assert.equal(adapter.provider, null);
+    assert.equal(adapter.attached, false);
+}
+const provider = new Provider();
+let disposals = 0;
+provider.dispose = () => disposals++;
+const adapter = new TouchpadGestureAdapter(() => provider);
+adapter.attach();
+adapter.detach();
+assert.equal(provider.stops, 1);
+assert.equal(disposals, 0);
+adapter.attach();
+adapter.dispose();
+adapter.dispose();
+assert.equal(disposals, 1);
+
+// Settings still flush before ConfigManager destruction; failures cannot skip it.
+const originalWarn = console.warn;
+const originalClose = confirms.closeAllSafeConfirms;
+console.warn = () => {};
+try {
+    for (let failing = 0; failing < 5; failing++) {
+        const calls = [];
+        const cleanup = (id) => () => {
+            calls.push(id);
+            if (id === failing) throw new Error("injected unload failure");
+        };
+        confirms.closeAllSafeConfirms = cleanup(2);
+        const plugin = {
+            lifecycleToken: 1,
+            configLoadPromise: Promise.resolve(),
+            unsubscribeConfig: cleanup(0),
+            settingsDialog: { destroy: cleanup(1) },
+            runtime: { dispose: cleanup(3), stop() { assert.fail("unload called stop"); } },
+            configManager: { destroy: cleanup(4) },
+            commandCatalogSource: {},
+        };
+        assert.doesNotThrow(() => GestureFlowPlugin.prototype.onunload.call(plugin));
+        assert.deepEqual(calls, [0, 1, 2, 3, 4]);
+        assert.equal(plugin.lifecycleToken, 2);
+        for (const field of ["configLoadPromise", "unsubscribeConfig", "settingsDialog", "runtime",
+            "configManager", "commandCatalogSource"]) assert.equal(plugin[field], null);
+        assert.doesNotThrow(() => GestureFlowPlugin.prototype.onunload.call(plugin));
+        assert.deepEqual(calls, [0, 1, 2, 3, 4, 2]);
+    }
+} finally {
+    console.warn = originalWarn;
+    confirms.closeAllSafeConfirms = originalClose;
+}
+console.log("Runtime lifecycle checks passed: exception isolation, repeated disposal, timers, listeners, provider release, unload order.");
